@@ -24,6 +24,27 @@ by tap, on-screen keyboard opened by a longer press) all work through
 actual touch, with the keyboard resized/repositioned to stay fully inside
 the round bezel - see below for how.
 
+On a successful WiFi connect, credentials are saved to NVS
+(`Preferences`, namespace `"wifi"`) and auto-tried on every boot
+(`WiFi.begin()` with an 8s timeout in `setup()`, before LVGL/display init)
+so the device reconnects without any UI interaction after the first setup.
+Once connected (whether by auto-reconnect or manual setup), the dropdown/
+password/Connect UI is replaced by a compact "connected" header (a green
+checkmark + SSID + a small edit button) and an MQTT broker config section
+appears below it - protocol/host/port on one flex row, then
+username/password fields (icon-prefixed placeholders, `LV_SYMBOL_LIST` /
+`LV_SYMBOL_EYE_OPEN`, both visible-text like the WiFi password field) and
+a Save button, all persisted to NVS (`Preferences`, namespace `"mqtt"`).
+Tapping the edit button re-enters WiFi setup mode: re-scans, repopulates
+the SSID dropdown, reselects the current network if still in range, and
+restores the previously-entered password into the field instead of
+leaving it blank - editing is meant to change to a *different* network,
+not retype one that's already connected. This mirrors the MQTT config
+fields from `screenbee-m5dial`'s HTML AP-setup interface, but rendered
+natively via LVGL instead of a captive-portal web page. MQTT *client*
+connection itself (actually connecting/testing the broker) is not
+implemented yet - only the config UI and NVS storage.
+
 This superseded an earlier deep-sleep + knob-wake power experiment (see
 "Deep sleep / knob wake" below) - that one is no longer what's flashed,
 but its findings (EXT0 wake works, ~50mA floor) remain valid and are kept
@@ -123,6 +144,27 @@ reliable:
   was `PRESSED → PRESSING×N → RELEASED → SHORT_CLICKED`, never
   `LONG_PRESSED`, which pinpointed the timing threshold as the actual
   cause rather than a touch or hit-testing bug.
+
+### Small-widget LVGL gotchas found while building the connected/MQTT UI
+
+- **Flex-child fields can't just use `lv_obj_align()` to pop out for
+  editing.** The generic long-press-to-edit handler used for the WiFi
+  password field (`fieldKeyboardCb`, aligns the field to screen center
+  while the keyboard is open) breaks for `mqttHostArea`/`mqttPortArea`,
+  which are children of a `LV_FLEX_FLOW_ROW` container (`mqttRow`) -
+  `lv_obj_align()` fights the flex layout engine and the field stays
+  clipped to its small auto-sized slot. Fixed with a separate callback
+  (`mqttRowFieldKeyboardCb`) that calls `lv_obj_set_parent()` to reparent
+  the field to `lv_scr_act()` for editing and back to `mqttRow` on close,
+  instead of aligning it in place.
+- **Default button theme padding can eat a small button's icon glyph
+  entirely.** A 30x30 `lv_btn` with an `LV_SYMBOL_EDIT` label looked
+  visually clipped - not because of the round bezel, but because LVGL's
+  default button theme padding left too little interior room for the
+  glyph to render at full size. Fixed by bumping the button to 34x34,
+  adding `lv_obj_set_style_pad_all(btn, 2, 0)` to shrink the theme's
+  default padding, and explicitly `lv_obj_center()`-ing the label inside
+  it rather than relying on the button's automatic content layout.
 
 ### Deep sleep / knob wake (earlier experiment, findings kept for later)
 
