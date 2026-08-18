@@ -5,10 +5,15 @@
 // with a minimal hand-rolled driver (protocol is simple enough that no
 // library dependency is worth adding). Pin reference: see README.md.
 //
-// This is deliberately touch-only for now - no rotary-encoder LVGL input
-// device yet. The encoder push-button wiring (shared with the quadrature
-// signal lines, see the schematic notes in the project memory) needs its
-// own investigation before it's worth wiring into LVGL's encoder indev.
+// The default on-screen keyboard's full-width layout clips against the
+// round bezel (its rectangular button grid reaches into the square
+// framebuffer's corners, which sit outside the visible circle). Tried a
+// custom knob-driven character picker (rotate to scroll, tap to insert)
+// as an alternative, but tapping individual letters turned out much
+// faster to use than rotating through 94 characters one at a time - so
+// password entry uses the standard keyboard after all, just sized down
+// (280x180) to fit entirely inside the circle's inscribed safe area
+// instead of spanning the full square framebuffer.
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -45,8 +50,8 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *lvBuf1;
 static lv_obj_t *ssidDropdown;
 static lv_obj_t *passwordArea;
-static lv_obj_t *keyboard;
 static lv_obj_t *statusLabel;
+static lv_obj_t *keyboard;
 
 // Matches the official Waveshare demo (cst816.cpp/Touch_Init): no reset
 // pin is ever driven - just switch the chip to normal mode over I2C.
@@ -101,11 +106,23 @@ static void dispFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *
 
 static void passwordEventCb(lv_event_t *e) {
   lv_event_code_t code = lv_event_get_code(e);
-  if (code == LV_EVENT_FOCUSED) {
+  if (code == LV_EVENT_LONG_PRESSED) {
+    // Deliberately not opening on a short tap/FOCUSED: lv_textarea already
+    // moves the cursor to the tapped character on a plain click by itself,
+    // so a short tap can be used purely to position the cursor without the
+    // keyboard jumping in and covering the screen. Long-press is the
+    // explicit "start editing" gesture.
     lv_keyboard_set_textarea(keyboard, passwordArea);
     lv_obj_clear_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+
+    // The keyboard's safe-area position/size would otherwise cover the
+    // password field's normal spot - move it above the keyboard (and to
+    // the front, so it draws over anything else) while editing.
+    lv_obj_move_foreground(passwordArea);
+    lv_obj_align(passwordArea, LV_ALIGN_CENTER, 0, -95);
   } else if (code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
     lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(passwordArea, LV_ALIGN_TOP_MID, 0, 130);
   }
 }
 
@@ -158,7 +175,14 @@ static void buildUi(int networkCount) {
   lv_label_set_text(statusLabel, "");
   lv_obj_align(statusLabel, LV_ALIGN_TOP_MID, 0, 225);
 
+  // Sized and positioned to fit inside the round bezel's inscribed safe
+  // area (260x150, centered 45px below screen center - farthest corner
+  // is ~177px from center, just inside the 180px radius) with room left
+  // above it, at y=-95, for the password field so it stays visible while
+  // editing instead of being covered by the keyboard.
   keyboard = lv_keyboard_create(scr);
+  lv_obj_set_size(keyboard, 260, 150);
+  lv_obj_align(keyboard, LV_ALIGN_CENTER, 0, 45);
   lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -206,6 +230,12 @@ void setup() {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchReadCb;
+  // Default long-press time is 400ms; real holds measured on this touch
+  // panel were released around ~225ms (short, imprecise touch reporting),
+  // never crossing that threshold and never firing LV_EVENT_LONG_PRESSED.
+  // 200ms is comfortably under a deliberate hold but still distinguishes
+  // it from a quick cursor-positioning tap.
+  indev_drv.long_press_time = 200;
   lv_indev_drv_register(&indev_drv);
 
   buildUi(networkCount);

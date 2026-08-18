@@ -19,8 +19,10 @@ memory ceiling.
 `src/main.cpp` is a first LVGL bring-up: a WiFi setup screen (scanned-SSID
 dropdown, a **plaintext** password field, Connect button) rendered via
 Arduino_GFX + LVGL v8, with working capacitive touch input. Verified on
-real hardware: dropdown selection, text entry via the on-screen keyboard,
-and the on-screen keyboard all work through actual touch.
+real hardware: dropdown selection, and password entry (cursor positioning
+by tap, on-screen keyboard opened by a longer press) all work through
+actual touch, with the keyboard resized/repositioned to stay fully inside
+the round bezel - see below for how.
 
 This superseded an earlier deep-sleep + knob-wake power experiment (see
 "Deep sleep / knob wake" below) - that one is no longer what's flashed,
@@ -77,15 +79,50 @@ as reference for whenever power-management work resumes.
   the new setting won't actually take effect (this is exactly how the
   `LV_TICK_CUSTOM` fix above needed two rebuild rounds to actually land).
 
-### Known issue: on-screen keyboard clips on the round bezel
+### Password entry: on-screen keyboard, resized and repositioned for the round bezel
 
 `lv_keyboard`'s default rectangular button grid extends into the square
 framebuffer's corners, which are outside the physically visible round
-area - the keyboard's outer keys get clipped by the bezel. Not yet fixed;
-see project memory for alternatives under consideration (a knob-driven
-letter picker instead of a tap keyboard is the leading candidate, since
-it sidesteps the round-corner-clipping problem entirely rather than
-working around it).
+area - the keyboard's outer keys get clipped by the bezel. Two approaches
+were tried:
+
+1. **Custom knob-driven character picker** (rotate an `lv_roller` through
+   all 94 likely password characters, tap Insert/Backspace/Done). Worked,
+   but the user's verdict after trying it: tapping individual letters on
+   the standard keyboard is simply faster than rotating through a long
+   character list one step at a time - reverted.
+2. **Resized + repositioned standard keyboard** (what's actually flashed
+   now): `lv_keyboard` sized to 260x150 and centered 45px below screen
+   center - its farthest corner sits ~177px from center, just inside the
+   180px bezel radius, so no keys get clipped. When it opens, the password
+   textarea is moved to `LV_ALIGN_CENTER, 0, -95` (and raised to the front
+   via `lv_obj_move_foreground`) so it's visible in the space above the
+   keys instead of being covered by the keyboard's normal-layout position;
+   it moves back to its resting spot (`LV_ALIGN_TOP_MID, 0, 130`) when the
+   keyboard closes.
+
+Two more fixes were needed to make opening/closing the keyboard itself
+reliable:
+
+- **Tap-to-reopen**: `LV_EVENT_FOCUSED` only fires once per focus session,
+  so after manually closing the keyboard the field stayed logically
+  focused and a second tap did nothing. Fixed by opening on
+  `LV_EVENT_LONG_PRESSED` instead of `FOCUSED` - deliberately *not*
+  `CLICKED`/every tap, since `lv_textarea` already moves the cursor to the
+  tapped character on a plain short tap by itself, so a quick tap can be
+  used purely to position the cursor without the keyboard jumping in and
+  covering the screen; a held tap is the explicit "start editing" gesture.
+- **Long-press never fired**: measured real presses on this touch panel
+  released around ~225ms - always under LVGL's default 400ms
+  `long_press_time`, so `LV_EVENT_LONG_PRESSED` was never reached and nothing
+  visibly happened when pressing, no matter how the field was touched.
+  Fixed by setting `indev_drv.long_press_time = 200` (in `setup()`, after
+  `lv_indev_drv_init()`) - comfortably under a deliberate hold, still well
+  above a quick cursor-positioning tap. Diagnosed by logging every
+  `lv_event_code_t` the field received (see git history) - the sequence
+  was `PRESSED → PRESSING×N → RELEASED → SHORT_CLICKED`, never
+  `LONG_PRESSED`, which pinpointed the timing threshold as the actual
+  cause rather than a touch or hit-testing bug.
 
 ### Deep sleep / knob wake (earlier experiment, findings kept for later)
 
