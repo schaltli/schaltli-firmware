@@ -16,8 +16,78 @@ memory ceiling.
 
 ## Current state
 
-`src/main.cpp` is a deep-sleep + knob-wake power experiment, verified on
-real hardware:
+`src/main.cpp` is a first LVGL bring-up: a WiFi setup screen (scanned-SSID
+dropdown, a **plaintext** password field, Connect button) rendered via
+Arduino_GFX + LVGL v8, with working capacitive touch input. Verified on
+real hardware: dropdown selection, text entry via the on-screen keyboard,
+and the on-screen keyboard all work through actual touch.
+
+This superseded an earlier deep-sleep + knob-wake power experiment (see
+"Deep sleep / knob wake" below) - that one is no longer what's flashed,
+but its findings (EXT0 wake works, ~50mA floor) remain valid and are kept
+as reference for whenever power-management work resumes.
+
+### LVGL bring-up gotchas (all found and fixed the hard way)
+
+- **Wrong ST77916 init table gave a striped/garbled image at any clock
+  speed** (tried 40/20/8MHz, no difference). Arduino_GFX ships two init
+  operand tables, `st77916_180_init_operations` (the constructor default)
+  and `st77916_150_init_operations` - this panel needs the **150** variant.
+  The `180`/`150` naming is not display-diagonal-inches, just two
+  different factory gamma/voltage calibrations; there's no way to know
+  which one a given panel needs except trying both.
+- **A stale `rtc_gpio_hold_en()` from the earlier deep-sleep experiment
+  latched LCD_RST/TOUCH_RST low permanently**, surviving normal
+  resets/reflashes (RTC pad holds are a hardware latch, not cleared by
+  soft reset). Call `rtc_gpio_hold_dis()` on both pins (and
+  `gpio_deep_sleep_hold_dis()`) at the very top of `setup()` before
+  touching the display - otherwise it's stuck in hardware reset and no
+  amount of driver-level debugging will explain why.
+- **CST816 touch protocol**: fetched Waveshare's own official demo zip
+  (`https://files.waveshare.com/wiki/ESP32-S3-Knob-Touch-LCD-1.8/ESP32-S3-Knob-Touch-LCD-1.8-Demo.zip`,
+  `Arduino/examples/08_LVGL_Test/cst816.cpp`) since neither datasheet
+  register-map assumptions nor several standard fixes (repeated-start vs.
+  stop, reset pulse ordering, disabling auto-sleep) got real data out of
+  the chip. Two things the working demo does differently from every
+  guess: **no reset pin is ever driven** (GPIO10/TOUCH_RST doesn't need
+  toggling at all), and it writes `0x00` to register `0x00` once at init
+  ("switch to normal mode") - without that write the chip ACKs I2C and
+  returns a fixed all-zero 7-byte block forever, touched or not. Read 7
+  bytes from register `0x00`; the demo's `data[2]` ("finger count") sat at
+  0 during clearly-active drags on this unit, so this code checks
+  `buf[1] != 0` instead (register `0x01`, 0 when idle, nonzero when
+  touched) - reliable in practice.
+- **`LV_TICK_CUSTOM` (LVGL calling Arduino's `millis()` from a `.c`
+  translation unit via `LV_TICK_CUSTOM_INCLUDE "Arduino.h"`) silently
+  never worked** in this arduino-esp32/LVGL v8.4 combination -
+  `lv_tick_get()` returned a constant `0` forever, even after a full
+  `pio run -t clean` + rebuild. Since LVGL believed no time ever passed,
+  **no periodic timer ever ran past the very first paint** - not
+  animations, not indev polling, nothing - which is exactly why touch
+  input looked "unresponsive" even once the CST816 driver itself was
+  proven correct via direct polling. Fixed by setting `LV_TICK_CUSTOM 0`
+  in `include/lv_conf.h` and calling `lv_tick_inc(5)` once per `loop()`
+  iteration instead (the standard, more robust pattern for Arduino
+  targets anyway).
+- **PlatformIO doesn't track `include/lv_conf.h` as a dependency for
+  library sources.** Editing it and re-running `pio run -t upload` only
+  recompiles `src/main.cpp` - the LVGL `.c` files silently keep using
+  whatever config they were last compiled with. **Always run
+  `pio run -t clean` after any `lv_conf.h` change** before rebuilding, or
+  the new setting won't actually take effect (this is exactly how the
+  `LV_TICK_CUSTOM` fix above needed two rebuild rounds to actually land).
+
+### Known issue: on-screen keyboard clips on the round bezel
+
+`lv_keyboard`'s default rectangular button grid extends into the square
+framebuffer's corners, which are outside the physically visible round
+area - the keyboard's outer keys get clipped by the bezel. Not yet fixed;
+see project memory for alternatives under consideration (a knob-driven
+letter picker instead of a tap keyboard is the leading candidate, since
+it sidesteps the round-corner-clipping problem entirely rather than
+working around it).
+
+### Deep sleep / knob wake (earlier experiment, findings kept for later)
 
 - Backlight (GPIO47) off, LCD reset (GPIO21) and touch reset (GPIO10)
   held low through deep sleep via `rtc_gpio_hold_en()`.
