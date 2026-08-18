@@ -20,6 +20,7 @@ void setup() {
   pinMode(BACKLIGHT_PIN, OUTPUT);
   digitalWrite(BACKLIGHT_PIN, HIGH);
   Serial.println("screenbee-waveshare-1v8: backlight power test starting, screen ON");
+  Serial.printf("PSRAM found: %s, size: %u bytes\n", psramFound() ? "yes" : "no", ESP.getPsramSize());
 }
 
 void loop() {
