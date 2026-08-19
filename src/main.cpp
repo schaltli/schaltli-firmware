@@ -343,6 +343,7 @@ static void setupWiFi() {
       subscribeToAllTopics();
 
       testInterface.setScreenSwitchHandler(renderScreenIndex);
+      testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
       if (testInterface.begin(canvasPresenter.canvas())) {
         Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());
       }

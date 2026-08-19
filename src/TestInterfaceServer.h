@@ -39,11 +39,19 @@ public:
   // pixel-diffing against the designer.
   using ScreenSwitchHandler = std::function<bool(int index)>;
 
+  // Reads back what the device currently holds for one topic. An
+  // orchestrator publishes a value over MQTT and then polls this until the
+  // device reports it back, instead of sleeping a fixed amount and hoping -
+  // the wrong render captured because a snapshot was taken a few
+  // milliseconds early is indistinguishable from a real rendering bug.
+  using TopicValueHandler = std::function<String(const String& topic)>;
+
   // The canvas is passed to begin() rather than the constructor because it
   // only exists once CanvasPresenter has allocated it, which can fail.
   bool begin(ClippedCanvas16& canvas, uint16_t port = 80);
 
   void setScreenSwitchHandler(ScreenSwitchHandler handler) { screenSwitchHandler_ = handler; }
+  void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void stop();
 
   // Pump from loop(). Cheap when idle; safe to call before begin().
@@ -57,6 +65,7 @@ private:
   void handleScreenSwitch();
   void handleMqttConfigure();
   void handleForgetWiFi();
+  void handleGetTopicValues();
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();
@@ -72,5 +81,6 @@ private:
   ClippedCanvas16* canvas_ = nullptr;
   bool serverRunning_ = false;
   ScreenSwitchHandler screenSwitchHandler_;
+  TopicValueHandler topicValueHandler_;
   File uploadFile_;
 };

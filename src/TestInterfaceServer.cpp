@@ -15,6 +15,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
   webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
+  webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
@@ -83,6 +84,35 @@ void TestInterfaceServer::handleMqttConfigure() {
   prefs.end();
 
   sendJSONResponse(true, "MQTT configuration saved - reboot to apply");
+}
+
+// GET /api/topic-values?topics=a,b,c -> {"a": "...", "b": "...", ...}
+//
+// Exists so an orchestrator can wait for a published MQTT value to actually
+// land before snapshotting, rather than sleeping and hoping. A snapshot
+// taken a few milliseconds early captures the previous value and looks
+// exactly like a rendering bug, which is an expensive thing to chase.
+void TestInterfaceServer::handleGetTopicValues() {
+  if (!topicValueHandler_) {
+    sendJSONResponse(false, "Topic value lookup is not available on this device");
+    return;
+  }
+
+  String topicsParam = webServer_->arg("topics");
+  JsonDocument doc;
+  int start = 0;
+  while (start <= (int)topicsParam.length()) {
+    int comma = topicsParam.indexOf(',', start);
+    String topic = (comma == -1) ? topicsParam.substring(start) : topicsParam.substring(start, comma);
+    topic.trim();
+    if (!topic.isEmpty()) doc[topic] = topicValueHandler_(topic);
+    if (comma == -1) break;
+    start = comma + 1;
+  }
+
+  String output;
+  serializeJson(doc, output);
+  webServer_->send(200, "application/json", output);
 }
 
 // Clears the stored network and reboots, which lands the device in the AP
