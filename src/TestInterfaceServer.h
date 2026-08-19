@@ -12,6 +12,7 @@
 //   GET  /ddf.zip      - this device's own DDF, compiled in via ddf_zip.h
 //   POST /api/project  - upload+install a project zip, then reboot into it
 //   POST /api/screen   - force a full render of one screen index
+//   POST /api/mqtt     - store broker settings in NVS (applied on reboot)
 //
 // These two come first in the port on purpose: with them live, every later
 // step (project installer, renderer, deploy) is verifiable by pixel-diffing
@@ -48,6 +49,7 @@ private:
   void handleSnapshot();
   void handleDdfZip();
   void handleScreenSwitch();
+  void handleMqttConfigure();
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();

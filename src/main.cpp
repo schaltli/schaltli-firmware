@@ -42,6 +42,9 @@
 #include "project/ProjectLoader.h"
 #include "project/ColorScreenRenderer.h"
 #include "project/ColorAssetLoader.h"
+#include "MqttClient.h"
+#include "DeployManager.h"
+#include "DeviceInfo.h"
 
 // Step 1 of the 2026-08-19 stack port: prove the compositor seam
 // (ClippedCanvas16 -> LVGL image -> panel) on real hardware before any of
@@ -488,6 +491,156 @@ static TestInterfaceServer testInterface;
 static ProjectLoader projectLoader;
 static ColorScreenRenderer* screenRenderer = nullptr;
 static int currentScreenIndex = 0;
+static MqttClient mqttClient;
+static DeployManager deployManager;
+static bool topicsSubscribed = false;
+// Deploy work is deferred out of the MQTT callback rather than handled
+// inline - see onMqttMessage() for why that reentrancy matters.
+static bool pendingDeploy = false;
+static String pendingDeployPayload;
+
+static bool renderScreenIndex(int index);
+
+// A topic may carry a "#path.into.json" suffix; subscriptions and
+// comparisons use the bare topic.
+static String stripJsonPath(const String& topicOrPath) {
+  int hashIndex = topicOrPath.indexOf('#');
+  return hashIndex == -1 ? topicOrPath : topicOrPath.substring(0, hashIndex);
+}
+
+// Recurses into children so nested objects (tab-control -> panel) don't
+// silently miss their subscriptions.
+static void collectTopics(const std::vector<ScreenObject>& objects, std::vector<String>& outTopics) {
+  for (const auto& obj : objects) {
+    if (!obj.properties.topic.isEmpty()) {
+      String realTopic = stripJsonPath(obj.properties.topic);
+      bool exists = false;
+      for (const auto& existing : outTopics) {
+        if (existing == realTopic) { exists = true; break; }
+      }
+      if (!exists) outTopics.push_back(realTopic);
+    }
+    if (!obj.children.empty()) collectTopics(obj.children, outTopics);
+  }
+}
+
+static bool screenUsesTopic(const std::vector<ScreenObject>& objects, const String& topic) {
+  for (const auto& obj : objects) {
+    if (!obj.properties.topic.isEmpty() && stripJsonPath(obj.properties.topic) == topic) return true;
+    if (!obj.children.empty() && screenUsesTopic(obj.children, topic)) return true;
+  }
+  return false;
+}
+
+static void subscribeToAllTopics() {
+  if (topicsSubscribed || !projectLoader.isLoaded()) return;
+  const ProjectConfig& project = projectLoader.getProject();
+  std::vector<String> topics;
+  for (const auto& screen : project.screens) collectTopics(screen.objects, topics);
+  if (!topics.empty()) mqttClient.subscribeToKeys(topics);
+  topicsSubscribed = true;
+  Serial.printf("[mqtt] subscribed to %d project topic(s)\n", (int)topics.size());
+}
+
+static String deviceTopic(const char* leaf) {
+  return String(TOPIC_PREFIX) + "/" + mqttClient.getClientId() + "/" + leaf;
+}
+
+static void publishHello() {
+  JsonDocument doc;
+  doc["deviceId"] = DEVICE_ID;
+  doc["firmwareVersion"] = FIRMWARE_VERSION;
+  // ddfVersion+url are what make this device show up under "Announced
+  // Devices" at all - without them the designer treats it as older firmware
+  // that doesn't publish a DDF and skips it. Still the ddfVersion contract
+  // rather than the DDF content hash the designer is moving to, on purpose:
+  // its auto-discovery doesn't understand a hash yet (decision 3 of the
+  // 2026-08-19 port grilling; DeviceInfo.h's DDF_VERSION says the same).
+  doc["ddfVersion"] = DDF_VERSION;
+  doc["url"] = "http://" + WiFi.localIP().toString() + "/ddf.zip";
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(deviceTopic("hello"), payload, true);
+  Serial.println("[mqtt] published hello");
+}
+
+static void publishDeployStatus(const String& deployId, const String& state, const String& error, int percent) {
+  JsonDocument doc;
+  doc["deployId"] = deployId;
+  doc["state"] = state;
+  if (!error.isEmpty()) doc["error"] = error;
+  // percent is optional per the contract, and the deploy dialog reads
+  // `status.percent ?? 0` - never publishing one leaves its progress bar
+  // visibly stuck at 0 for the whole deploy even when it works.
+  if (percent >= 0) doc["percent"] = percent;
+  String payload;
+  serializeJson(doc, payload);
+  mqttClient.publish(deviceTopic("deploy-status"), payload, false);
+}
+
+// The deploy topic is retained, so the broker redelivers the last trigger on
+// every fresh subscribe - which happens on every reconnect, including the
+// one caused by the reboot at the end of a successful deploy. Without
+// clearing it, a deploy loops forever.
+static void clearDeployTrigger() {
+  mqttClient.publish(deviceTopic("deploy"), "", true);
+}
+
+static void onMqttMessage(const String& topic, const String& payload) {
+  // Device-level control topic, routed to DeployManager rather than falling
+  // through to setTopicValue() below - which would otherwise try to display
+  // the deploy JSON as a value.
+  //
+  // Deliberately deferred to loop(), not handled here: this callback runs
+  // nested inside PubSubClient's own packet-parsing call stack, and a deploy
+  // publishes status ~100 times in a row. PubSubClient shares one buffer
+  // between publishing and incoming-packet parsing, so those publishes look
+  // fine locally while a subscriber watching the broker never sees them.
+  if (topic == deviceTopic("deploy")) {
+    pendingDeployPayload = payload;
+    pendingDeploy = true;
+    return;
+  }
+
+  if (!projectLoader.isLoaded()) return;
+  projectLoader.setTopicValue(topic, payload);
+
+  const ProjectConfig& project = projectLoader.getProject();
+  if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
+  if (!screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
+  renderScreenIndex(currentScreenIndex);
+}
+
+static void setupMqtt() {
+  // Read straight from the NVS namespace this board's own setup UI writes
+  // (see loadMqttConfig above) rather than the M5 Dial's LittleFS
+  // ConfigManager - the AP captive portal that replaces that UI in step 5
+  // writes the same namespace, so this call site does not change again.
+  prefs.begin("mqtt", true);
+  String host = prefs.getString("host", "");
+  uint16_t port = (uint16_t)prefs.getString("port", "1883").toInt();
+  String user = prefs.getString("user", "");
+  String pass = prefs.getString("pass", "");
+  prefs.end();
+
+  if (host.isEmpty()) {
+    Serial.println("[mqtt] no broker configured - skipping");
+    return;
+  }
+  if (port == 0) port = 1883;
+
+  mqttClient.configure(host, port, user, pass);
+  deployManager.setPublishStatusHandler(publishDeployStatus);
+  deployManager.setClearTriggerHandler(clearDeployTrigger);
+  // Subscribed here rather than from the connected callback: connect()
+  // replays its own subscription list on every reconnect, so queueing it
+  // once up front covers every later connection too.
+  mqttClient.subscribe(deviceTopic("deploy"));
+  mqttClient.setConnectedCallback([]() { publishHello(); });
+  mqttClient.setCallback(onMqttMessage);
+  mqttClient.connect();
+  Serial.printf("[mqtt] configured %s:%u as clientId %s\n", host.c_str(), port, mqttClient.getClientId().c_str());
+}
 
 // Renders one screen index in full and pushes it through the compositor.
 // Always a complete render - never anything that depends on what was on
@@ -612,6 +765,11 @@ static void canvasSmokeTest() {
   // An installed project replaces the test pattern entirely; without one the
   // pattern stays up as the bring-up display.
   loadAndRenderProject();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    setupMqtt();
+    subscribeToAllTopics();
+  }
 }
 #endif
 
@@ -709,6 +867,18 @@ void setup() {
 void loop() {
 #if CANVAS_SMOKETEST
   testInterface.handleClient();
+  mqttClient.loop();
+  subscribeToAllTopics();
+
+  // Done here, after mqttClient.loop() has fully returned and PubSubClient's
+  // own call stack has unwound - see onMqttMessage()'s comment on why this
+  // cannot run inside the callback.
+  if (pendingDeploy) {
+    pendingDeploy = false;
+    String payload = pendingDeployPayload;
+    pendingDeployPayload = "";
+    deployManager.handleDeployMessage(payload);
+  }
 #else
   // Guarded because the smoke test returns from setup() before buildUi(),
   // so every UI object this touches is still null.

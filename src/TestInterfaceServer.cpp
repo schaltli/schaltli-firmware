@@ -3,6 +3,7 @@
 #include "DeviceInfo.h"
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
+#include <Preferences.h>
 
 bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   if (serverRunning_) return true;
@@ -12,6 +13,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
   webServer_->on("/ddf.zip", HTTP_GET, [this]() { this->handleDdfZip(); });
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
+  webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
@@ -53,6 +55,33 @@ void TestInterfaceServer::handleScreenSwitch() {
   String output;
   serializeJson(doc, output);
   webServer_->send(200, "application/json", output);
+}
+
+// Writes the same NVS namespace this board's own setup UI uses, so a HIL
+// orchestrator can point the device at a test broker without a human
+// touching the screen. Applied on the next boot, matching how the settings
+// are read (setupMqtt() in main.cpp reads them once at startup).
+void TestInterfaceServer::handleMqttConfigure() {
+  if (!webServer_->hasArg("host") || !webServer_->hasArg("port")) {
+    sendJSONResponse(false, "Missing MQTT host or port");
+    return;
+  }
+  int port = webServer_->arg("port").toInt();
+  if (port <= 0 || port > 65535) {
+    sendJSONResponse(false, "Invalid port number");
+    return;
+  }
+
+  Preferences prefs;
+  prefs.begin("mqtt", false);
+  prefs.putString("protocol", webServer_->hasArg("protocol") ? webServer_->arg("protocol") : String("mqtt"));
+  prefs.putString("host", webServer_->arg("host"));
+  prefs.putString("port", String(port));
+  prefs.putString("user", webServer_->arg("username"));
+  prefs.putString("pass", webServer_->arg("password"));
+  prefs.end();
+
+  sendJSONResponse(true, "MQTT configuration saved - reboot to apply");
 }
 
 void TestInterfaceServer::handleProjectUploadChunk() {
