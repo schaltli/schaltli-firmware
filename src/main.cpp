@@ -34,7 +34,21 @@
 #include <Preferences.h>
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
+#include <U8g2_for_Adafruit_GFX.h>
 #include "driver/rtc_io.h"
+#include "CanvasPresenter.h"
+#include "TestInterfaceServer.h"
+
+// Step 1 of the 2026-08-19 stack port: prove the compositor seam
+// (ClippedCanvas16 -> LVGL image -> panel) on real hardware before any of
+// the ported project stack lands on top of it. Set to 0 to get the existing
+// WiFi/MQTT setup UI back.
+//
+// Both this flag and canvasSmokeTest() are scaffolding with a known end
+// date: step 3 replaces the test pattern with ColorScreenRenderer driving
+// the same canvas, and step 5 replaces the setup UI below with the AP
+// captive portal ported from the M5 Dial. Neither survives the milestone.
+#define CANVAS_SMOKETEST 1
 
 // LCD (ST77916, QSPI)
 static const int8_t LCD_CS = 14;
@@ -463,6 +477,85 @@ static void buildUi(int networkCount) {
   lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
 }
 
+#if CANVAS_SMOKETEST
+static CanvasPresenter canvasPresenter(SCREEN_SIZE, SCREEN_SIZE);
+static U8G2_FOR_ADAFRUIT_GFX smokeTestU8g2;
+static TestInterfaceServer testInterface;
+
+// Exercises exactly the parts of the seam that could be silently wrong,
+// rather than just proving "something appeared":
+//  - buffer lands in PSRAM (logged by begin())
+//  - LVGL reads GFXcanvas16's bytes as the same colors we wrote (the
+//    zero-copy assumption - a swap mismatch shows as wrong colors, not a
+//    crash, so the corner swatches are named in the serial log to compare
+//    against)
+//  - U8g2_for_Adafruit_GFX rasterizes into the canvas at all, which is the
+//    pixel-critical path the whole designer-parity effort rests on
+//  - ClippedCanvas16 actually clips - the one behavior this class exists
+//    for, and the easiest to lose in a port
+//  - the round bezel's real safe area, drawn as a circle at r=180
+static void canvasSmokeTest() {
+  if (!canvasPresenter.begin()) {
+    Serial.println("[smoketest] canvas unavailable - nothing to draw");
+    return;
+  }
+  ClippedCanvas16& canvas = canvasPresenter.canvas();
+
+  canvas.fillScreen(0x0000);
+  // Corner swatches, named here so a color-order mismatch is identifiable
+  // from the serial log instead of guessed at.
+  Serial.println("[smoketest] swatches: TL=red TR=green BL=blue BR=white");
+  canvas.fillRect(10, 10, 60, 60, 0xF800);   // red
+  canvas.fillRect(290, 10, 60, 60, 0x07E0);  // green
+  canvas.fillRect(10, 290, 60, 60, 0x001F);  // blue
+  canvas.fillRect(290, 290, 60, 60, 0xFFFF); // white
+
+  // The inscribed safe area every layout on this board has to respect.
+  canvas.drawCircle(SCREEN_SIZE / 2, SCREEN_SIZE / 2, 179, 0x7BEF);
+
+  smokeTestU8g2.begin(canvas);
+  // setFont() silently resets the font mode on every call (a u8g2 quirk
+  // that cost a real bug on the e-paper firmware: white-on-transparent
+  // labels rendered as solid blocks). Re-assert transparency *after* every
+  // setFont, never once at startup.
+  smokeTestU8g2.setFont(u8g2_font_helvR18_tf);
+  smokeTestU8g2.setFontMode(1);
+  smokeTestU8g2.setForegroundColor(0xFFFF);
+  smokeTestU8g2.setCursor(100, 150);
+  smokeTestU8g2.print("ScreenBee");
+
+  smokeTestU8g2.setFont(u8g2_font_helvR12_tf);
+  smokeTestU8g2.setFontMode(1);
+  smokeTestU8g2.setForegroundColor(0xFFE0);
+  smokeTestU8g2.setCursor(100, 180);
+  smokeTestU8g2.print("canvas -> lvgl");
+
+  // Clip proof: the same string drawn twice at the same place, the second
+  // time clipped to a 90px-wide window. If clipping is broken the two
+  // overlap into an unreadable smear instead of the right half being cut.
+  canvas.fillRect(100, 200, 180, 26, 0x2104);
+  smokeTestU8g2.setFont(u8g2_font_helvR12_tf);
+  smokeTestU8g2.setFontMode(1);
+  smokeTestU8g2.setForegroundColor(0x07FF);
+  canvas.setClip(100, 200, 90, 26);
+  smokeTestU8g2.setCursor(104, 219);
+  smokeTestU8g2.print("clipped-to-here");
+  canvas.clearClip();
+
+  canvasPresenter.present();
+
+  // With this up, the rendered canvas stops being something only a human
+  // looking at the panel can check.
+  if (WiFi.status() == WL_CONNECTED) {
+    testInterface.begin(canvas);
+    Serial.printf("[smoketest] snapshot: http://%s/snapshot.bmp   ddf: http://%s/ddf.zip\n",
+                  WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
+  } else {
+    Serial.println("[smoketest] no WiFi - test interface not started");
+  }
+}
+#endif
+
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -533,6 +626,12 @@ void setup() {
   indev_drv.long_press_time = 200;
   lv_indev_drv_register(&indev_drv);
 
+#if CANVAS_SMOKETEST
+  canvasSmokeTest();
+  Serial.println("Canvas smoke test rendered.");
+  return;
+#endif
+
   buildUi(networkCount);
 
   if (autoConnected) {
@@ -544,7 +643,13 @@ void setup() {
 }
 
 void loop() {
+#if CANVAS_SMOKETEST
+  testInterface.handleClient();
+#else
+  // Guarded because the smoke test returns from setup() before buildUi(),
+  // so every UI object this touches is still null.
   pollWifiConnect();
+#endif
 
   // LV_TICK_CUSTOM (LVGL calling Arduino's millis() from a .c translation
   // unit) never worked in this build - lv_tick_get() stayed at 0 even after

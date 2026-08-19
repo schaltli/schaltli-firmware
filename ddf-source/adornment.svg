@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Adornment for the Waveshare ESP32-S3-Knob-Touch-LCD-1.8, authored
+  2026-08-19 from a photo of the real unit: a plain blue ring case with an
+  additional black ring between the case and the round screen.
+
+  Hand-authored rather than extracted from the M5 Dial's Inkscape output -
+  the geometry here is two concentric discs plus two arrows, and the
+  conventions this file must satisfy are only: a rect whose id is "screen",
+  any covers whose ids start with "offscreen", and elements whose ids start
+  with "button" carrying an inkscape:label (see the designer repo's
+  DEVICE_GUIDE.md, "Building the adornment SVG").
+
+  CAUTION, learned the hard way while writing this file: the designer parses
+  this SVG with regexes, not an XML parser, so it happily matches inside
+  comments too. An earlier draft of this very comment spelled the screen
+  rect out as literal markup and the parser picked *that* up instead of the
+  real element, failing with "screen rect missing x attribute". Never write
+  tag syntax in a comment here - describe elements in prose, as above.
+
+  Geometry: centre (270,270). Screen is the 360x360 square at (90,90);
+  the panel itself is round, so only the r=180 inscribed circle can ever
+  show anything - the square's corners are masked by offscreen-0. Black
+  ring r=180..200, blue case r=200..270. The case radius is deliberately
+  larger than the screen square's own corner distance (254.6) so no corner
+  sticks out past the case.
+
+  Only two buttons, unlike the M5 Dial's five: this knob has no press-
+  modifier, and turning is reserved for adjusting values rather than
+  navigating (screen switching is a swipe-up). See the designer repo's
+  docs/device-contract.md and the 2026-08-19 port decisions.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="540" height="540" viewBox="0 0 540 540" version="1.1">
+
+  <!-- Blue ring case -->
+  <circle cx="270" cy="270" r="270"
+          style="fill:#1e7fd4;stroke:none"
+          id="case-body"
+          inkscape:label="case" />
+
+  <!-- Black ring between case and screen -->
+  <circle cx="270" cy="270" r="200"
+          style="fill:#101014;stroke:none"
+          id="case-inner-ring"
+          inkscape:label="inner ring" />
+
+  <!-- The screen area. Position and size are read straight off this rect
+       (extractScreenRect), so it is never hand-transcribed into
+       device.json. -->
+  <rect x="90" y="90" width="360" height="360"
+        style="fill:none;stroke:none"
+        id="screen"
+        inkscape:label="screen" />
+
+  <!-- The corners of that square the round panel cannot display. The fill
+       is replaced at render time by the editor's own container background
+       (readOffscreenColor), so what is declared here is irrelevant - hence
+       fill:none, matching the M5 Dial's cover. -->
+  <path d="M 90 90 H 450 V 450 H 90 Z M 90 270 A 180 180 0 1 0 450 270 A 180 180 0 1 0 90 270 Z"
+        fill-rule="evenodd"
+        style="display:inline;fill:none;fill-opacity:1;stroke:none"
+        id="offscreen-0"
+        inkscape:label="offscreen-0" />
+
+  <!-- Rotation inputs. Filled (transparent) rather than stroked so the
+       designer's Path2D hit-testing has real area to hit - same reason the
+       M5 Dial's arrows use fill-opacity:0. ids must match exactly what the
+       firmware uses to key button actions. -->
+  <path d="M 73.99 374.22 A 222 222 0 0 0 186.84 475.83 L 191.33 464.71 L 241.36 503.25 L 172.60 511.07 L 177.10 499.94 A 248 248 0 0 1 51.03 386.43 Z"
+        style="fill:#d40000;stroke:#000000;fill-opacity:0"
+        id="button-0"
+        inkscape:label="Rotate Left" />
+  <path d="M 466.01 374.22 A 222 222 0 0 1 353.16 475.83 L 348.67 464.71 L 298.64 503.25 L 367.40 511.07 L 362.90 499.94 A 248 248 0 0 0 488.97 386.43 Z"
+        style="fill:#d40000;stroke:#000000;fill-opacity:0"
+        id="button-1"
+        inkscape:label="Rotate Right" />
+</svg>

@@ -1,0 +1,85 @@
+{
+  "ddfVersion": "1.0",
+  "systemGeneration": "1.0",
+  "device": {
+    "id": "waveshare-knob-1v8",
+    "name": "Waveshare Knob-Touch LCD 1.8",
+    "firmwareRepo": "screenbee-waveshare-1v8"
+  },
+  "screen": {
+    "width": 360,
+    "height": 360,
+    "colorDepth": "24bit"
+  },
+  "adornment": {
+    "svgPath": "adornment.svg"
+  },
+  "fonts": [
+    {
+      "id": "font-helvR08",
+      "displayName": "Helvetica 8px",
+      "internalName": "u8g2_font_helvR08_tf",
+      "file": "fonts/helvR08.bdf",
+      "size": 12,
+      "ascent": 10,
+      "descent": 2
+    },
+    {
+      "id": "font-helvR12",
+      "displayName": "Helvetica 12px",
+      "internalName": "u8g2_font_helvR12_tf",
+      "file": "fonts/helvR12.bdf",
+      "size": 18,
+      "ascent": 14,
+      "descent": 4
+    },
+    {
+      "id": "font-helvR18",
+      "displayName": "Helvetica 18px",
+      "internalName": "u8g2_font_helvR18_tf",
+      "file": "fonts/helvR18.bdf",
+      "size": 27,
+      "ascent": 22,
+      "descent": 5
+    },
+    {
+      "id": "font-helvR24",
+      "displayName": "Helvetica 24px",
+      "internalName": "u8g2_font_helvR24_tf",
+      "file": "fonts/helvR24.bdf",
+      "size": 35,
+      "ascent": 28,
+      "descent": 7
+    }
+  ],
+  "supportedObjectTypes": [
+    "MqttDataField",
+    "MQTTIconField",
+    "label",
+    "level-indicator",
+    "icon",
+    "line",
+    "box",
+    "SoftwareButton",
+    "Switch",
+    "MqttDataLine",
+    "tab-control",
+    "panel"
+  ],
+  "supportsSoftwareButtons": true,
+  "deviceActions": [
+    "showScreenMenu"
+  ],
+  "testInterface": {
+    "uploadUrl": "http://{ip}/api/project",
+    "uploadMethod": "POST",
+    "uploadContentType": "multipart-zip",
+    "screenSwitchUrl": "http://{ip}/api/screen",
+    "screenSwitchMethod": "POST",
+    "screenSwitchBody": "form-urlencoded",
+    "snapshotUrl": "http://{ip}/snapshot.bmp",
+    "snapshotFormat": "bmp",
+    "postRenderSettleMs": 0
+  },
+  "needsPageIconsInSize": 40
+}
