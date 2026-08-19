@@ -1,61 +1,52 @@
-// First LVGL bring-up: WiFi + MQTT setup screen on the Waveshare
-// ESP32-S3-Knob-Touch-LCD-1.8.
+// ScreenBee firmware for the Waveshare ESP32-S3-Knob-Touch-LCD-1.8.
 //
-// Display: ST77916 over QSPI (Arduino_GFX). Touch: CST816 over I2C, read
-// with a minimal hand-rolled driver (protocol is simple enough that no
-// library dependency is worth adding). Pin reference: see README.md.
+// Boot flow: bring up the panel and LVGL, then try saved WiFi. On success
+// the device connects to MQTT, loads whatever project is installed, renders
+// it, and serves the test interface. With no usable credentials it raises
+// its own access point and serves the setup portal instead.
 //
-// Flow: scan + pick a WiFi network, enter its password, connect. Once
-// connected, WiFi credentials are saved to NVS (Preferences) so the next
-// boot auto-reconnects without asking again, the SSID/password UI is
-// replaced with a green-checkmark "<ssid> [edit]" status (tap edit to go
-// back and pick a different network), and MQTT broker fields appear
-// below it - protocol/host/port on one row, then username/password (icon
-// prefixes: LVGL ships no literal user/lock glyphs, so LV_SYMBOL_LIST and
-// LV_SYMBOL_EYE_OPEN - visible password - are the closest fits) - the
-// same fields as screenbee-m5dial's WiFiSetupServerHTML.h AP-setup page,
-// saved to their own NVS namespace on "Save".
+// Setup is a browser captive portal on the device's own AP, NOT an on-screen
+// keyboard. This board *did* have a working touch keyboard (built and
+// hardware-verified 2026-08-18, see the git history) and it was deliberately
+// removed on 2026-08-19: text entry is only ever needed at setup time, and a
+// browser form needs no LVGL, no touch and no encoder logic, so the same
+// flow works unchanged on every ScreenBee device instead of each board
+// growing its own input UI. The cost is one more hop for the user; the gain
+// is one implementation instead of N.
 //
-// The default on-screen keyboard's full-width layout clips against the
-// round bezel (its rectangular button grid reaches into the square
-// framebuffer's corners, which sit outside the visible circle). Tried a
-// custom knob-driven character picker (rotate to scroll, tap to insert)
-// as an alternative, but tapping individual letters turned out much
-// faster to use than rotating through 94 characters one at a time - so
-// text entry uses the standard keyboard after all, just sized down
-// (260x150) to fit entirely inside the circle's inscribed safe area
-// instead of spanning the full square framebuffer. Whichever field is
-// being edited temporarily moves to a shared spot above the keyboard
-// (see fieldKeyboardCb) so it stays visible instead of being covered.
+// LVGL stays, but only as a compositor: ColorScreenRenderer draws
+// pixel-perfect into its own RGB565 canvas exactly as on the M5 Dial, and
+// LVGL just shows that buffer (see CanvasPresenter). That keeps animated
+// backgrounds and screen transitions composable later without touching the
+// renderer.
+//
+// Board quirks that still bite, in case they resurface: the ST77916 needs
+// the *150* init table (not the library default), a stale
+// rtc_gpio_hold_en() from an old deep-sleep experiment can latch LCD/touch
+// reset low across reflashes, the CST816 needs no reset pulse but does need
+// one write of 0x00 to register 0x00, and LV_TICK_CUSTOM never worked here
+// so the tick is driven manually from loop().
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Wire.h>
-#include <Preferences.h>
+#include <LittleFS.h>
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
 #include <U8g2_for_Adafruit_GFX.h>
-#include <LittleFS.h>
 #include "driver/rtc_io.h"
+
 #include "CanvasPresenter.h"
+#include "CanvasDisplayAdapter.h"
+#include "NvsConfigStorage.h"
 #include "TestInterfaceServer.h"
-#include "project/ProjectLoader.h"
-#include "project/ColorScreenRenderer.h"
-#include "project/ColorAssetLoader.h"
+#include "WiFiSetupServer.h"
 #include "MqttClient.h"
 #include "DeployManager.h"
 #include "DeviceInfo.h"
-
-// Step 1 of the 2026-08-19 stack port: prove the compositor seam
-// (ClippedCanvas16 -> LVGL image -> panel) on real hardware before any of
-// the ported project stack lands on top of it. Set to 0 to get the existing
-// WiFi/MQTT setup UI back.
-//
-// Both this flag and canvasSmokeTest() are scaffolding with a known end
-// date: step 3 replaces the test pattern with ColorScreenRenderer driving
-// the same canvas, and step 5 replaces the setup UI below with the AP
-// captive portal ported from the M5 Dial. Neither survives the milestone.
-#define CANVAS_SMOKETEST 1
+#include "project/ProjectLoader.h"
+#include "project/ColorScreenRenderer.h"
+#include "project/ColorAssetLoader.h"
 
 // LCD (ST77916, QSPI)
 static const int8_t LCD_CS = 14;
@@ -81,44 +72,44 @@ Arduino_GFX *gfx = new Arduino_ST77916(
     bus, LCD_RST, 0 /* rotation */, true /* IPS */, SCREEN_SIZE, SCREEN_SIZE,
     0, 0, 0, 0, st77916_150_init_operations, sizeof(st77916_150_init_operations));
 
-static Preferences prefs;
-
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *lvBuf1;
-static lv_obj_t *headerRow;
-static lv_obj_t *connCheckLabel;
-static lv_obj_t *titleLabel;
-static lv_obj_t *connEditBtn;
-static lv_obj_t *ssidDropdown;
-static lv_obj_t *passwordArea;
-static lv_obj_t *connectBtn;
-static lv_obj_t *statusLabel;
-static lv_obj_t *keyboard;
-static lv_obj_t *mqttRow;
-static lv_obj_t *mqttProtocolDropdown;
-static lv_obj_t *mqttHostArea;
-static lv_obj_t *mqttPortArea;
-static lv_obj_t *mqttUserArea;
-static lv_obj_t *mqttPassArea;
-static lv_obj_t *mqttSaveBtn;
 
-static String currentSsid;
-static String currentPassword;
+static CanvasPresenter canvasPresenter(SCREEN_SIZE, SCREEN_SIZE);
+static CanvasDisplayAdapter displayAdapter(canvasPresenter);
+static NvsConfigStorage configStorage;
+static WiFiSetupServer wifiSetupServer(displayAdapter, configStorage);
+static TestInterfaceServer testInterface;
+static ProjectLoader projectLoader;
+static ColorScreenRenderer *screenRenderer = nullptr;
+static MqttClient mqttClient;
+static DeployManager deployManager;
 
-// Matches the official Waveshare demo (cst816.cpp/Touch_Init): no reset
-// pin is ever driven - just switch the chip to normal mode over I2C.
+static int currentScreenIndex = 0;
+static bool topicsSubscribed = false;
+static bool setupModeActive = false;
+// Deploy work is deferred out of the MQTT callback - see onMqttMessage().
+static bool pendingDeploy = false;
+static String pendingDeployPayload;
+
+static bool renderScreenIndex(int index);
+
+// ---------------------------------------------------------------- display
+
+// Matches the official Waveshare demo (cst816.cpp/Touch_Init): no reset pin
+// is ever driven - just switch the chip to normal mode over I2C. Without
+// that one write the chip ACKs and returns an all-zero block forever, which
+// looks exactly like a dead sensor.
 static void cst816Init() {
-  uint8_t normalMode = 0x00;
   Wire.beginTransmission(CST816_ADDR);
   Wire.write(0x00);
-  Wire.write(normalMode);
+  Wire.write((uint8_t)0x00);
   Wire.endTransmission(true);
 }
 
-// CST816 register map: read 7 bytes from 0x00. Bytes 3-4 = X, bytes 5-6 =
-// Y (matches the official Waveshare demo). Byte 2 is documented there as
-// "finger count" but stayed 0 during clearly-active drags on this unit -
-// byte 1 (0 when idle, nonzero while touched) is what's actually reliable.
+// CST816 register map: read 7 bytes from 0x00. Bytes 3-4 = X, 5-6 = Y.
+// Byte 2 is documented as "finger count" but stayed 0 during clearly-active
+// drags on this unit; byte 1 (0 idle, nonzero touched) is what is reliable.
 static bool cst816Read(int16_t *x, int16_t *y) {
   Wire.beginTransmission(CST816_ADDR);
   Wire.write(0x00);
@@ -127,10 +118,6 @@ static bool cst816Read(int16_t *x, int16_t *y) {
 
   uint8_t buf[7];
   for (uint8_t &b : buf) b = Wire.read();
-
-  // Empirically buf[1] (register 0x01) is 0 when idle and nonzero while
-  // touched - more reliable in practice than buf[2] ("finger count" per
-  // the official demo, which stayed 0 during clearly-active drags here).
   if (buf[1] == 0) return false;
 
   *x = ((buf[3] & 0x0F) << 8) | buf[4];
@@ -156,366 +143,67 @@ static void dispFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *
   lv_disp_flush_ready(disp);
 }
 
-// Shared long-press-to-edit handler for every text field (WiFi password,
-// MQTT host/port/username/password). A short tap still just moves the
-// cursor via lv_textarea's own click handling; a long-press is the
-// explicit "start editing" gesture that opens the keyboard and moves the
-// field to a shared spot above it so it stays visible. On close, the
-// field returns to its own resting position (passed in as user_data,
-// since different fields rest at different y offsets).
-static void fieldKeyboardCb(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  lv_obj_t *ta = lv_event_get_target(e);
-  lv_coord_t restY = (lv_coord_t)(intptr_t)lv_event_get_user_data(e);
+// ---------------------------------------------------------------- project
 
-  if (code == LV_EVENT_LONG_PRESSED) {
-    lv_keyboard_set_textarea(keyboard, ta);
-    lv_obj_clear_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(ta);
-    lv_obj_align(ta, LV_ALIGN_CENTER, 0, -95);
-  } else if (code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-    lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_align(ta, LV_ALIGN_TOP_MID, 0, restY);
-  }
+// Always a complete render, never anything depending on what was on screen
+// before, so repeated snapshots of one index are byte-stable - the property
+// pixel-diffing against the designer rests on.
+static bool renderScreenIndex(int index) {
+  if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
+  const ProjectConfig &project = projectLoader.getProject();
+  if (index < 0 || index >= (int)project.screens.size()) return false;
+  if (!screenRenderer->renderScreen(index)) return false;
+  currentScreenIndex = index;
+  canvasPresenter.present();
+  // present() only marks the area dirty; pump LVGL so an HTTP caller that
+  // snapshots straight after POST /api/screen sees the new frame rather than
+  // the previous one - a race that would look exactly like a rendering bug.
+  lv_timer_handler();
+  return true;
 }
 
-// Same idea as fieldKeyboardCb, but for mqttHostArea/mqttPortArea, which
-// live inside the mqttRow flex container - a manual lv_obj_align there
-// would fight the flex layout engine's own positioning and likely get
-// clipped to the (small, auto-sized) row. Reparenting to the screen for
-// the duration of the edit sidesteps that; flex recomputes its position
-// automatically when it's reparented back into mqttRow on close.
-static void mqttRowFieldKeyboardCb(lv_event_t *e) {
-  lv_event_code_t code = lv_event_get_code(e);
-  lv_obj_t *ta = lv_event_get_target(e);
-
-  if (code == LV_EVENT_LONG_PRESSED) {
-    lv_keyboard_set_textarea(keyboard, ta);
-    lv_obj_clear_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_parent(ta, lv_scr_act());
-    lv_obj_move_foreground(ta);
-    lv_obj_align(ta, LV_ALIGN_CENTER, 0, -95);
-  } else if (code == LV_EVENT_DEFOCUSED || code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
-    lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_parent(ta, mqttRow);
-  }
-}
-
-static void saveWifiCredentials(const String &ssid, const String &password) {
-  prefs.begin("wifi", false);
-  prefs.putString("ssid", ssid);
-  prefs.putString("pass", password);
-  prefs.end();
-  Serial.println("WiFi credentials saved");
-}
-
-static bool loadWifiCredentials(String &ssid, String &password) {
-  prefs.begin("wifi", true);
-  ssid = prefs.getString("ssid", "");
-  password = prefs.getString("pass", "");
-  prefs.end();
-  return ssid.length() > 0;
-}
-
-static void loadMqttConfigIntoFields() {
-  prefs.begin("mqtt", true);
-  String protocol = prefs.getString("protocol", "mqtt");
-  String host = prefs.getString("host", "");
-  String port = prefs.getString("port", "");
-  String user = prefs.getString("user", "");
-  String pass = prefs.getString("pass", "");
-  prefs.end();
-
-  lv_dropdown_set_selected(mqttProtocolDropdown, protocol == "mqtts" ? 1 : 0);
-  lv_textarea_set_text(mqttHostArea, host.c_str());
-  lv_textarea_set_text(mqttPortArea, port.c_str());
-  lv_textarea_set_text(mqttUserArea, user.c_str());
-  lv_textarea_set_text(mqttPassArea, pass.c_str());
-}
-
-static void mqttSaveBtnEventCb(lv_event_t *e) {
-  char protocol[8];
-  lv_dropdown_get_selected_str(mqttProtocolDropdown, protocol, sizeof(protocol));
-
-  prefs.begin("mqtt", false);
-  prefs.putString("protocol", protocol);
-  prefs.putString("host", lv_textarea_get_text(mqttHostArea));
-  prefs.putString("port", lv_textarea_get_text(mqttPortArea));
-  prefs.putString("user", lv_textarea_get_text(mqttUserArea));
-  prefs.putString("pass", lv_textarea_get_text(mqttPassArea));
-  prefs.end();
-
-  lv_label_set_text(statusLabel, "MQTT settings saved");
-  Serial.println("MQTT config saved");
-}
-
-static void populateSsidDropdown(int networkCount) {
-  if (networkCount <= 0) {
-    lv_dropdown_set_options(ssidDropdown, "(no networks found)");
+static void loadAndRenderProject() {
+  if (!LittleFS.exists("/PROJECT/project.json")) {
+    Serial.println("[project] none installed yet - deploy one, or POST /api/project");
     return;
   }
-  String options;
-  for (int i = 0; i < networkCount; i++) {
-    options += WiFi.SSID(i);
-    if (i < networkCount - 1) options += "\n";
+  if (!projectLoader.loadProject("/PROJECT/project.json")) {
+    Serial.println("[project] failed to load /PROJECT/project.json");
+    return;
   }
-  lv_dropdown_set_options(ssidDropdown, options.c_str());
-}
+  const ProjectConfig &project = projectLoader.getProject();
+  Serial.printf("[project] loaded \"%s\", %d screen(s)\n", project.name.c_str(), (int)project.screens.size());
 
-// Shows the WiFi setup form again (dropdown/password/connect), hides the
-// "connected" status and MQTT fields. Reached via the edit button next to
-// the green checkmark - lets the user switch to a different network
-// without needing to erase saved credentials first.
-static void switchToSetupUi() {
-  lv_obj_add_flag(connCheckLabel, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(connEditBtn, LV_OBJ_FLAG_HIDDEN);
-  lv_label_set_text(titleLabel, "ScreenBee WiFi Setup");
-
-  lv_obj_add_flag(mqttRow, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(mqttUserArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(mqttPassArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(mqttSaveBtn, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_clear_flag(ssidDropdown, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(passwordArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(connectBtn, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_align(statusLabel, LV_ALIGN_TOP_MID, 0, 225);
-  lv_label_set_text(statusLabel, "");
-
-  Serial.println("Re-scanning WiFi networks...");
-  int networkCount = WiFi.scanNetworks();
-  populateSsidDropdown(networkCount);
-
-  // Restore the previously-entered password (and reselect the current
-  // network if it's still in range) instead of leaving the fields blank -
-  // editing is meant to change to a *different* network, not retype one
-  // that's already connected.
-  lv_textarea_set_text(passwordArea, currentPassword.c_str());
-  for (int i = 0; i < networkCount; i++) {
-    if (WiFi.SSID(i) == currentSsid) {
-      lv_dropdown_set_selected(ssidDropdown, i);
-      break;
-    }
+  // Icon paths are screen-id-based, not content-hashed, so a redeploy can
+  // change what a path's bytes are - the cache must not survive a reload.
+  ColorAssetLoader::clearGrayscaleMaskCache();
+  if (screenRenderer == nullptr) {
+    screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
   }
-}
-
-static void editBtnEventCb(lv_event_t *e) {
-  switchToSetupUi();
-}
-
-// Hides the SSID/password setup widgets, shows a green checkmark + ssid
-// + edit button, and the MQTT broker fields below it (pre-filled from
-// NVS if previously saved).
-static void switchToConnectedUi(const String &ssid) {
-  lv_obj_add_flag(ssidDropdown, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(passwordArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_add_flag(connectBtn, LV_OBJ_FLAG_HIDDEN);
-
-  lv_label_set_text(titleLabel, ssid.c_str());
-  lv_obj_clear_flag(connCheckLabel, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(connEditBtn, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_clear_flag(mqttRow, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(mqttUserArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(mqttPassArea, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_clear_flag(mqttSaveBtn, LV_OBJ_FLAG_HIDDEN);
-
-  lv_obj_align(statusLabel, LV_ALIGN_TOP_MID, 0, 260);
-  lv_label_set_text(statusLabel, "");
-
-  loadMqttConfigIntoFields();
-}
-
-static bool wifiConnecting = false;
-static uint32_t wifiConnectStart = 0;
-static const uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
-
-static void connectBtnEventCb(lv_event_t *e) {
-  char ssid[64];
-  lv_dropdown_get_selected_str(ssidDropdown, ssid, sizeof(ssid));
-  currentSsid = ssid;
-  currentPassword = lv_textarea_get_text(passwordArea);
-
-  lv_label_set_text_fmt(statusLabel, "Connecting to %s...", ssid);
-  WiFi.begin(ssid, currentPassword.c_str());
-  wifiConnecting = true;
-  wifiConnectStart = millis();
-}
-
-// Polled from loop() - WiFi.begin() is async, the actual result (success,
-// wrong password, AP out of range, ...) only shows up in WiFi.status()
-// some time later.
-static void pollWifiConnect() {
-  if (!wifiConnecting) return;
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("WiFi connected, IP=%s\n", WiFi.localIP().toString().c_str());
-    saveWifiCredentials(currentSsid, currentPassword);
-    switchToConnectedUi(currentSsid);
-    wifiConnecting = false;
-  } else if (millis() - wifiConnectStart > WIFI_CONNECT_TIMEOUT_MS) {
-    lv_label_set_text(statusLabel, "Connection failed (timeout)");
-    Serial.println("WiFi connect timed out");
-    wifiConnecting = false;
+  topicsSubscribed = false;
+  if (!renderScreenIndex(0)) {
+    Serial.println("[project] renderScreen(0) failed");
+    return;
   }
+  Serial.println("[project] rendered screen 0");
 }
 
-static void buildUi(int networkCount) {
-  lv_obj_t *scr = lv_scr_act();
+// ------------------------------------------------------------------- mqtt
 
-  // Header row: green checkmark + ssid/title + edit button. In setup
-  // mode only the title ("ScreenBee WiFi Setup") is visible; once
-  // connected the checkmark and edit button appear and the title becomes
-  // the ssid (see switchToConnectedUi/switchToSetupUi).
-  headerRow = lv_obj_create(scr);
-  lv_obj_remove_style_all(headerRow);
-  lv_obj_set_size(headerRow, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_clear_flag(headerRow, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(headerRow, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(headerRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(headerRow, 6, 0);
-  lv_obj_align(headerRow, LV_ALIGN_TOP_MID, 0, 30);
-
-  connCheckLabel = lv_label_create(headerRow);
-  lv_label_set_text(connCheckLabel, LV_SYMBOL_OK);
-  lv_obj_set_style_text_color(connCheckLabel, lv_palette_main(LV_PALETTE_GREEN), 0);
-  lv_obj_add_flag(connCheckLabel, LV_OBJ_FLAG_HIDDEN);
-
-  titleLabel = lv_label_create(headerRow);
-  lv_label_set_text(titleLabel, "ScreenBee WiFi Setup");
-
-  connEditBtn = lv_btn_create(headerRow);
-  lv_obj_set_size(connEditBtn, 34, 34);
-  lv_obj_set_style_pad_all(connEditBtn, 2, 0);  // default button padding was clipping the icon
-  lv_obj_add_event_cb(connEditBtn, editBtnEventCb, LV_EVENT_CLICKED, NULL);
-  lv_obj_t *editIcon = lv_label_create(connEditBtn);
-  lv_label_set_text(editIcon, LV_SYMBOL_EDIT);
-  lv_obj_center(editIcon);
-  lv_obj_add_flag(connEditBtn, LV_OBJ_FLAG_HIDDEN);
-
-  ssidDropdown = lv_dropdown_create(scr);
-  lv_obj_set_width(ssidDropdown, 260);
-  lv_obj_align(ssidDropdown, LV_ALIGN_TOP_MID, 0, 80);
-  populateSsidDropdown(networkCount);
-
-  passwordArea = lv_textarea_create(scr);
-  lv_obj_set_width(passwordArea, 260);
-  lv_textarea_set_one_line(passwordArea, true);
-  lv_textarea_set_password_mode(passwordArea, false);  // visible on purpose
-  lv_textarea_set_placeholder_text(passwordArea, "Password");
-  lv_obj_align(passwordArea, LV_ALIGN_TOP_MID, 0, 130);
-  lv_obj_add_event_cb(passwordArea, fieldKeyboardCb, LV_EVENT_ALL, (void *)(intptr_t)130);
-
-  connectBtn = lv_btn_create(scr);
-  lv_obj_align(connectBtn, LV_ALIGN_TOP_MID, 0, 180);
-  lv_obj_add_event_cb(connectBtn, connectBtnEventCb, LV_EVENT_CLICKED, NULL);
-  lv_obj_t *btnLabel = lv_label_create(connectBtn);
-  lv_label_set_text(btnLabel, "Connect");
-
-  statusLabel = lv_label_create(scr);
-  lv_label_set_text(statusLabel, "");
-  lv_obj_align(statusLabel, LV_ALIGN_TOP_MID, 0, 225);
-
-  // MQTT broker fields (same set as screenbee-m5dial's AP-setup HTML
-  // page: protocol/host/port/username/password) - built now but hidden
-  // until switchToConnectedUi() reveals them.
-  mqttRow = lv_obj_create(scr);
-  lv_obj_remove_style_all(mqttRow);
-  lv_obj_set_size(mqttRow, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-  lv_obj_clear_flag(mqttRow, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_set_flex_flow(mqttRow, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(mqttRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(mqttRow, 4, 0);
-  lv_obj_align(mqttRow, LV_ALIGN_TOP_MID, 0, 80);
-  lv_obj_add_flag(mqttRow, LV_OBJ_FLAG_HIDDEN);
-
-  mqttProtocolDropdown = lv_dropdown_create(mqttRow);
-  lv_dropdown_set_options(mqttProtocolDropdown, "mqtt://\nmqtts://");
-  lv_obj_set_width(mqttProtocolDropdown, 82);
-
-  mqttHostArea = lv_textarea_create(mqttRow);
-  lv_obj_set_width(mqttHostArea, 118);
-  lv_textarea_set_one_line(mqttHostArea, true);
-  lv_textarea_set_placeholder_text(mqttHostArea, "192.168.1.107");
-  lv_obj_add_event_cb(mqttHostArea, mqttRowFieldKeyboardCb, LV_EVENT_ALL, NULL);
-
-  mqttPortArea = lv_textarea_create(mqttRow);
-  lv_obj_set_width(mqttPortArea, 55);
-  lv_textarea_set_one_line(mqttPortArea, true);
-  lv_textarea_set_placeholder_text(mqttPortArea, "1883");
-  lv_obj_add_event_cb(mqttPortArea, mqttRowFieldKeyboardCb, LV_EVENT_ALL, NULL);
-
-  mqttUserArea = lv_textarea_create(scr);
-  lv_obj_set_width(mqttUserArea, 240);
-  lv_textarea_set_one_line(mqttUserArea, true);
-  // LVGL's built-in symbol set has no literal "person" icon - LV_SYMBOL_LIST
-  // is the closest available stand-in.
-  lv_textarea_set_placeholder_text(mqttUserArea, LV_SYMBOL_LIST " Username (optional)");
-  lv_obj_align(mqttUserArea, LV_ALIGN_TOP_MID, 0, 130);
-  lv_obj_add_event_cb(mqttUserArea, fieldKeyboardCb, LV_EVENT_ALL, (void *)(intptr_t)130);
-  lv_obj_add_flag(mqttUserArea, LV_OBJ_FLAG_HIDDEN);
-
-  mqttPassArea = lv_textarea_create(scr);
-  lv_obj_set_width(mqttPassArea, 240);
-  lv_textarea_set_one_line(mqttPassArea, true);
-  lv_textarea_set_password_mode(mqttPassArea, false);  // visible, same as WiFi password
-  // No lock icon in LVGL's default set either - EYE_OPEN doubles as a
-  // "this password is shown in the open" indicator, which is accurate here.
-  lv_textarea_set_placeholder_text(mqttPassArea, LV_SYMBOL_EYE_OPEN " Password (optional)");
-  lv_obj_align(mqttPassArea, LV_ALIGN_TOP_MID, 0, 175);
-  lv_obj_add_event_cb(mqttPassArea, fieldKeyboardCb, LV_EVENT_ALL, (void *)(intptr_t)175);
-  lv_obj_add_flag(mqttPassArea, LV_OBJ_FLAG_HIDDEN);
-
-  mqttSaveBtn = lv_btn_create(scr);
-  lv_obj_align(mqttSaveBtn, LV_ALIGN_TOP_MID, 0, 220);
-  lv_obj_add_event_cb(mqttSaveBtn, mqttSaveBtnEventCb, LV_EVENT_CLICKED, NULL);
-  lv_label_set_text(lv_label_create(mqttSaveBtn), "Save MQTT");
-  lv_obj_add_flag(mqttSaveBtn, LV_OBJ_FLAG_HIDDEN);
-
-  // Sized and positioned to fit inside the round bezel's inscribed safe
-  // area (260x150, centered 45px below screen center - farthest corner
-  // is ~177px from center, just inside the 180px radius) with room left
-  // above it, at y=-95, for whichever field is being edited so it stays
-  // visible instead of being covered by the keyboard.
-  keyboard = lv_keyboard_create(scr);
-  lv_obj_set_size(keyboard, 260, 150);
-  lv_obj_align(keyboard, LV_ALIGN_CENTER, 0, 45);
-  lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
-}
-
-#if CANVAS_SMOKETEST
-static CanvasPresenter canvasPresenter(SCREEN_SIZE, SCREEN_SIZE);
-static U8G2_FOR_ADAFRUIT_GFX smokeTestU8g2;
-static TestInterfaceServer testInterface;
-static ProjectLoader projectLoader;
-static ColorScreenRenderer* screenRenderer = nullptr;
-static int currentScreenIndex = 0;
-static MqttClient mqttClient;
-static DeployManager deployManager;
-static bool topicsSubscribed = false;
-// Deploy work is deferred out of the MQTT callback rather than handled
-// inline - see onMqttMessage() for why that reentrancy matters.
-static bool pendingDeploy = false;
-static String pendingDeployPayload;
-
-static bool renderScreenIndex(int index);
-
-// A topic may carry a "#path.into.json" suffix; subscriptions and
-// comparisons use the bare topic.
-static String stripJsonPath(const String& topicOrPath) {
+// A topic may carry a "#path.into.json" suffix; subscriptions compare bare.
+static String stripJsonPath(const String &topicOrPath) {
   int hashIndex = topicOrPath.indexOf('#');
   return hashIndex == -1 ? topicOrPath : topicOrPath.substring(0, hashIndex);
 }
 
-// Recurses into children so nested objects (tab-control -> panel) don't
+// Recurses into children so nested objects (tab-control -> panel) do not
 // silently miss their subscriptions.
-static void collectTopics(const std::vector<ScreenObject>& objects, std::vector<String>& outTopics) {
-  for (const auto& obj : objects) {
+static void collectTopics(const std::vector<ScreenObject> &objects, std::vector<String> &outTopics) {
+  for (const auto &obj : objects) {
     if (!obj.properties.topic.isEmpty()) {
       String realTopic = stripJsonPath(obj.properties.topic);
       bool exists = false;
-      for (const auto& existing : outTopics) {
+      for (const auto &existing : outTopics) {
         if (existing == realTopic) { exists = true; break; }
       }
       if (!exists) outTopics.push_back(realTopic);
@@ -524,38 +212,38 @@ static void collectTopics(const std::vector<ScreenObject>& objects, std::vector<
   }
 }
 
-static bool screenUsesTopic(const std::vector<ScreenObject>& objects, const String& topic) {
-  for (const auto& obj : objects) {
+static bool screenUsesTopic(const std::vector<ScreenObject> &objects, const String &topic) {
+  for (const auto &obj : objects) {
     if (!obj.properties.topic.isEmpty() && stripJsonPath(obj.properties.topic) == topic) return true;
     if (!obj.children.empty() && screenUsesTopic(obj.children, topic)) return true;
   }
   return false;
 }
 
+static String deviceTopic(const char *leaf) {
+  return String(TOPIC_PREFIX) + "/" + mqttClient.getClientId() + "/" + leaf;
+}
+
 static void subscribeToAllTopics() {
-  if (topicsSubscribed || !projectLoader.isLoaded()) return;
-  const ProjectConfig& project = projectLoader.getProject();
+  if (topicsSubscribed || !projectLoader.isLoaded() || !mqttClient.isConnected()) return;
+  const ProjectConfig &project = projectLoader.getProject();
   std::vector<String> topics;
-  for (const auto& screen : project.screens) collectTopics(screen.objects, topics);
+  for (const auto &screen : project.screens) collectTopics(screen.objects, topics);
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
   Serial.printf("[mqtt] subscribed to %d project topic(s)\n", (int)topics.size());
-}
-
-static String deviceTopic(const char* leaf) {
-  return String(TOPIC_PREFIX) + "/" + mqttClient.getClientId() + "/" + leaf;
 }
 
 static void publishHello() {
   JsonDocument doc;
   doc["deviceId"] = DEVICE_ID;
   doc["firmwareVersion"] = FIRMWARE_VERSION;
-  // ddfVersion+url are what make this device show up under "Announced
+  // ddfVersion+url are what make this device appear under "Announced
   // Devices" at all - without them the designer treats it as older firmware
-  // that doesn't publish a DDF and skips it. Still the ddfVersion contract
-  // rather than the DDF content hash the designer is moving to, on purpose:
-  // its auto-discovery doesn't understand a hash yet (decision 3 of the
-  // 2026-08-19 port grilling; DeviceInfo.h's DDF_VERSION says the same).
+  // that publishes no DDF and skips it. Still ddfVersion rather than the DDF
+  // content hash the designer is moving to, deliberately: its auto-discovery
+  // does not understand a hash yet, and no device should run ahead of a
+  // designer feature that does not exist (see DeviceInfo.h's DDF_VERSION).
   doc["ddfVersion"] = DDF_VERSION;
   doc["url"] = "http://" + WiFi.localIP().toString() + "/ddf.zip";
   String payload;
@@ -564,12 +252,12 @@ static void publishHello() {
   Serial.println("[mqtt] published hello");
 }
 
-static void publishDeployStatus(const String& deployId, const String& state, const String& error, int percent) {
+static void publishDeployStatus(const String &deployId, const String &state, const String &error, int percent) {
   JsonDocument doc;
   doc["deployId"] = deployId;
   doc["state"] = state;
   if (!error.isEmpty()) doc["error"] = error;
-  // percent is optional per the contract, and the deploy dialog reads
+  // Optional per the contract, but the deploy dialog reads
   // `status.percent ?? 0` - never publishing one leaves its progress bar
   // visibly stuck at 0 for the whole deploy even when it works.
   if (percent >= 0) doc["percent"] = percent;
@@ -579,23 +267,21 @@ static void publishDeployStatus(const String& deployId, const String& state, con
 }
 
 // The deploy topic is retained, so the broker redelivers the last trigger on
-// every fresh subscribe - which happens on every reconnect, including the
-// one caused by the reboot at the end of a successful deploy. Without
-// clearing it, a deploy loops forever.
+// every fresh subscribe - including the one after the reboot that ends a
+// successful deploy. Without clearing it, a deploy loops forever.
 static void clearDeployTrigger() {
   mqttClient.publish(deviceTopic("deploy"), "", true);
 }
 
-static void onMqttMessage(const String& topic, const String& payload) {
-  // Device-level control topic, routed to DeployManager rather than falling
-  // through to setTopicValue() below - which would otherwise try to display
-  // the deploy JSON as a value.
+static void onMqttMessage(const String &topic, const String &payload) {
+  // Device-level control topic - routed to DeployManager rather than falling
+  // through to setTopicValue(), which would try to display the deploy JSON.
   //
-  // Deliberately deferred to loop(), not handled here: this callback runs
-  // nested inside PubSubClient's own packet-parsing call stack, and a deploy
-  // publishes status ~100 times in a row. PubSubClient shares one buffer
-  // between publishing and incoming-packet parsing, so those publishes look
-  // fine locally while a subscriber watching the broker never sees them.
+  // Deferred to loop(), not handled here: this callback runs nested inside
+  // PubSubClient's own packet-parsing call stack, and a deploy publishes
+  // status ~100 times. PubSubClient shares one buffer between publishing and
+  // incoming parsing, so those publishes look fine locally while nothing
+  // watching the broker ever sees them.
   if (topic == deviceTopic("deploy")) {
     pendingDeployPayload = payload;
     pendingDeploy = true;
@@ -605,180 +291,84 @@ static void onMqttMessage(const String& topic, const String& payload) {
   if (!projectLoader.isLoaded()) return;
   projectLoader.setTopicValue(topic, payload);
 
-  const ProjectConfig& project = projectLoader.getProject();
+  const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
   if (!screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
   renderScreenIndex(currentScreenIndex);
 }
 
-static void setupMqtt() {
-  // Read straight from the NVS namespace this board's own setup UI writes
-  // (see loadMqttConfig above) rather than the M5 Dial's LittleFS
-  // ConfigManager - the AP captive portal that replaces that UI in step 5
-  // writes the same namespace, so this call site does not change again.
-  prefs.begin("mqtt", true);
-  String host = prefs.getString("host", "");
-  uint16_t port = (uint16_t)prefs.getString("port", "1883").toInt();
-  String user = prefs.getString("user", "");
-  String pass = prefs.getString("pass", "");
-  prefs.end();
-
-  if (host.isEmpty()) {
+static void setupMqtt(const WiFiCredentials &creds) {
+  if (creds.mqttHost.isEmpty()) {
     Serial.println("[mqtt] no broker configured - skipping");
     return;
   }
-  if (port == 0) port = 1883;
-
-  mqttClient.configure(host, port, user, pass);
+  mqttClient.configure(creds.mqttHost, (uint16_t)creds.mqttPort, creds.mqttUsername, creds.mqttPassword);
   deployManager.setPublishStatusHandler(publishDeployStatus);
   deployManager.setClearTriggerHandler(clearDeployTrigger);
   // Subscribed here rather than from the connected callback: connect()
-  // replays its own subscription list on every reconnect, so queueing it
-  // once up front covers every later connection too.
+  // replays its own subscription list on every reconnect, so queueing it once
+  // up front covers every later connection too.
   mqttClient.subscribe(deviceTopic("deploy"));
   mqttClient.setConnectedCallback([]() { publishHello(); });
   mqttClient.setCallback(onMqttMessage);
   mqttClient.connect();
-  Serial.printf("[mqtt] configured %s:%u as clientId %s\n", host.c_str(), port, mqttClient.getClientId().c_str());
+  Serial.printf("[mqtt] %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort, mqttClient.getClientId().c_str());
 }
 
-// Renders one screen index in full and pushes it through the compositor.
-// Always a complete render - never anything that depends on what was on
-// screen before - so repeated snapshots of the same index are byte-stable,
-// which is what makes pixel-diffing against the designer meaningful.
-static bool renderScreenIndex(int index) {
-  if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
-  const ProjectConfig& project = projectLoader.getProject();
-  if (index < 0 || index >= (int)project.screens.size()) return false;
-  if (!screenRenderer->renderScreen(index)) return false;
-  currentScreenIndex = index;
-  canvasPresenter.present();
-  // present() only marks the area dirty; LVGL does the actual flush on its
-  // next timer tick. Pump it here so an HTTP caller that snapshots
-  // immediately after POST /api/screen sees the new frame rather than the
-  // previous one - a race that would look exactly like a rendering bug.
-  lv_timer_handler();
-  return true;
+// ------------------------------------------------------------------- wifi
+
+static void setupWiFi() {
+  WiFiCredentials creds;
+  bool haveCreds = configStorage.loadWiFiCredentials(creds) && !creds.ssid.isEmpty();
+
+  if (haveCreds) {
+    displayAdapter.showLines({"Connecting", "to WiFi...", creds.ssid});
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
+
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 30000) {
+      delay(250);
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+      creds.lastIP = WiFi.localIP().toString();
+      creds.lastRSSI = WiFi.RSSI();
+      configStorage.saveWiFiCredentials(creds);
+      Serial.printf("[wifi] connected: %s (%d dBm)\n", creds.lastIP.c_str(), creds.lastRSSI);
+      setupModeActive = false;
+
+      setupMqtt(creds);
+      loadAndRenderProject();
+      subscribeToAllTopics();
+
+      testInterface.setScreenSwitchHandler(renderScreenIndex);
+      if (testInterface.begin(canvasPresenter.canvas())) {
+        Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());
+      }
+
+      // Nothing installed yet: say so on screen rather than leaving a blank
+      // panel that looks like a failure.
+      if (!projectLoader.isLoaded()) {
+        displayAdapter.showLines({"Ready", creds.lastIP, "no project yet"});
+      }
+      return;
+    }
+    Serial.println("[wifi] connect failed - entering setup mode");
+  }
+
+  setupModeActive = true;
+  wifiSetupServer.start();
 }
 
-// A project uploaded via POST /api/project lands at /PROJECT/project.json
-// and survives reboots, matching the M5 Dial and e-paper convention.
-static void loadAndRenderProject() {
-  if (!LittleFS.exists("/PROJECT/project.json")) {
-    Serial.println("[project] no /PROJECT/project.json yet - upload one via POST /api/project");
-    return;
-  }
-  if (!projectLoader.loadProject("/PROJECT/project.json")) {
-    Serial.println("[project] failed to load /PROJECT/project.json");
-    return;
-  }
-  const ProjectConfig& project = projectLoader.getProject();
-  Serial.printf("[project] loaded \"%s\", %d screen(s)\n", project.name.c_str(), (int)project.screens.size());
-
-  // Icon paths are screen-id-based, not content-hashed, so a redeploy can
-  // change what a given path's bytes are - the cache must not survive a
-  // reload. See ColorAssetLoader::clearGrayscaleMaskCache().
-  ColorAssetLoader::clearGrayscaleMaskCache();
-  if (screenRenderer == nullptr) {
-    screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
-  }
-  if (!renderScreenIndex(0)) {
-    Serial.println("[project] renderScreen(0) failed");
-    return;
-  }
-  Serial.println("[project] rendered screen 0");
-}
-
-// Exercises exactly the parts of the seam that could be silently wrong,
-// rather than just proving "something appeared":
-//  - buffer lands in PSRAM (logged by begin())
-//  - LVGL reads GFXcanvas16's bytes as the same colors we wrote (the
-//    zero-copy assumption - a swap mismatch shows as wrong colors, not a
-//    crash, so the corner swatches are named in the serial log to compare
-//    against)
-//  - U8g2_for_Adafruit_GFX rasterizes into the canvas at all, which is the
-//    pixel-critical path the whole designer-parity effort rests on
-//  - ClippedCanvas16 actually clips - the one behavior this class exists
-//    for, and the easiest to lose in a port
-//  - the round bezel's real safe area, drawn as a circle at r=180
-static void canvasSmokeTest() {
-  if (!canvasPresenter.begin()) {
-    Serial.println("[smoketest] canvas unavailable - nothing to draw");
-    return;
-  }
-  ClippedCanvas16& canvas = canvasPresenter.canvas();
-
-  canvas.fillScreen(0x0000);
-  // Corner swatches, named here so a color-order mismatch is identifiable
-  // from the serial log instead of guessed at.
-  Serial.println("[smoketest] swatches: TL=red TR=green BL=blue BR=white");
-  canvas.fillRect(10, 10, 60, 60, 0xF800);   // red
-  canvas.fillRect(290, 10, 60, 60, 0x07E0);  // green
-  canvas.fillRect(10, 290, 60, 60, 0x001F);  // blue
-  canvas.fillRect(290, 290, 60, 60, 0xFFFF); // white
-
-  // The inscribed safe area every layout on this board has to respect.
-  canvas.drawCircle(SCREEN_SIZE / 2, SCREEN_SIZE / 2, 179, 0x7BEF);
-
-  smokeTestU8g2.begin(canvas);
-  // setFont() silently resets the font mode on every call (a u8g2 quirk
-  // that cost a real bug on the e-paper firmware: white-on-transparent
-  // labels rendered as solid blocks). Re-assert transparency *after* every
-  // setFont, never once at startup.
-  smokeTestU8g2.setFont(u8g2_font_helvR18_tf);
-  smokeTestU8g2.setFontMode(1);
-  smokeTestU8g2.setForegroundColor(0xFFFF);
-  smokeTestU8g2.setCursor(100, 150);
-  smokeTestU8g2.print("ScreenBee");
-
-  smokeTestU8g2.setFont(u8g2_font_helvR12_tf);
-  smokeTestU8g2.setFontMode(1);
-  smokeTestU8g2.setForegroundColor(0xFFE0);
-  smokeTestU8g2.setCursor(100, 180);
-  smokeTestU8g2.print("canvas -> lvgl");
-
-  // Clip proof: the same string drawn twice at the same place, the second
-  // time clipped to a 90px-wide window. If clipping is broken the two
-  // overlap into an unreadable smear instead of the right half being cut.
-  canvas.fillRect(100, 200, 180, 26, 0x2104);
-  smokeTestU8g2.setFont(u8g2_font_helvR12_tf);
-  smokeTestU8g2.setFontMode(1);
-  smokeTestU8g2.setForegroundColor(0x07FF);
-  canvas.setClip(100, 200, 90, 26);
-  smokeTestU8g2.setCursor(104, 219);
-  smokeTestU8g2.print("clipped-to-here");
-  canvas.clearClip();
-
-  canvasPresenter.present();
-
-  // With this up, the rendered canvas stops being something only a human
-  // looking at the panel can check.
-  if (WiFi.status() == WL_CONNECTED) {
-    testInterface.begin(canvas);
-    testInterface.setScreenSwitchHandler(renderScreenIndex);
-    Serial.printf("[test] http://%s/  (snapshot.bmp, ddf.zip, api/screen, api/project)\n",
-                  WiFi.localIP().toString().c_str());
-  } else {
-    Serial.println("[smoketest] no WiFi - test interface not started");
-  }
-
-  // An installed project replaces the test pattern entirely; without one the
-  // pattern stays up as the bring-up display.
-  loadAndRenderProject();
-
-  if (WiFi.status() == WL_CONNECTED) {
-    setupMqtt();
-    subscribeToAllTopics();
-  }
-}
-#endif
+// ------------------------------------------------------------------ entry
 
 void setup() {
   Serial.begin(115200);
   delay(500);
 
   // A previous deep-sleep experiment latched LCD_RST/TOUCH_RST low via
-  // rtc_gpio_hold_en() - that hold survives normal resets/reflashes, so
+  // rtc_gpio_hold_en(); that hold survives normal resets and reflashes, so
   // release it before gfx->begin() tries to pulse the display out of reset.
   rtc_gpio_hold_dis(GPIO_NUM_21);
   rtc_gpio_hold_dis(GPIO_NUM_10);
@@ -790,40 +380,17 @@ void setup() {
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
   cst816Init();
 
-  // Formats on first boot; holds /PROJECT and the staged upload zip.
-  if (!LittleFS.begin(true)) {
-    Serial.println("LittleFS mount failed - project install/load unavailable");
-  }
-
   bool gfxOk = gfx->begin(40000000);
   Serial.printf("gfx->begin() = %s\n", gfxOk ? "true" : "false");
   gfx->fillScreen(RGB565_BLACK);
 
-  WiFi.mode(WIFI_STA);
-
-  String savedSsid, savedPassword;
-  bool haveSavedCreds = loadWifiCredentials(savedSsid, savedPassword);
-  bool autoConnected = false;
-  if (haveSavedCreds) {
-    Serial.printf("Trying saved WiFi: %s\n", savedSsid.c_str());
-    WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
-    uint32_t start = millis();
-    while (millis() - start < 8000 && WiFi.status() != WL_CONNECTED) {
-      delay(200);
-    }
-    autoConnected = (WiFi.status() == WL_CONNECTED);
-    Serial.printf("Auto-reconnect %s\n", autoConnected ? "succeeded" : "failed");
+  // Formats on first boot; holds /PROJECT and the staged upload zip.
+  if (!LittleFS.begin(true)) {
+    Serial.println("LittleFS mount failed - project install/load unavailable");
   }
-
-  int networkCount = 0;
-  if (!autoConnected) {
-    Serial.println("Scanning WiFi networks...");
-    networkCount = WiFi.scanNetworks();
-    Serial.printf("Found %d network(s)\n", networkCount);
-  }
+  configStorage.begin();
 
   lv_init();
-
   size_t bufPixels = SCREEN_SIZE * 60;
   lvBuf1 = (lv_color_t *)heap_caps_malloc(bufPixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
   lv_disp_draw_buf_init(&draw_buf, lvBuf1, NULL, bufPixels);
@@ -840,55 +407,50 @@ void setup() {
   lv_indev_drv_init(&indev_drv);
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchReadCb;
-  // Default long-press time is 400ms; real holds measured on this touch
-  // panel were released around ~225ms (short, imprecise touch reporting),
-  // never crossing that threshold and never firing LV_EVENT_LONG_PRESSED.
-  // 200ms is comfortably under a deliberate hold but still distinguishes
-  // it from a quick cursor-positioning tap.
-  indev_drv.long_press_time = 200;
   lv_indev_drv_register(&indev_drv);
 
-#if CANVAS_SMOKETEST
-  canvasSmokeTest();
-  Serial.println("Canvas smoke test rendered.");
-  return;
-#endif
-
-  buildUi(networkCount);
-
-  if (autoConnected) {
-    currentSsid = savedSsid;
-    switchToConnectedUi(savedSsid);
+  if (!canvasPresenter.begin()) {
+    Serial.println("FATAL: no canvas - nothing can be rendered");
+    return;
   }
 
-  Serial.println("LVGL UI ready.");
+  setupWiFi();
 }
 
 void loop() {
-#if CANVAS_SMOKETEST
+  // LV_TICK_CUSTOM (LVGL calling Arduino's millis() from a .c translation
+  // unit) never worked in this build - lv_tick_get() stayed at 0 even after a
+  // full clean rebuild, so no periodic timer ever ran past the first paint.
+  // Driving the tick manually sidesteps it entirely.
+  lv_tick_inc(5);
+  lv_timer_handler();
+
+  if (setupModeActive) {
+    wifiSetupServer.handleClient();
+    // Reports "nobody ever connected within 2 minutes"; restarting is this
+    // file's decision, not the server's.
+    if (wifiSetupServer.tick()) {
+      Serial.println("[setup] no client connected - restarting");
+      delay(100);
+      ESP.restart();
+    }
+    delay(5);
+    return;
+  }
+
   testInterface.handleClient();
   mqttClient.loop();
   subscribeToAllTopics();
 
-  // Done here, after mqttClient.loop() has fully returned and PubSubClient's
-  // own call stack has unwound - see onMqttMessage()'s comment on why this
-  // cannot run inside the callback.
+  // Run here, after mqttClient.loop() has returned and PubSubClient's own
+  // call stack has unwound - see onMqttMessage() for why this cannot happen
+  // inside the callback.
   if (pendingDeploy) {
     pendingDeploy = false;
     String payload = pendingDeployPayload;
     pendingDeployPayload = "";
     deployManager.handleDeployMessage(payload);
   }
-#else
-  // Guarded because the smoke test returns from setup() before buildUi(),
-  // so every UI object this touches is still null.
-  pollWifiConnect();
-#endif
 
-  // LV_TICK_CUSTOM (LVGL calling Arduino's millis() from a .c translation
-  // unit) never worked in this build - lv_tick_get() stayed at 0 even after
-  // a full clean rebuild. Driving the tick manually sidesteps that entirely.
-  lv_tick_inc(5);
-  lv_timer_handler();
   delay(5);
 }
