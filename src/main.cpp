@@ -47,6 +47,8 @@
 #include "project/ProjectLoader.h"
 #include "project/ColorScreenRenderer.h"
 #include "project/ColorAssetLoader.h"
+#include "ScreenNavigatorOverlay.h"
+#include "RotaryEncoderReader.h"
 
 // LCD (ST77916, QSPI)
 static const int8_t LCD_CS = 14;
@@ -85,6 +87,10 @@ static ColorScreenRenderer *screenRenderer = nullptr;
 static MqttClient mqttClient;
 static DeployManager deployManager;
 
+// Constructed in setup(), not here: it needs the canvas, which does not
+// exist until CanvasPresenter::begin() has allocated it.
+static ScreenNavigatorOverlay *screenMenu = nullptr;
+
 static int currentScreenIndex = 0;
 static bool topicsSubscribed = false;
 static bool setupModeActive = false;
@@ -93,6 +99,7 @@ static bool pendingDeploy = false;
 static String pendingDeployPayload;
 
 static bool renderScreenIndex(int index);
+static void dispatchInput(const char *buttonId);
 
 // ---------------------------------------------------------------- display
 
@@ -160,6 +167,150 @@ static bool renderScreenIndex(int index) {
   // the previous one - a race that would look exactly like a rendering bug.
   lv_timer_handler();
   return true;
+}
+
+// ----------------------------------------------------------- input actions
+
+// One dispatcher for every named input - the knob's two directions, the four
+// swipes, and (later) SoftwareButton taps. They are all just button ids
+// carrying an action, which is the whole point of modelling them that way
+// rather than inventing a second binding system: physical or gesture, the
+// resolution, master-screen inheritance and export baking are already shared.
+//
+// An empty type means nothing is configured, which is a normal state, not an
+// error - most screens bind only some of their inputs.
+static void dispatchButtonAction(const ButtonAction &action) {
+  if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  int count = (int)project.screens.size();
+
+  if (action.type == "next-screen" || action.type == "previous-screen") {
+    if (count == 0) return;
+    int delta = (action.type == "next-screen") ? 1 : -1;
+    renderScreenIndex(((currentScreenIndex + delta) % count + count) % count);
+  } else if (action.type == "goto-screen") {
+    for (int i = 0; i < count; i++) {
+      if (project.screens[i].id == action.targetScreenId) {
+        renderScreenIndex(i);
+        break;
+      }
+    }
+  } else if (action.type == "send-mqtt") {
+    // What the knob is actually for on this board: turning adjusts a value
+    // (temperature, fan, brightness), bound per screen, rather than paging
+    // through screens the way the M5 Dial's encoder does.
+    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+  } else if (action.type == "device-action") {
+    // Actions the *device* offers and the designer only names - declared in
+    // this board's DDF as deviceActions. Unknown ids are skipped and logged,
+    // never an error: a project may legitimately have been built against a
+    // newer device that offers more of them.
+    if (action.deviceActionId == "showScreenMenu") {
+      if (screenMenu) screenMenu->trigger(currentScreenIndex);
+    } else {
+      Serial.printf("[action] unknown device action \"%s\" - skipping\n", action.deviceActionId.c_str());
+    }
+  } else if (action.type == "goto-setup-mode") {
+    setupModeActive = true;
+    wifiSetupServer.startAP();
+  }
+}
+
+// --- gesture and knob input -------------------------------------------
+//
+// Swipes are read straight from the touch driver rather than through LVGL's
+// gesture support: LVGL only reports gestures on the object under the
+// finger, and the rendered screen is one flat image with no LVGL objects in
+// it, so there is nothing for it to attribute a swipe to.
+static const int SWIPE_MIN_DISTANCE = 60;   // px, well past a jittery tap
+static const int SWIPE_MAX_OFF_AXIS = 70;   // px, keeps a diagonal drag from counting
+static const unsigned long SWIPE_MAX_MS = 900;
+
+static bool touchDown = false;
+static int16_t touchStartX = 0, touchStartY = 0;
+static unsigned long touchStartMs = 0;
+static int16_t touchLastX = 0, touchLastY = 0;
+
+// Encoder detents, not raw quadrature steps: the reader counts 4 states per
+// physical click, and dispatching an action four times per detent would fire
+// four MQTT publishes for one turn of the knob.
+static const int32_t ENCODER_STEPS_PER_DETENT = 4;
+static int32_t encoderReference = 0;
+
+static void pollTouchGestures() {
+  int16_t x, y;
+  bool down = cst816Read(&x, &y);
+
+  if (down) {
+    if (!touchDown) {
+      touchDown = true;
+      touchStartX = x;
+      touchStartY = y;
+      touchStartMs = millis();
+    }
+    touchLastX = x;
+    touchLastY = y;
+    return;
+  }
+  if (!touchDown) return;
+  touchDown = false;
+
+  int dx = touchLastX - touchStartX;
+  int dy = touchLastY - touchStartY;
+  unsigned long duration = millis() - touchStartMs;
+
+  bool isSwipe = duration <= SWIPE_MAX_MS &&
+                 (abs(dx) >= SWIPE_MIN_DISTANCE || abs(dy) >= SWIPE_MIN_DISTANCE);
+
+  if (!isSwipe) {
+    // A tap. While the menu is open it selects a tablet; a miss just keeps
+    // the menu up rather than dismissing it, since a near-miss on a round
+    // screen is far more likely to be bad aim than a change of mind.
+    if (screenMenu && screenMenu->isActive()) {
+      int picked = screenMenu->screenAtPoint(touchLastX, touchLastY);
+      if (picked >= 0) {
+        screenMenu->dismiss();
+        renderScreenIndex(picked);
+      } else {
+        screenMenu->keepOpen();
+      }
+    }
+    return;
+  }
+
+  const char *buttonId = nullptr;
+  if (abs(dx) > abs(dy)) {
+    if (abs(dy) <= SWIPE_MAX_OFF_AXIS) buttonId = dx > 0 ? "swipe-right" : "swipe-left";
+  } else {
+    if (abs(dx) <= SWIPE_MAX_OFF_AXIS) buttonId = dy > 0 ? "swipe-down" : "swipe-up";
+  }
+  if (!buttonId) return;
+
+  // A swipe while the menu is open keeps it open rather than re-triggering
+  // through the action - repeatedly swiping up is a natural "I'm still here"
+  // and should not restart the fly-in.
+  if (screenMenu && screenMenu->isActive()) {
+    screenMenu->keepOpen();
+    return;
+  }
+  dispatchInput(buttonId);
+}
+
+static void pollEncoder() {
+  int32_t raw = RotaryEncoderReader::read();
+  int32_t detents = (raw - encoderReference) / ENCODER_STEPS_PER_DETENT;
+  if (detents == 0) return;
+  encoderReference += detents * ENCODER_STEPS_PER_DETENT;
+
+  // One dispatch per detent, so holding a fast turn still sends one value
+  // change per click rather than a burst proportional to speed.
+  const char *buttonId = detents > 0 ? "button-1" : "button-0";
+  for (int32_t i = 0; i < abs(detents); i++) dispatchInput(buttonId);
+}
+
+static void dispatchInput(const char *buttonId) {
+  if (!projectLoader.isLoaded()) return;
+  dispatchButtonAction(projectLoader.getButtonAction(currentScreenIndex, String(buttonId)));
 }
 
 static void loadAndRenderProject() {
@@ -344,6 +495,7 @@ static void setupWiFi() {
 
       testInterface.setScreenSwitchHandler(renderScreenIndex);
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
+      testInterface.setInputHandler([](const String &buttonId) { dispatchInput(buttonId.c_str()); });
       if (testInterface.begin(canvasPresenter.canvas())) {
         Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());
       }
@@ -414,6 +566,15 @@ void setup() {
     Serial.println("FATAL: no canvas - nothing can be rendered");
     return;
   }
+  screenMenu = new ScreenNavigatorOverlay(&canvasPresenter.canvas(), projectLoader);
+
+  // Interrupt-driven quadrature on GPIO7/8. Polling the pins from loop()
+  // instead drops clicks: a fast turn can pass through all four quadrature
+  // states in a couple of milliseconds, which is finer than any loop can
+  // sample - the M5 Dial hit exactly that and it showed up as "sometimes
+  // needs two or three clicks to move one step".
+  RotaryEncoderReader::begin();
+  encoderReference = RotaryEncoderReader::read();
 
   setupWiFi();
 }
@@ -456,6 +617,17 @@ void loop() {
   testInterface.handleClient();
   mqttClient.loop();
   subscribeToAllTopics();
+
+  pollTouchGestures();
+  pollEncoder();
+
+  // The overlay owns the frame while it is up: it re-renders the current
+  // screen and composites the tablets on top in one pass, so nothing else
+  // may render underneath it. Doing both would show a bare frame between
+  // them - the M5 Dial hit exactly that as a visible flicker on every jump.
+  if (screenMenu && screenMenu->isActive() && screenMenu->update(screenRenderer, currentScreenIndex)) {
+    canvasPresenter.present();
+  }
 
   // Run here, after mqttClient.loop() has returned and PubSubClient's own
   // call stack has unwound - see onMqttMessage() for why this cannot happen

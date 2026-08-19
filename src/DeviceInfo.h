@@ -27,7 +27,7 @@
 // version rework exists to kill. The hash lands here later, across all
 // devices at once. (Decision 3 of the 2026-08-19 port grilling; designer
 // repo's docs/version-model-simplification-plan.md.)
-#define DDF_VERSION "1.0"
+#define DDF_VERSION "1.1"
 
 // The system generation this firmware understands - the single version
 // number shared by the designer's project file, its device export, and the

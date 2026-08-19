@@ -1,5 +1,5 @@
 {
-  "ddfVersion": "1.0",
+  "ddfVersion": "1.1",
   "systemGeneration": "1.0",
   "device": {
     "id": "waveshare-knob-1v8",
@@ -81,5 +81,5 @@
     "snapshotFormat": "bmp",
     "postRenderSettleMs": 0
   },
-  "needsPageIconsInSize": 40
+  "needsPageIconsInSize": 56
 }

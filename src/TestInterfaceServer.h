@@ -46,12 +46,21 @@ public:
   // milliseconds early is indistinguishable from a real rendering bug.
   using TopicValueHandler = std::function<String(const String& topic)>;
 
+  // Fires a named input's configured action as if it had come from the
+  // hardware. Splits a question that is otherwise untestable in two: whether
+  // the *gesture and encoder decoding* work needs a human's hands, but
+  // whether the *action bound to that input* resolves and runs correctly is
+  // ordinary logic, and this makes that half automatable. Without it every
+  // change to action dispatch would need someone standing at the device.
+  using InputHandler = std::function<void(const String& buttonId)>;
+
   // The canvas is passed to begin() rather than the constructor because it
   // only exists once CanvasPresenter has allocated it, which can fail.
   bool begin(ClippedCanvas16& canvas, uint16_t port = 80);
 
   void setScreenSwitchHandler(ScreenSwitchHandler handler) { screenSwitchHandler_ = handler; }
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
+  void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
   void stop();
 
   // Pump from loop(). Cheap when idle; safe to call before begin().
@@ -66,6 +75,7 @@ private:
   void handleMqttConfigure();
   void handleForgetWiFi();
   void handleGetTopicValues();
+  void handleInput();
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();
@@ -82,5 +92,6 @@ private:
   bool serverRunning_ = false;
   ScreenSwitchHandler screenSwitchHandler_;
   TopicValueHandler topicValueHandler_;
+  InputHandler inputHandler_;
   File uploadFile_;
 };

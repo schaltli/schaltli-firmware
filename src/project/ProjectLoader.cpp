@@ -613,6 +613,7 @@ ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {
   action.targetScreenId = actionJson["targetScreenId"] | "";
   action.mqttTopic = actionJson["mqttTopic"] | "";
   action.mqttMessage = actionJson["mqttMessage"] | "";
+  action.deviceActionId = actionJson["deviceActionId"] | "";
   return action;
 }
 

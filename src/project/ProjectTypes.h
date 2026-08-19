@@ -70,6 +70,14 @@ struct ButtonAction {
   String targetScreenId;   // for "goto-screen"
   String mqttTopic;        // for "send-mqtt"
   String mqttMessage;      // for "send-mqtt"
+  // for "device-action" - an id the *device* offers and the designer only
+  // names, declared in this board's DDF as deviceActions (e.g.
+  // "showScreenMenu"). The designer has no idea what any of them do, it just
+  // lets a project bind one by name. An id this firmware doesn't recognise
+  // is skipped and logged rather than erroring - same "additive changes
+  // degrade, never break" convention unknown object types already follow, so
+  // a project built against a newer device still runs here.
+  String deviceActionId;
 };
 
 // Base properties for screen objects

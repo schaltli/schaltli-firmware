@@ -16,6 +16,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
   webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
+  webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
@@ -84,6 +85,27 @@ void TestInterfaceServer::handleMqttConfigure() {
   prefs.end();
 
   sendJSONResponse(true, "MQTT configuration saved - reboot to apply");
+}
+
+// POST /api/input  id=swipe-up | button-0 | button-1 | ...
+//
+// Runs whatever action the current screen binds to that input, exactly as
+// the real gesture or knob would. Deliberately does NOT simulate the gesture
+// itself - swipe decoding and quadrature decoding still need a human's hands
+// to verify - but everything downstream of "an input fired" becomes testable
+// without one, which is the part that changes most often.
+void TestInterfaceServer::handleInput() {
+  if (!webServer_->hasArg("id")) {
+    sendJSONResponse(false, "Missing 'id' parameter");
+    return;
+  }
+  if (!inputHandler_) {
+    sendJSONResponse(false, "Input dispatch is not available on this device");
+    return;
+  }
+  String id = webServer_->arg("id");
+  inputHandler_(id);
+  sendJSONResponse(true, "Dispatched " + id);
 }
 
 // GET /api/topic-values?topics=a,b,c -> {"a": "...", "b": "...", ...}
