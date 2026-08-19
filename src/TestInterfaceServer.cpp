@@ -14,6 +14,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/ddf.zip", HTTP_GET, [this]() { this->handleDdfZip(); });
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
+  webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
@@ -82,6 +83,26 @@ void TestInterfaceServer::handleMqttConfigure() {
   prefs.end();
 
   sendJSONResponse(true, "MQTT configuration saved - reboot to apply");
+}
+
+// Clears the stored network and reboots, which lands the device in the AP
+// setup portal. Deliberately leaves the MQTT namespace and the installed
+// project alone - this is "put me back in setup", not a factory wipe, and
+// re-entering broker settings after every WiFi change would be needless.
+//
+// The M5 Dial gets here with a long button press. This board has no button,
+// so without an endpoint there is no route back into setup short of a
+// reflash - and no way to exercise the portal in a test at all.
+void TestInterfaceServer::handleForgetWiFi() {
+  Preferences prefs;
+  if (prefs.begin("wifi", false)) {
+    prefs.clear();
+    prefs.end();
+  }
+  sendJSONResponse(true, "WiFi credentials cleared - rebooting into setup mode");
+  // Let the response actually reach the caller before the reset.
+  delay(500);
+  ESP.restart();
 }
 
 void TestInterfaceServer::handleProjectUploadChunk() {

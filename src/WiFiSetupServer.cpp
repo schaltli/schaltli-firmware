@@ -1,8 +1,13 @@
 #include "WiFiSetupServer.h"
 #include "WiFiSetupServerHTML.h"
+#include "DeviceInfo.h"
 #include <ArduinoJson.h>
 
-const char* WiFiSetupServer::AP_SSID = "M5Dial-Setup";
+// Derived from DEVICE_ID rather than a literal: the ported version hardcoded
+// "M5Dial-Setup", so this board would have raised an access point named
+// after a different device entirely. Exactly the drift the MQTT client id
+// had for the same reason - a copied constant nobody thought to rename.
+const char* WiFiSetupServer::AP_SSID = DEVICE_ID "-setup";
 const char* WiFiSetupServer::AP_PASSWORD = "screenbee12345";
 const IPAddress WiFiSetupServer::AP_IP(192, 168, 4, 1);
 const IPAddress WiFiSetupServer::AP_GATEWAY(192, 168, 4, 1);
@@ -189,6 +194,10 @@ void WiFiSetupServer::showSetupScreenAP(int secondsLeft, bool clientConnected) {
     statusLine = "Auto-reset in " + String(secondsLeft) + "s";
   }
 
+  // No "Press button to cancel" line, unlike the M5 Dial's version: this
+  // board has no physical button to press, so the instruction would be a
+  // dead end. Nothing else offers that escape here either - the countdown
+  // in the status line is the only way out, and it says so.
   display_.showLines({
     "SCREENBEE SETUP",
     "",
@@ -200,7 +209,6 @@ void WiFiSetupServer::showSetupScreenAP(int secondsLeft, bool clientConnected) {
     "http://192.168.4.1",
     "",
     statusLine,
-    "Press button to cancel",
   });
 }
 
@@ -314,7 +322,19 @@ String WiFiSetupServer::scanNetworks() {
 }
 
 bool WiFiSetupServer::saveWiFiCredentials(const String& ssid, const String& password) {
+  // Load first, then overwrite only the two WiFi fields. The ported version
+  // built a fresh WiFiCredentials here, whose MQTT fields default to empty -
+  // and since IConfigStorage saves the whole struct, configuring WiFi wiped
+  // the broker settings. Caught live on 2026-08-19 walking the portal
+  // through on this board: it reconnected fine and then logged "no broker
+  // configured". The same bug exists upstream on the M5 Dial, where
+  // ConfigManager rewrites all of /config.json from the same struct.
+  //
+  // Failing to load is fine and expected on a first-ever setup - the
+  // defaults are then genuinely correct. handleMqttConfigure() already uses
+  // this same load-then-overwrite shape for the mirror case.
   WiFiCredentials creds;
+  config_.loadWiFiCredentials(creds);
   creds.ssid = ssid;
   creds.password = password;
   creds.timestamp = millis();

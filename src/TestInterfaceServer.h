@@ -13,6 +13,12 @@
 //   POST /api/project  - upload+install a project zip, then reboot into it
 //   POST /api/screen   - force a full render of one screen index
 //   POST /api/mqtt     - store broker settings in NVS (applied on reboot)
+//   POST /api/forget-wifi - clear stored credentials and reboot into the
+//                        setup portal. The M5 Dial reaches setup mode with a
+//                        long button press; this board has no button, so
+//                        without this there is no way back into it short of
+//                        a reflash - which also matters for testing the
+//                        portal at all.
 //
 // These two come first in the port on purpose: with them live, every later
 // step (project installer, renderer, deploy) is verifiable by pixel-diffing
@@ -50,6 +56,7 @@ private:
   void handleDdfZip();
   void handleScreenSwitch();
   void handleMqttConfigure();
+  void handleForgetWiFi();
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();

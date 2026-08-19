@@ -427,6 +427,20 @@ void loop() {
 
   if (setupModeActive) {
     wifiSetupServer.handleClient();
+
+    // Credentials just arrived from the portal - restart so they are applied
+    // through the normal setupWiFi() path rather than trying to switch modes
+    // in place. Without this the device stays in AP mode forever after a
+    // successful setup: the auto-reset countdown below is dead once any
+    // client has connected, and connecting is exactly what a user doing the
+    // setup did. Found by walking the portal through on real hardware
+    // (2026-08-19) - it saved the credentials, said so, and then sat there.
+    if (wifiSetupServer.hasWiFiCredentials() && !WiFi.isConnected()) {
+      Serial.println("[setup] credentials configured - restarting to apply");
+      delay(1000);
+      ESP.restart();
+    }
+
     // Reports "nobody ever connected within 2 minutes"; restarting is this
     // file's decision, not the server's.
     if (wifiSetupServer.tick()) {
