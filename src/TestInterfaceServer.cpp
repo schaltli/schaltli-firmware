@@ -1,5 +1,8 @@
 #include "TestInterfaceServer.h"
 #include "ddf_zip.h"
+#include "DeviceInfo.h"
+#include "project/ProjectInstaller.h"
+#include <ArduinoJson.h>
 
 bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   if (serverRunning_) return true;
@@ -8,10 +11,128 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_ = new WebServer(port);
   webServer_->on("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
   webServer_->on("/ddf.zip", HTTP_GET, [this]() { this->handleDdfZip(); });
+  webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
+  webServer_->on(
+      "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
+      [this]() { this->handleProjectUploadChunk(); });
   webServer_->begin();
   serverRunning_ = true;
 
-  Serial.printf("[TestInterface] listening on port %u: /snapshot.bmp, /ddf.zip\n", port);
+  Serial.printf("[TestInterface] listening on port %u: /snapshot.bmp, /ddf.zip, /api/screen, /api/project\n", port);
+  return true;
+}
+
+void TestInterfaceServer::sendJSONResponse(bool success, const String& message) {
+  JsonDocument doc;
+  doc["success"] = success;
+  doc["message"] = message;
+  String output;
+  serializeJson(doc, output);
+  webServer_->send(success ? 200 : 400, "application/json", output);
+}
+
+void TestInterfaceServer::handleScreenSwitch() {
+  if (!webServer_->hasArg("index")) {
+    sendJSONResponse(false, "Missing 'index' parameter");
+    return;
+  }
+  if (!screenSwitchHandler_) {
+    sendJSONResponse(false, "Screen switching is not available on this device");
+    return;
+  }
+
+  int index = webServer_->arg("index").toInt();
+  if (!screenSwitchHandler_(index)) {
+    sendJSONResponse(false, "Invalid screen index or render failed: " + String(index));
+    return;
+  }
+
+  JsonDocument doc;
+  doc["success"] = true;
+  doc["screenIndex"] = index;
+  String output;
+  serializeJson(doc, output);
+  webServer_->send(200, "application/json", output);
+}
+
+void TestInterfaceServer::handleProjectUploadChunk() {
+  HTTPUpload& upload = webServer_->upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    // A previous interrupted attempt may have left this open - LittleFS
+    // refuses to remove/reopen an already-open path, so close first.
+    if (uploadFile_) uploadFile_.close();
+    if (LittleFS.exists("/temp_upload.zip")) LittleFS.remove("/temp_upload.zip");
+    uploadFile_ = LittleFS.open("/temp_upload.zip", FILE_WRITE);
+    if (!uploadFile_) Serial.println("[TestInterface] temp_upload.zip open failed");
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadFile_) uploadFile_.write(upload.buf, upload.currentSize);
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (!uploadFile_) return;
+    uploadFile_.close();
+
+    if (!LittleFS.exists("/temp_upload.zip")) return;
+    File checkFile = LittleFS.open("/temp_upload.zip", "r");
+    if (!checkFile) return;
+    size_t fileSize = checkFile.size();
+    checkFile.close();
+    if (fileSize < 100) {
+      LittleFS.remove("/temp_upload.zip");
+      Serial.println("[TestInterface] zip too small");
+      return;
+    }
+
+    bool ok = validateAndInstallZip();
+    LittleFS.remove("/temp_upload.zip");
+
+    if (ok) {
+      // Reboot to pick the newly-installed /PROJECT/project.json up fresh,
+      // rather than tearing down and rebuilding live render state
+      // mid-request. A HIL orchestrator polling for the device to come back
+      // already expects this.
+      delay(2000);
+      ESP.restart();
+    } else {
+      Serial.println("[TestInterface] install failed");
+    }
+  }
+}
+
+void TestInterfaceServer::handleProjectUploadComplete() {
+  sendJSONResponse(true, "Processing upload...");
+}
+
+bool TestInterfaceServer::validateAndInstallZip() {
+  // Generation first, before anything else in the file is trusted - a shape
+  // this firmware cannot parse says nothing reliable about its own
+  // deviceId either. Absent reads as generation 1, the implicit value every
+  // artifact written before the field existed carries, so older exports
+  // still install. Only *major* gates: a newer minor is additive by
+  // definition and is handled by the renderer's existing "unknown type ->
+  // skip and log" and "missing field -> default" conventions.
+  long uploadedMajor = ProjectInstaller::peekProjectSystemGenerationMajor("/temp_upload.zip");
+  if (uploadedMajor > SYSTEM_GENERATION_MAJOR) {
+    Serial.printf("[TestInterface] project is system generation %ld.x, this firmware understands %d.%d - refusing\n",
+                  uploadedMajor, SYSTEM_GENERATION_MAJOR, SYSTEM_GENERATION_MINOR);
+    return false;
+  }
+
+  // Empty means the zip's project.json has no deviceId at all (older export,
+  // or a non-project zip) - not proof it is wrong, so it is not rejected on
+  // that basis alone.
+  String uploadedDeviceId = ProjectInstaller::peekProjectDeviceId("/temp_upload.zip");
+  if (!uploadedDeviceId.isEmpty() && uploadedDeviceId != DEVICE_ID) {
+    Serial.printf("[TestInterface] deviceId mismatch: zip says \"%s\", this is \"%s\"\n",
+                  uploadedDeviceId.c_str(), DEVICE_ID);
+    return false;
+  }
+
+  String error;
+  if (!ProjectInstaller::installProjectZipFromFile("/temp_upload.zip", error)) {
+    Serial.print("[TestInterface] install error: ");
+    Serial.println(error);
+    return false;
+  }
   return true;
 }
 

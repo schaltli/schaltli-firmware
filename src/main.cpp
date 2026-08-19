@@ -35,9 +35,13 @@
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
 #include <U8g2_for_Adafruit_GFX.h>
+#include <LittleFS.h>
 #include "driver/rtc_io.h"
 #include "CanvasPresenter.h"
 #include "TestInterfaceServer.h"
+#include "project/ProjectLoader.h"
+#include "project/ColorScreenRenderer.h"
+#include "project/ColorAssetLoader.h"
 
 // Step 1 of the 2026-08-19 stack port: prove the compositor seam
 // (ClippedCanvas16 -> LVGL image -> panel) on real hardware before any of
@@ -481,6 +485,56 @@ static void buildUi(int networkCount) {
 static CanvasPresenter canvasPresenter(SCREEN_SIZE, SCREEN_SIZE);
 static U8G2_FOR_ADAFRUIT_GFX smokeTestU8g2;
 static TestInterfaceServer testInterface;
+static ProjectLoader projectLoader;
+static ColorScreenRenderer* screenRenderer = nullptr;
+static int currentScreenIndex = 0;
+
+// Renders one screen index in full and pushes it through the compositor.
+// Always a complete render - never anything that depends on what was on
+// screen before - so repeated snapshots of the same index are byte-stable,
+// which is what makes pixel-diffing against the designer meaningful.
+static bool renderScreenIndex(int index) {
+  if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
+  const ProjectConfig& project = projectLoader.getProject();
+  if (index < 0 || index >= (int)project.screens.size()) return false;
+  if (!screenRenderer->renderScreen(index)) return false;
+  currentScreenIndex = index;
+  canvasPresenter.present();
+  // present() only marks the area dirty; LVGL does the actual flush on its
+  // next timer tick. Pump it here so an HTTP caller that snapshots
+  // immediately after POST /api/screen sees the new frame rather than the
+  // previous one - a race that would look exactly like a rendering bug.
+  lv_timer_handler();
+  return true;
+}
+
+// A project uploaded via POST /api/project lands at /PROJECT/project.json
+// and survives reboots, matching the M5 Dial and e-paper convention.
+static void loadAndRenderProject() {
+  if (!LittleFS.exists("/PROJECT/project.json")) {
+    Serial.println("[project] no /PROJECT/project.json yet - upload one via POST /api/project");
+    return;
+  }
+  if (!projectLoader.loadProject("/PROJECT/project.json")) {
+    Serial.println("[project] failed to load /PROJECT/project.json");
+    return;
+  }
+  const ProjectConfig& project = projectLoader.getProject();
+  Serial.printf("[project] loaded \"%s\", %d screen(s)\n", project.name.c_str(), (int)project.screens.size());
+
+  // Icon paths are screen-id-based, not content-hashed, so a redeploy can
+  // change what a given path's bytes are - the cache must not survive a
+  // reload. See ColorAssetLoader::clearGrayscaleMaskCache().
+  ColorAssetLoader::clearGrayscaleMaskCache();
+  if (screenRenderer == nullptr) {
+    screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
+  }
+  if (!renderScreenIndex(0)) {
+    Serial.println("[project] renderScreen(0) failed");
+    return;
+  }
+  Serial.println("[project] rendered screen 0");
+}
 
 // Exercises exactly the parts of the seam that could be silently wrong,
 // rather than just proving "something appeared":
@@ -548,11 +602,16 @@ static void canvasSmokeTest() {
   // looking at the panel can check.
   if (WiFi.status() == WL_CONNECTED) {
     testInterface.begin(canvas);
-    Serial.printf("[smoketest] snapshot: http://%s/snapshot.bmp   ddf: http://%s/ddf.zip\n",
-                  WiFi.localIP().toString().c_str(), WiFi.localIP().toString().c_str());
+    testInterface.setScreenSwitchHandler(renderScreenIndex);
+    Serial.printf("[test] http://%s/  (snapshot.bmp, ddf.zip, api/screen, api/project)\n",
+                  WiFi.localIP().toString().c_str());
   } else {
     Serial.println("[smoketest] no WiFi - test interface not started");
   }
+
+  // An installed project replaces the test pattern entirely; without one the
+  // pattern stays up as the bring-up display.
+  loadAndRenderProject();
 }
 #endif
 
@@ -572,6 +631,11 @@ void setup() {
 
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
   cst816Init();
+
+  // Formats on first boot; holds /PROJECT and the staged upload zip.
+  if (!LittleFS.begin(true)) {
+    Serial.println("LittleFS mount failed - project install/load unavailable");
+  }
 
   bool gfxOk = gfx->begin(40000000);
   Serial.printf("gfx->begin() = %s\n", gfxOk ? "true" : "false");
