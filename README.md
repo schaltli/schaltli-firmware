@@ -76,10 +76,12 @@ as reference for whenever power-management work resumes.
   toggling at all), and it writes `0x00` to register `0x00` once at init
   ("switch to normal mode") - without that write the chip ACKs I2C and
   returns a fixed all-zero 7-byte block forever, touched or not. Read 7
-  bytes from register `0x00`; the demo's `data[2]` ("finger count") sat at
-  0 during clearly-active drags on this unit, so this code checks
-  `buf[1] != 0` instead (register `0x01`, 0 when idle, nonzero when
-  touched) - reliable in practice.
+  bytes from register `0x00`. **Corrected 2026-08-20**: this section
+  originally claimed `data[2]` ("finger count") sat at 0 during drags and
+  keyed "touched" off `buf[1]` instead - that was wrong, an artifact of
+  that day's reset/register experiments, and it is exactly why swipe
+  gestures never worked. See "CST816 touch protocol, settled by probe"
+  below for what the chip actually reports.
 - **`LV_TICK_CUSTOM` (LVGL calling Arduino's `millis()` from a `.c`
   translation unit via `LV_TICK_CUSTOM_INCLUDE "Arduino.h"`) silently
   never worked** in this arduino-esp32/LVGL v8.4 combination -
@@ -220,8 +222,38 @@ USB_UART_CHIP_RESET` - a reset issued by the S3's native USB peripheral,
 which interprets host DTR/RTS line changes as reset requests. With no COM
 port open the same firmware ran through the whole verification without a
 single reset. Diagnose input hardware over `GET /api/debug` (uptime as
-reboot detector, raw edge recorder, dispatched-detent counters), not over
-a serial monitor.
+reboot detector, raw edge recorder, raw touch probe, dispatched-detent
+counters), not over a serial monitor.
+
+## CST816 touch protocol, settled by probe
+
+Settled 2026-08-20 by recording every raw 7-byte read during real
+gestures (the `touchProbe` array in `GET /api/debug`), after swipes
+produced 2 samples per drag under the earlier `buf[1]`-based driver:
+
+- **`data[2]` (finger count) is the "touched" criterion** - exactly what
+  the official demo uses. It holds 1 through an entire drag with live
+  coordinates at 7ms polling, stationary holds included.
+- **`data[1]` (gesture id) is NOT a touch indicator.** During a drag it
+  is mostly 0 (it pulses only when the chip's own gesture engine fires a
+  code), and after the finger lifts it **latches the last gesture code
+  (5 = click) for ~450ms with frozen coordinates** while `data[2]` is
+  already 0. Keying "touched" off it gives phantom releases mid-drag and
+  a phantom stationary touch after release.
+- **The chip has scan gaps**: occasional all-zero reads (sometimes
+  >100ms) in the middle of an active drag. The gesture detector therefore
+  only accepts a release after 80ms of sustained idle readings
+  (`RELEASE_DEBOUNCE_MS`), and measures gesture duration to the last
+  down-read so the debounce tail doesn't inflate it.
+- Polling rate is NOT a factor: solid tracking at 7ms, no need to match
+  LVGL's 30ms cadence. (`GET /api/debug?set=touchPeriodMs=N` adjusts the
+  sample period at runtime if this ever needs re-testing.)
+
+Hardware-verified same day: repeated swipe-ups reliably open the screen
+menu, taps select tablets. The swipe->menu->tap chain needs a human
+finger; the dispatch half (`swipe-up` -> `showScreenMenu` -> overlay
+render) is covered automatably via `POST /api/input`, which is how the
+two halves were isolated in the first place.
 
 ## USB / dual-MCU quirk
 

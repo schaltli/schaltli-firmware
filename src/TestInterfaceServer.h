@@ -59,7 +59,11 @@ public:
   // neutral observer on this board: the S3's native USB interprets DTR/RTS
   // line changes as chip-reset requests (rst:0x15, USB_UART_CHIP_RESET), so
   // watching the device over COM can itself reboot it - HTTP cannot.
-  using DebugHandler = std::function<String()>;
+  //
+  // The argument is the request's "set" query parameter ("key=value", empty
+  // when absent), so diagnosis parameters can be adjusted per request
+  // without a reflash - what to do with it is the handler's business.
+  using DebugHandler = std::function<String(const String& setArg)>;
 
   // The canvas is passed to begin() rather than the constructor because it
   // only exists once CanvasPresenter has allocated it, which can fail.

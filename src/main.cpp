@@ -50,6 +50,18 @@
 #include "ScreenNavigatorOverlay.h"
 #include "RotaryEncoderReader.h"
 
+// Instrumentation for the physical input path, served at GET /api/debug.
+// Deliberately permanent, not bring-up scaffolding: a serial monitor is
+// not a neutral observer on this board (DTR/RTS changes reset the S3 via
+// its native USB), so this endpoint is the only way to diagnose input
+// hardware here - and it has already caught two protocol-level bugs the
+// old way could not (the knob's pulse encoding, the CST816's byte-2
+// criterion). Costs ~10KB of statics and a few reads per loop.
+// Lives up here, above everything that tests it: a #if on an undefined
+// macro is silently 0, which is how the touch instrumentation spent a
+// while compiled out.
+#define INPUT_DEBUG 1
+
 // LCD (ST77916, QSPI)
 static const int8_t LCD_CS = 14;
 static const int8_t LCD_SCK = 13;
@@ -115,36 +127,97 @@ static void cst816Init() {
 }
 
 // CST816 register map: read 7 bytes from 0x00. Bytes 3-4 = X, 5-6 = Y.
-// Byte 2 is documented as "finger count" but stayed 0 during clearly-active
-// drags on this unit; byte 1 (0 idle, nonzero touched) is what is reliable.
-static bool cst816Read(int16_t *x, int16_t *y) {
+// Byte 1 is the gesture id, byte 2 the finger count - see sampleTouch()
+// for which of them means "touched" on this unit (settled by probe data,
+// not guessed). Reads the raw block; interpreting it is the caller's job.
+static bool cst816ReadRaw(uint8_t buf[7]) {
   Wire.beginTransmission(CST816_ADDR);
   Wire.write(0x00);
   if (Wire.endTransmission(false) != 0) return false;
   if (Wire.requestFrom((int)CST816_ADDR, 7) != 7) return false;
-
-  uint8_t buf[7];
-  for (uint8_t &b : buf) b = Wire.read();
-  if (buf[1] == 0) return false;
-
-  *x = ((buf[3] & 0x0F) << 8) | buf[4];
-  *y = ((buf[5] & 0x0F) << 8) | buf[6];
+  for (uint8_t i = 0; i < 7; i++) buf[i] = Wire.read();
   return true;
 }
 
-// The CST816 is read exactly ONCE per loop, into these, and both consumers -
-// LVGL's input device and the gesture detector - work from the result.
-//
-// They must not both call cst816Read(): reading the chip clears its touch
-// state, so whichever ran first consumed the event and the other saw an idle
-// panel. That is why gestures produced nothing at all while LVGL's own touch
-// kept working - lv_timer_handler() simply ran first every iteration.
+// The CST816 is read exactly ONCE per sample period, into these, and both
+// consumers - LVGL's input device and the gesture detector - work from the
+// result. They must not each read the chip: reading clears its touch
+// state, so whichever ran first consumed the event and the other saw an
+// idle panel.
 static bool touchIsDown = false;
 static int16_t touchX = 0, touchY = 0;
 
+// Runtime-settable via GET /api/debug?set=touchPeriodMs=N, no reflash
+// needed. Built to test whether polling faster than the chip's own scan
+// cycle returns cleared data - it does not (probe showed solid tracking
+// at 7ms); kept as a diagnosis knob since it costs nothing.
+static uint32_t touchPeriodMs = 5;
+
+#if INPUT_DEBUG
+static uint32_t touchReadCount = 0;
+static uint32_t touchI2cErrorCount = 0;
+
+// Raw-byte probe: every read where any of gesture id, finger count or
+// coordinates is nonzero is recorded verbatim. One physical swipe then
+// shows exactly what the chip reports over time - instead of a fourth
+// round of guessing which register means "touched" on this unit.
+struct TouchProbe {
+  uint32_t ms;
+  uint8_t b1, b2;
+  uint16_t x, y;
+};
+static const int TOUCH_PROBE_SIZE = 256;
+static TouchProbe touchProbeBuf[TOUCH_PROBE_SIZE];
+static uint32_t touchProbeWriteIndex = 0;  // total ever, ring = % TOUCH_PROBE_SIZE
+#endif
+
 static void sampleTouch() {
-  int16_t x, y;
-  if (cst816Read(&x, &y)) {
+  static unsigned long lastSampleMs = 0;
+  unsigned long now = millis();
+  // Keeps the previous state between samples rather than resetting it, so
+  // a longer period does not fabricate releases.
+  if (now - lastSampleMs < touchPeriodMs) return;
+  lastSampleMs = now;
+
+  uint8_t buf[7];
+  if (!cst816ReadRaw(buf)) {
+#if INPUT_DEBUG
+    touchI2cErrorCount++;
+#endif
+    touchIsDown = false;
+    return;
+  }
+#if INPUT_DEBUG
+  touchReadCount++;
+#endif
+
+  int16_t x = ((buf[3] & 0x0F) << 8) | buf[4];
+  int16_t y = ((buf[5] & 0x0F) << 8) | buf[6];
+
+#if INPUT_DEBUG
+  if (buf[1] != 0 || buf[2] != 0 || x != 0 || y != 0) {
+    TouchProbe &p = touchProbeBuf[touchProbeWriteIndex % TOUCH_PROBE_SIZE];
+    p.ms = now;
+    p.b1 = buf[1];
+    p.b2 = buf[2];
+    p.x = (uint16_t)x;
+    p.y = (uint16_t)y;
+    touchProbeWriteIndex++;
+  }
+#endif
+
+  // Byte 2 (finger count) ONLY - the official demo's criterion, confirmed
+  // by this unit's own probe data (2026-08-20, one recorded swipe at 7ms
+  // cadence): b2 holds 1 through the whole drag with live coordinates,
+  // while b1 (gesture id) pulses only when the chip's gesture engine
+  // fires AND stays latched at 5 (click) for ~450ms after the finger
+  // lifts, with frozen coordinates. Keying on b1 is why swipes never
+  // worked: mid-drag it is mostly 0 (instant phantom release), and after
+  // release its latch fabricates a stationary phantom touch. The earlier
+  // note that b2 "stayed 0 during drags" predates this probe and was an
+  // artifact of that day's reset/register experiments - the probe is the
+  // authoritative record.
+  if (buf[2] != 0) {
     touchIsDown = true;
     touchX = x;
     touchY = y;
@@ -237,15 +310,22 @@ static void dispatchButtonAction(const ButtonAction &action) {
 }
 
 // --- gesture and knob input -------------------------------------------
-//
-// Bring-up instrumentation for the physical input path - the action
-// dispatch behind it is already covered by POST /api/input, so what this
-// observes is only whether the hardware produces events. Kept at 1 until
-// the bidi-pulse decoder (see RotaryEncoderReader.h) is confirmed on real
-// hardware. Must be defined ABOVE every #if that tests it: a #if on an
-// undefined macro is silently 0, which is how the touch-release log below
-// spent a while compiled out.
-#define INPUT_DEBUG 1
+
+#if INPUT_DEBUG
+// Touch-path diagnosis, exposed via GET /api/debug like the edge recorder
+// and for the same reason (a serial monitor resets this board). Answers,
+// after one physical swipe, WHERE the path breaks: no samples = driver
+// never sees the finger; samples but no release = tracking; a release
+// with wrong dx/dy = coordinates; a release classified "none" =
+// thresholds; a correct verdict = the path works and the problem is
+// downstream of dispatch.
+static uint32_t touchSampleCount = 0;
+static int16_t lastTouchSampleX = -1, lastTouchSampleY = -1;
+static uint32_t touchReleaseCount = 0;
+static int lastReleaseDx = 0, lastReleaseDy = 0;
+static unsigned long lastReleaseDurationMs = 0;
+static const char *lastReleaseVerdict = "none yet";
+#endif
 
 // Swipes are read straight from the touch driver rather than through LVGL's
 // gesture support: LVGL only reports gestures on the object under the
@@ -259,11 +339,26 @@ static bool touchDown = false;
 static int16_t touchStartX = 0, touchStartY = 0;
 static unsigned long touchStartMs = 0;
 static int16_t touchLastX = 0, touchLastY = 0;
+static unsigned long touchLastDownMs = 0;
+
+// The probe (see sampleTouch) also showed occasional all-zero reads in the
+// middle of an active drag - the chip's own scan gaps at our 5ms polling.
+// Each one used to end the gesture on the spot, fragmenting one swipe into
+// ~9 tiny releases whose fragments mostly classified as nothing. A release
+// only counts once the panel has read idle for this long; gesture duration
+// is measured to the last down-read, so the debounce tail never inflates
+// it.
+static const unsigned long RELEASE_DEBOUNCE_MS = 80;
 
 // Works from sampleTouch()'s cached reading, never from cst816Read() - see
 // its comment for why a second read would find nothing.
 static void pollTouchGestures() {
   if (touchIsDown) {
+#if INPUT_DEBUG
+    touchSampleCount++;
+    lastTouchSampleX = touchX;
+    lastTouchSampleY = touchY;
+#endif
     if (!touchDown) {
       touchDown = true;
       touchStartX = touchX;
@@ -272,17 +367,24 @@ static void pollTouchGestures() {
     }
     touchLastX = touchX;
     touchLastY = touchY;
+    touchLastDownMs = millis();
     return;
   }
   if (!touchDown) return;
+  // Not-down could be a mid-drag scan gap - only a sustained idle reading
+  // is a real release (see RELEASE_DEBOUNCE_MS).
+  if (millis() - touchLastDownMs < RELEASE_DEBOUNCE_MS) return;
   touchDown = false;
 
   int dx = touchLastX - touchStartX;
   int dy = touchLastY - touchStartY;
-  unsigned long duration = millis() - touchStartMs;
+  unsigned long duration = touchLastDownMs - touchStartMs;
 #if INPUT_DEBUG
-  Serial.printf("[input] touch released: start=(%d,%d) end=(%d,%d) dx=%d dy=%d %lums\n",
-                touchStartX, touchStartY, touchLastX, touchLastY, dx, dy, duration);
+  touchReleaseCount++;
+  lastReleaseDx = dx;
+  lastReleaseDy = dy;
+  lastReleaseDurationMs = duration;
+  lastReleaseVerdict = "tap-or-none";
 #endif
 
   bool isSwipe = duration <= SWIPE_MAX_MS &&
@@ -310,6 +412,9 @@ static void pollTouchGestures() {
   } else {
     if (abs(dx) <= SWIPE_MAX_OFF_AXIS) buttonId = dy > 0 ? "swipe-down" : "swipe-up";
   }
+#if INPUT_DEBUG
+  lastReleaseVerdict = buttonId ? buttonId : "off-axis";
+#endif
   if (!buttonId) return;
 
   // A swipe while the menu is open keeps it open rather than re-triggering
@@ -383,6 +488,33 @@ static String buildDebugJson() {
   out += ",\"edgeCountGpio8\":" + String(edgeCountGpio8);
   out += ",\"dispatchedRight\":" + String(dispatchedRight);
   out += ",\"dispatchedLeft\":" + String(dispatchedLeft);
+  out += ",\"touchSampleCount\":" + String(touchSampleCount);
+  out += ",\"lastTouchX\":" + String(lastTouchSampleX);
+  out += ",\"lastTouchY\":" + String(lastTouchSampleY);
+  out += ",\"touchReleaseCount\":" + String(touchReleaseCount);
+  out += ",\"lastReleaseDx\":" + String(lastReleaseDx);
+  out += ",\"lastReleaseDy\":" + String(lastReleaseDy);
+  out += ",\"lastReleaseDurationMs\":" + String(lastReleaseDurationMs);
+  out += ",\"lastReleaseVerdict\":\"" + String(lastReleaseVerdict) + "\"";
+  out += ",\"touchPeriodMs\":" + String(touchPeriodMs);
+  out += ",\"touchReadCount\":" + String(touchReadCount);
+  out += ",\"touchI2cErrorCount\":" + String(touchI2cErrorCount);
+  out += ",\"touchProbe\":[";
+  {
+    uint32_t total = touchProbeWriteIndex;
+    uint32_t n = total < (uint32_t)TOUCH_PROBE_SIZE ? total : (uint32_t)TOUCH_PROBE_SIZE;
+    uint32_t start = total - n;
+    uint32_t prevT = 0;
+    for (uint32_t k = 0; k < n; k++) {
+      const TouchProbe &p = touchProbeBuf[(start + k) % TOUCH_PROBE_SIZE];
+      if (k > 0) out += ",";
+      out += "{\"dt\":" + String(k == 0 ? 0 : p.ms - prevT);
+      out += ",\"b1\":" + String(p.b1) + ",\"b2\":" + String(p.b2);
+      out += ",\"x\":" + String(p.x) + ",\"y\":" + String(p.y) + "}";
+      prevT = p.ms;
+    }
+  }
+  out += "]";
   out += ",\"events\":[";
   uint32_t total = edgeWriteIndex;
   uint32_t n = total < (uint32_t)EDGE_BUF_SIZE ? total : (uint32_t)EDGE_BUF_SIZE;
@@ -605,7 +737,16 @@ static void setupWiFi() {
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
       testInterface.setInputHandler([](const String &buttonId) { dispatchInput(buttonId.c_str()); });
 #if INPUT_DEBUG
-      testInterface.setDebugHandler(buildDebugJson);
+      // GET /api/debug?set=touchPeriodMs=30 adjusts the touch sample
+      // period per request - the polling-rate hypothesis is tested over
+      // HTTP rather than one reflash per candidate value.
+      testInterface.setDebugHandler([](const String &setArg) {
+        if (setArg.startsWith("touchPeriodMs=")) {
+          long v = setArg.substring(14).toInt();
+          if (v >= 1 && v <= 500) touchPeriodMs = (uint32_t)v;
+        }
+        return buildDebugJson();
+      });
 #endif
       if (testInterface.begin(canvasPresenter.canvas())) {
         Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());

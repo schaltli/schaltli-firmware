@@ -18,7 +18,8 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
-    webServer_->send(200, "application/json", debugHandler_ ? debugHandler_() : String("{}"));
+    webServer_->send(200, "application/json",
+                     debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
   });
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
