@@ -54,6 +54,13 @@ public:
   // change to action dispatch would need someone standing at the device.
   using InputHandler = std::function<void(const String& buttonId)>;
 
+  // Serves whatever JSON the firmware wants to expose for bring-up
+  // diagnosis at GET /api/debug. Exists because serial monitoring is not a
+  // neutral observer on this board: the S3's native USB interprets DTR/RTS
+  // line changes as chip-reset requests (rst:0x15, USB_UART_CHIP_RESET), so
+  // watching the device over COM can itself reboot it - HTTP cannot.
+  using DebugHandler = std::function<String()>;
+
   // The canvas is passed to begin() rather than the constructor because it
   // only exists once CanvasPresenter has allocated it, which can fail.
   bool begin(ClippedCanvas16& canvas, uint16_t port = 80);
@@ -61,6 +68,7 @@ public:
   void setScreenSwitchHandler(ScreenSwitchHandler handler) { screenSwitchHandler_ = handler; }
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
+  void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
   void stop();
 
   // Pump from loop(). Cheap when idle; safe to call before begin().
@@ -93,5 +101,6 @@ private:
   ScreenSwitchHandler screenSwitchHandler_;
   TopicValueHandler topicValueHandler_;
   InputHandler inputHandler_;
+  DebugHandler debugHandler_;
   File uploadFile_;
 };

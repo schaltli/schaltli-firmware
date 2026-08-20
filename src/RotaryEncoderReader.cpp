@@ -1,93 +1,102 @@
 #include "RotaryEncoderReader.h"
 #include <driver/gpio.h>
+#include <esp_timer.h>
 
 namespace {
 
-// This board's encoder, not the M5 Dial's 41/40. Reverse-engineered from a
-// community project (KrX3D/WaveShare-Knob-Esp32S3) because Waveshare's own
-// wiki does not document them; idle HIGH, pulsing LOW on rotation, and
-// verified in practice - GPIO7 also served as the EXT0 deep-sleep wake
-// source in this repo's earlier power experiment.
-const gpio_num_t PIN_A = GPIO_NUM_7;
-const gpio_num_t PIN_B = GPIO_NUM_8;
+// Pin roles per Waveshare's demo (04_Encoder_Test/user_config.h:
+// ECA_PIN=8 -> KNOB_RIGHT, ECB_PIN=7 -> KNOB_LEFT).
+const gpio_num_t PIN_RIGHT = GPIO_NUM_8;
+const gpio_num_t PIN_LEFT = GPIO_NUM_7;
 
-volatile uint8_t state = 0;
-volatile int32_t position = 0;
+// The demo's timing verbatim (TICKS_INTERVAL=3ms, DEBOUNCE_TICKS=2): a
+// detent counts when its pin returns HIGH after reading LOW for at least
+// one full poll tick. Polled from an esp_timer rather than edge
+// interrupts because that is what the vendor reference does and it is
+// hardware-verified; the timer task also keeps the cadence independent of
+// however long loop() takes (the failure mode that bit the M5 Dial).
+const uint64_t POLL_INTERVAL_US = 3000;
+const uint8_t DEBOUNCE_TICKS = 2;
 
-// A real spinlock (ESP-IDF portMUX), not the AVR-style noInterrupts()/
-// interrupts() pair this started with - ESP32-S3 is dual-core, and a GPIO
-// interrupt can be serviced on either core independent of which core
-// happens to be running read() at that moment. noInterrupts() only masks
-// interrupts on the CURRENT core, so it was not actually a safe critical
-// section against an ISR that might fire on the other core - portMUX is
-// the correct cross-core primitive for exactly this ISR/task shared-state
-// pattern (see portENTER_CRITICAL_ISR's own documentation).
+// Accumulated detents are shared between the esp_timer task (writer) and
+// loop() (reader) - two tasks, potentially on different cores, hence the
+// portMUX rather than a bare volatile.
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+int32_t pendingDetents = 0;
 
-// Identical Gray-code state/position table to M5Dial's own
-// ENCODER::update() (see RotaryEncoderReader.h's own comment for why this
-// firmware doesn't just use that class directly) - ported, not
-// reinvented, since it's already a well-tested quadrature decode.
-// gpio_get_level() instead of digitalRead() - a direct, IRAM-safe ESP-IDF
-// register read with no Arduino-layer wrapper overhead in between, same
-// spirit as the original library's own DIRECT_PIN_READ (it just couldn't
-// use that macro's cached port/bitmask approach here since GPIO 40/41
-// aren't in its interrupt-pin table at all - see this file's header
-// comment).
-void IRAM_ATTR isr() {
-  uint8_t p1 = gpio_get_level(PIN_A) ? 1 : 0;
-  uint8_t p2 = gpio_get_level(PIN_B) ? 1 : 0;
-  uint8_t s = state & 3;
-  if (p1) s |= 4;
-  if (p2) s |= 8;
-  state = s >> 2;
+struct Channel {
+  gpio_num_t pin;
+  int8_t direction;
+  uint8_t prevLevel;
+  uint8_t debounceCnt;
+};
+Channel channels[2] = {
+    {PIN_RIGHT, +1, 1, 0},
+    {PIN_LEFT, -1, 1, 0},
+};
 
-  int8_t delta = 0;
-  switch (s) {
-    case 1: case 7: case 8: case 14:
-      delta = 1;
-      break;
-    case 2: case 4: case 11: case 13:
-      delta = -1;
-      break;
-    case 3: case 12:
-      delta = 2;
-      break;
-    case 6: case 9:
-      delta = -2;
-      break;
-    default:
-      return;
+// Structure kept identical to the demo's process_knob_channel() on
+// purpose - it reads oddly (the debounce counter means "ticks spent LOW"
+// in one branch and gates the rising edge in the other), but it is the
+// logic that is known to work on this hardware, so it is replicated, not
+// improved.
+void pollChannel(Channel &ch) {
+  uint8_t level = gpio_get_level(ch.pin) ? 1 : 0;
+  if (level == 0) {
+    if (level != ch.prevLevel) {
+      ch.debounceCnt = 0;
+    } else {
+      ch.debounceCnt++;
+    }
+  } else {
+    if (level != ch.prevLevel && ++ch.debounceCnt >= DEBOUNCE_TICKS) {
+      ch.debounceCnt = 0;
+      portENTER_CRITICAL(&mux);
+      pendingDetents += ch.direction;
+      portEXIT_CRITICAL(&mux);
+    } else {
+      ch.debounceCnt = 0;
+    }
   }
-
-  portENTER_CRITICAL_ISR(&mux);
-  position += delta;
-  portEXIT_CRITICAL_ISR(&mux);
+  ch.prevLevel = level;
 }
+
+void pollCb(void *) {
+  pollChannel(channels[0]);
+  pollChannel(channels[1]);
+}
+
+esp_timer_handle_t timerHandle = nullptr;
 
 }  // namespace
 
 namespace RotaryEncoderReader {
 
 void begin() {
-  pinMode(PIN_A, INPUT_PULLUP);
-  pinMode(PIN_B, INPUT_PULLUP);
-  // Let the pull-ups settle through whatever passive R-C filtering exists
-  // on this board before reading the initial state - same allowance
-  // ENCODER::begin() makes.
+  for (Channel &ch : channels) {
+    pinMode(ch.pin, INPUT_PULLUP);
+  }
+  // Let the pull-ups settle before taking the initial levels, so a pin
+  // still rising after power-up is not mistaken for a pulse in progress.
   delayMicroseconds(2000);
-  uint8_t s = 0;
-  if (gpio_get_level(PIN_A)) s |= 1;
-  if (gpio_get_level(PIN_B)) s |= 2;
-  state = s;
+  for (Channel &ch : channels) {
+    ch.prevLevel = gpio_get_level(ch.pin) ? 1 : 0;
+    ch.debounceCnt = 0;
+  }
 
-  attachInterrupt(digitalPinToInterrupt(PIN_A), isr, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(PIN_B), isr, CHANGE);
+  esp_timer_create_args_t args = {};
+  args.callback = pollCb;
+  args.dispatch_method = ESP_TIMER_TASK;
+  args.name = "knob_poll";
+  if (esp_timer_create(&args, &timerHandle) == ESP_OK) {
+    esp_timer_start_periodic(timerHandle, POLL_INTERVAL_US);
+  }
 }
 
-int32_t read() {
+int32_t readDetents() {
   portENTER_CRITICAL(&mux);
-  int32_t ret = position;
+  int32_t ret = pendingDetents;
+  pendingDetents = 0;
   portEXIT_CRITICAL(&mux);
   return ret;
 }

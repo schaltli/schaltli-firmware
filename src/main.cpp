@@ -132,12 +132,32 @@ static bool cst816Read(int16_t *x, int16_t *y) {
   return true;
 }
 
-static void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+// The CST816 is read exactly ONCE per loop, into these, and both consumers -
+// LVGL's input device and the gesture detector - work from the result.
+//
+// They must not both call cst816Read(): reading the chip clears its touch
+// state, so whichever ran first consumed the event and the other saw an idle
+// panel. That is why gestures produced nothing at all while LVGL's own touch
+// kept working - lv_timer_handler() simply ran first every iteration.
+static bool touchIsDown = false;
+static int16_t touchX = 0, touchY = 0;
+
+static void sampleTouch() {
   int16_t x, y;
   if (cst816Read(&x, &y)) {
+    touchIsDown = true;
+    touchX = x;
+    touchY = y;
+  } else {
+    touchIsDown = false;
+  }
+}
+
+static void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
+  if (touchIsDown) {
     data->state = LV_INDEV_STATE_PRESSED;
-    data->point.x = x;
-    data->point.y = y;
+    data->point.x = touchX;
+    data->point.y = touchY;
   } else {
     data->state = LV_INDEV_STATE_RELEASED;
   }
@@ -218,6 +238,15 @@ static void dispatchButtonAction(const ButtonAction &action) {
 
 // --- gesture and knob input -------------------------------------------
 //
+// Bring-up instrumentation for the physical input path - the action
+// dispatch behind it is already covered by POST /api/input, so what this
+// observes is only whether the hardware produces events. Kept at 1 until
+// the bidi-pulse decoder (see RotaryEncoderReader.h) is confirmed on real
+// hardware. Must be defined ABOVE every #if that tests it: a #if on an
+// undefined macro is silently 0, which is how the touch-release log below
+// spent a while compiled out.
+#define INPUT_DEBUG 1
+
 // Swipes are read straight from the touch driver rather than through LVGL's
 // gesture support: LVGL only reports gestures on the object under the
 // finger, and the rendered screen is one flat image with no LVGL objects in
@@ -231,25 +260,18 @@ static int16_t touchStartX = 0, touchStartY = 0;
 static unsigned long touchStartMs = 0;
 static int16_t touchLastX = 0, touchLastY = 0;
 
-// Encoder detents, not raw quadrature steps: the reader counts 4 states per
-// physical click, and dispatching an action four times per detent would fire
-// four MQTT publishes for one turn of the knob.
-static const int32_t ENCODER_STEPS_PER_DETENT = 4;
-static int32_t encoderReference = 0;
-
+// Works from sampleTouch()'s cached reading, never from cst816Read() - see
+// its comment for why a second read would find nothing.
 static void pollTouchGestures() {
-  int16_t x, y;
-  bool down = cst816Read(&x, &y);
-
-  if (down) {
+  if (touchIsDown) {
     if (!touchDown) {
       touchDown = true;
-      touchStartX = x;
-      touchStartY = y;
+      touchStartX = touchX;
+      touchStartY = touchY;
       touchStartMs = millis();
     }
-    touchLastX = x;
-    touchLastY = y;
+    touchLastX = touchX;
+    touchLastY = touchY;
     return;
   }
   if (!touchDown) return;
@@ -258,6 +280,10 @@ static void pollTouchGestures() {
   int dx = touchLastX - touchStartX;
   int dy = touchLastY - touchStartY;
   unsigned long duration = millis() - touchStartMs;
+#if INPUT_DEBUG
+  Serial.printf("[input] touch released: start=(%d,%d) end=(%d,%d) dx=%d dy=%d %lums\n",
+                touchStartX, touchStartY, touchLastX, touchLastY, dx, dy, duration);
+#endif
 
   bool isSwipe = duration <= SWIPE_MAX_MS &&
                  (abs(dx) >= SWIPE_MIN_DISTANCE || abs(dy) >= SWIPE_MIN_DISTANCE);
@@ -296,14 +322,96 @@ static void pollTouchGestures() {
   dispatchInput(buttonId);
 }
 
-static void pollEncoder() {
-  int32_t raw = RotaryEncoderReader::read();
-  int32_t detents = (raw - encoderReference) / ENCODER_STEPS_PER_DETENT;
-  if (detents == 0) return;
-  encoderReference += detents * ENCODER_STEPS_PER_DETENT;
+#if INPUT_DEBUG
+// Waveform recorder for the encoder pins, retrieved over GET /api/debug -
+// deliberately NOT serial, because on this board serial monitoring is not
+// a neutral observer: every "crash" observed while turning was rst:0x15,
+// USB_UART_CHIP_RESET, a reset issued by the USB peripheral itself, and
+// the serial monitor's DTR/RTS handling is the prime suspect. Reading over
+// HTTP needs no COM port open at all; if the uptime below never goes
+// backwards while nothing touches COM, the "crash" was the observer.
+//
+// The recorder's original question - why the pin scan showed a ~7:1 edge
+// ratio between the channels - was answered by Waveshare's own demo before
+// this ever ran: the knob is a direction-pulse encoder, not quadrature,
+// so only the turned direction's channel pulses (see
+// RotaryEncoderReader.h). It stays armed to verify the new decoder from
+// the raw pin side, and coexists with it: the recorder uses edge
+// interrupts, the decoder polls from an esp_timer, neither claims the
+// pins exclusively.
+// Named by GPIO number, not A/B: with the pulse-encoder model the roles
+// are directional (gpio8 pulses = right, gpio7 = left), and A/B naming is
+// exactly how the quadrature assumption snuck in unquestioned.
+struct EdgeEvent {
+  uint32_t micros;
+  uint8_t gpio7;
+  uint8_t gpio8;
+};
+static const int EDGE_BUF_SIZE = 512;
+static volatile EdgeEvent edgeBuf[EDGE_BUF_SIZE];
+static volatile uint32_t edgeWriteIndex = 0;  // total events ever, ring = % EDGE_BUF_SIZE
+static volatile uint32_t edgeCountGpio7 = 0, edgeCountGpio8 = 0;
 
-  // One dispatch per detent, so holding a fast turn still sends one value
-  // change per click rather than a burst proportional to speed.
+static void IRAM_ATTR recordEdge() {
+  uint32_t i = edgeWriteIndex % EDGE_BUF_SIZE;
+  edgeBuf[i].micros = (uint32_t)esp_timer_get_time();
+  edgeBuf[i].gpio7 = gpio_get_level(GPIO_NUM_7);
+  edgeBuf[i].gpio8 = gpio_get_level(GPIO_NUM_8);
+  edgeWriteIndex = edgeWriteIndex + 1;
+}
+static void IRAM_ATTR recordEdgeGpio7() { edgeCountGpio7++; recordEdge(); }
+static void IRAM_ATTR recordEdgeGpio8() { edgeCountGpio8++; recordEdge(); }
+
+static void beginWaveformRecorder() {
+  pinMode(7, INPUT_PULLUP);
+  pinMode(8, INPUT_PULLUP);
+  attachInterrupt(7, recordEdgeGpio7, CHANGE);
+  attachInterrupt(8, recordEdgeGpio8, CHANGE);
+}
+
+// Cumulative end-to-end counters (decoder detents that actually reached
+// dispatchInput), so the full pin -> decoder -> dispatch path can be
+// verified over HTTP by turning the knob and polling GET /api/debug.
+static uint32_t dispatchedRight = 0, dispatchedLeft = 0;
+
+// Dumps uptime (a reboot detector - if this goes backwards between polls,
+// the device reset), the edge counters, and the most recent events with
+// microsecond deltas.
+static String buildDebugJson() {
+  String out = "{\"uptimeMs\":" + String(millis());
+  out += ",\"edgeCountGpio7\":" + String(edgeCountGpio7);
+  out += ",\"edgeCountGpio8\":" + String(edgeCountGpio8);
+  out += ",\"dispatchedRight\":" + String(dispatchedRight);
+  out += ",\"dispatchedLeft\":" + String(dispatchedLeft);
+  out += ",\"events\":[";
+  uint32_t total = edgeWriteIndex;
+  uint32_t n = total < (uint32_t)EDGE_BUF_SIZE ? total : (uint32_t)EDGE_BUF_SIZE;
+  uint32_t start = total - n;
+  uint32_t prevT = 0;
+  for (uint32_t k = 0; k < n; k++) {
+    const volatile EdgeEvent &e = edgeBuf[(start + k) % EDGE_BUF_SIZE];
+    if (k > 0) out += ",";
+    out += "{\"dt\":" + String(k == 0 ? 0 : e.micros - prevT);
+    out += ",\"gpio7\":" + String(e.gpio7) + ",\"gpio8\":" + String(e.gpio8) + "}";
+    prevT = e.micros;
+  }
+  out += "]}";
+  return out;
+}
+#endif
+
+static void pollEncoder() {
+  int32_t detents = RotaryEncoderReader::readDetents();
+  if (detents == 0) return;
+
+#if INPUT_DEBUG
+  if (detents > 0) dispatchedRight += detents; else dispatchedLeft += -detents;
+#endif
+
+  // One dispatch per detent, so a fast turn still sends one value change
+  // per click rather than a burst proportional to speed. Positive = right
+  // per the reader's contract; button-1 is "Rotate Right" in the DDF
+  // adornment SVG, button-0 "Rotate Left".
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
   for (int32_t i = 0; i < abs(detents); i++) dispatchInput(buttonId);
 }
@@ -496,6 +604,9 @@ static void setupWiFi() {
       testInterface.setScreenSwitchHandler(renderScreenIndex);
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
       testInterface.setInputHandler([](const String &buttonId) { dispatchInput(buttonId.c_str()); });
+#if INPUT_DEBUG
+      testInterface.setDebugHandler(buildDebugJson);
+#endif
       if (testInterface.begin(canvasPresenter.canvas())) {
         Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());
       }
@@ -525,6 +636,15 @@ void setup() {
   // release it before gfx->begin() tries to pulse the display out of reset.
   rtc_gpio_hold_dis(GPIO_NUM_21);
   rtc_gpio_hold_dis(GPIO_NUM_10);
+  // GPIO7 too - it was this board's EXT0 wake source in the earlier
+  // deep-sleep experiment, and rtc_gpio_deinit() returns it to normal GPIO
+  // control rather than merely unlatching it. Kept as insurance even
+  // though the "GPIO7 stuck at 1 while GPIO8 toggled" observation that
+  // originally motivated this turned out to be the encoder's actual
+  // protocol, not a held pad: only the turned direction's channel pulses
+  // (see RotaryEncoderReader.h), and that scan was done turning right.
+  rtc_gpio_hold_dis(GPIO_NUM_7);
+  rtc_gpio_deinit(GPIO_NUM_7);
   gpio_deep_sleep_hold_dis();
 
   pinMode(LCD_BL, OUTPUT);
@@ -568,13 +688,12 @@ void setup() {
   }
   screenMenu = new ScreenNavigatorOverlay(&canvasPresenter.canvas(), projectLoader);
 
-  // Interrupt-driven quadrature on GPIO7/8. Polling the pins from loop()
-  // instead drops clicks: a fast turn can pass through all four quadrature
-  // states in a couple of milliseconds, which is finer than any loop can
-  // sample - the M5 Dial hit exactly that and it showed up as "sometimes
-  // needs two or three clicks to move one step".
+#if INPUT_DEBUG
+  // Coexists with the decoder: the recorder is edge interrupts, the
+  // decoder polls from its own esp_timer - see the recorder's comment.
+  beginWaveformRecorder();
+#endif
   RotaryEncoderReader::begin();
-  encoderReference = RotaryEncoderReader::read();
 
   setupWiFi();
 }
@@ -584,6 +703,10 @@ void loop() {
   // unit) never worked in this build - lv_tick_get() stayed at 0 even after a
   // full clean rebuild, so no periodic timer ever ran past the first paint.
   // Driving the tick manually sidesteps it entirely.
+  // Before lv_timer_handler(), so LVGL and the gesture detector both work
+  // from the same single reading of a register that clears when read.
+  sampleTouch();
+
   lv_tick_inc(5);
   lv_timer_handler();
 
@@ -620,6 +743,10 @@ void loop() {
 
   pollTouchGestures();
   pollEncoder();
+
+  // No serial reporting here on purpose - the recorder is read over
+  // GET /api/debug, so nothing needs a COM port open (see the recorder's
+  // own comment for why that matters on this board).
 
   // The overlay owns the frame while it is up: it re-renders the current
   // screen and composites the tablets on top in one pass, so nothing else

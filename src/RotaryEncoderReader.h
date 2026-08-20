@@ -1,35 +1,31 @@
 #pragma once
 #include <Arduino.h>
 
-// Direct interrupt-driven quadrature decode for the M5 Dial's rotary
-// encoder (GPIO 41/40) - NOT M5Dial.Encoder (the M5Dial library's own
-// ENCODER class, .pio/libdeps/m5dial/M5Dial/src/utility/Encoder.h), even
-// though M5Dial.begin(..., enableEncoder=true) already sets that up.
+// This board's knob is NOT a quadrature encoder, despite having two
+// channels. Waveshare's own demo decodes it as a bidirectional PULSE
+// encoder (ESP32-S3-Knob-Touch-LCD-1.8-Demo.zip,
+// Arduino/examples/04_Encoder_Test/bidi_switch_knob.c - a modified
+// espressif iot_knob component whose modification is exactly this): each
+// channel is evaluated independently, a debounced LOW pulse on GPIO8 is one
+// detent RIGHT, on GPIO7 one detent LEFT. Both idle HIGH; the opposite
+// channel stays HIGH while turning.
 //
-// Found 2026-08-11: that library's attachInterrupt() call only actually
-// attaches for GPIO pins it has a hardcoded CORE_INTxx_PIN macro for - a
-// table inherited from AVR boards' small fixed set of hardware interrupt
-// vectors. The highest one it defines is CORE_INT39_PIN; GPIO 40/41 aren't
-// in the table at all, so its own attach_interrupt() silently returns 0
-// for both pins (interrupts_in_use stays 0) and ENCODER::read() falls back
-// to running the quadrature state machine only at the moment read() itself
-// is called - i.e. real interrupts never fire, this becomes pure polling
-// at whatever cadence loop() happens to call read(). A fast physical click
-// can cycle through all 4 quadrature states within a couple of
-// milliseconds; polling once per ~10ms loop() iteration (plus whatever
-// else that iteration does) is too coarse to reliably see every
-// transition, so some clicks were silently dropped or under/over-counted -
-// reported live as "sometimes needs 2-3 physical clicks to advance one
-// tablet" on the screen-switch navigator.
-//
-// ESP32's real attachInterrupt() has no such pin-table restriction (that's
-// purely a vestige of the vendored library's own AVR-era macro list), so
-// this reimplements the identical quadrature decode - same state/position
-// lookup as ENCODER::update(), a well-tested Gray-code table, not a new
-// algorithm - as two direct GPIO interrupts instead.
+// Found 2026-08-20, replacing a Gray-code quadrature decoder ported from
+// the M5 Dial (whose encoder really is quadrature). That model mismatch
+// explains everything the pin instrumentation showed on this board:
+// - edge counts split ~7:1 between the channels (a quadrature encoder
+//   transitions both equally; a pulse encoder only pulses the channel for
+//   the direction being turned),
+// - one channel "stuck" HIGH while the other toggled (that IS the
+//   protocol - the stuck one belongs to the direction not being turned),
+// - the quadrature state machine emitting +1/-1 jitter that never
+//   accumulated (fed a single toggling channel, that is all it can emit).
 namespace RotaryEncoderReader {
 
 void begin();
-int32_t read();
+
+// Signed detents accumulated since the previous call (consume-on-read):
+// positive = right (GPIO8 pulses), negative = left (GPIO7 pulses).
+int32_t readDetents();
 
 }

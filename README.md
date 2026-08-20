@@ -189,14 +189,39 @@ board unless the companion ESP32 is given its own sleep-aware firmware
 
 ## Encoder / pin reference
 
-Reverse-engineered (not in Waveshare's own docs) via
-`https://github.com/KrX3D/WaveShare-Knob-Esp32S3`:
+**The knob is NOT a quadrature encoder.** It is a bidirectional pulse
+encoder: turning right emits debounced LOW pulses on GPIO8 only, turning
+left on GPIO7 only; both idle HIGH and the opposite channel stays HIGH
+(bar sub-100µs crosstalk bounce at the pulse's rising edge). One pulse =
+one detent; measured pulse widths 38-324ms at hand speed. Authoritative
+source: Waveshare's own demo
+(`files.waveshare.com/wiki/ESP32-S3-Knob-Touch-LCD-1.8/ESP32-S3-Knob-Touch-LCD-1.8-Demo.zip`,
+`Arduino/examples/04_Encoder_Test/bidi_switch_knob.c` - a *modified*
+espressif iot_knob whose whole modification is decoding the channels
+independently; `user_config.h` names ECA=GPIO8 -> right, ECB=GPIO7 ->
+left). `RotaryEncoderReader` replicates that decode (3ms esp_timer poll,
+2-tick debounce). A Gray-code quadrature decoder ported from the M5 Dial
+ran here first and produced only +1/-1 jitter - fed a single toggling
+channel, that is all a quadrature state machine can emit. Verified
+end-to-end on hardware 2026-08-20: 5 physical right + 3 left detents
+counted exactly (`GET /api/debug`, `dispatchedRight`/`dispatchedLeft`).
 
-- Rotary encoder: pin_a = GPIO7, pin_b = GPIO8
+Pins (vendor demo + `KrX3D/WaveShare-Knob-Esp32S3`):
+
+- Rotary encoder: GPIO8 = right pulses, GPIO7 = left pulses (idle HIGH)
 - LCD (ST77916, QSPI): CS=14, SCK=13, D0-D3=15/16/17/18, RST=21
 - Touch (CST816, I2C): SDA=11, SCL=12, INT=9, RST=10 (haptic driver
   DRV2605 shares this I2C bus)
 - Backlight: GPIO47 (through a MOSFET, active high)
+
+**Serial monitoring is not a neutral observer on this board.** Every
+"crash while turning the knob" during input bring-up was `rst:0x15,
+USB_UART_CHIP_RESET` - a reset issued by the S3's native USB peripheral,
+which interprets host DTR/RTS line changes as reset requests. With no COM
+port open the same firmware ran through the whole verification without a
+single reset. Diagnose input hardware over `GET /api/debug` (uptime as
+reboot detector, raw edge recorder, dispatched-detent counters), not over
+a serial monitor.
 
 ## USB / dual-MCU quirk
 
