@@ -25,6 +25,17 @@
   larger than the screen square's own corner distance (254.6) so no corner
   sticks out past the case.
 
+  Both rings are real annuli - an outer arc plus an inner one, with
+  even-odd fill - and NOT two stacked filled discs. Stacked discs render
+  identically in any picture viewer, which is exactly why the first version
+  of this file used them and looked fine: the designer draws this artwork on
+  top of the live project canvas, so the innermost disc covered the entire
+  drawing area with opaque black. Reported 2026-08-21 as "the canvas is a
+  black disc". This is the first rule in the designer's DEVICE_GUIDE.md
+  ("the screen area must be a real punched-out hole"), and the designer repo
+  now has an e2e case per device that reads the centre pixel of the screen
+  rect, so the same mistake fails a test instead of a user.
+
   Only two buttons, unlike the M5 Dial's five: this knob has no press-
   modifier, and turning is reserved for adjusting values rather than
   navigating (screen switching is a swipe-up). See the designer repo's
@@ -34,17 +45,19 @@
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
      width="540" height="540" viewBox="0 0 540 540" version="1.1">
 
-  <!-- Blue ring case -->
-  <circle cx="270" cy="270" r="270"
-          style="fill:#1e7fd4;stroke:none"
-          id="case-body"
-          inkscape:label="case" />
+  <!-- Blue ring case, r=200..270. -->
+  <path d="M 0 270 A 270 270 0 1 0 540 270 A 270 270 0 1 0 0 270 Z M 70 270 A 200 200 0 1 0 470 270 A 200 200 0 1 0 70 270 Z"
+        fill-rule="evenodd"
+        style="fill:#1e7fd4;stroke:none"
+        id="case-body"
+        inkscape:label="case" />
 
-  <!-- Black ring between case and screen -->
-  <circle cx="270" cy="270" r="200"
-          style="fill:#101014;stroke:none"
-          id="case-inner-ring"
-          inkscape:label="inner ring" />
+  <!-- Black ring between case and screen, r=180..200. -->
+  <path d="M 70 270 A 200 200 0 1 0 470 270 A 200 200 0 1 0 70 270 Z M 90 270 A 180 180 0 1 0 450 270 A 180 180 0 1 0 90 270 Z"
+        fill-rule="evenodd"
+        style="fill:#101014;stroke:none"
+        id="case-inner-ring"
+        inkscape:label="inner ring" />
 
   <!-- The screen area. Position and size are read straight off this rect
        (extractScreenRect), so it is never hand-transcribed into
