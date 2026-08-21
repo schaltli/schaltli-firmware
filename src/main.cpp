@@ -933,7 +933,14 @@ void setup() {
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
   cst816Init();
 
-  bool gfxOk = gfx->begin(40000000);
+  // 80MHz, up from 40MHz (2026-08-21). The QSPI push is the largest single
+  // cost of a screen change (22.2ms of 39.9ms) and it is not memory-bound -
+  // moving the draw buffer into internal RAM barely touched it - so the
+  // clock is the next thing to rule in or out. A panel that cannot keep up
+  // shows it immediately and unmistakably as garbled pixels, and the
+  // measurement in GET /api/debug says whether the rate actually changed at
+  // all, which a datasheet reading alone would not.
+  bool gfxOk = gfx->begin(80000000);
   Serial.printf("gfx->begin() = %s\n", gfxOk ? "true" : "false");
   gfx->fillScreen(RGB565_BLACK);
 
