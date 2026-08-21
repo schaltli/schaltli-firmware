@@ -236,10 +236,56 @@ static void touchReadCb(lv_indev_drv_t *drv, lv_indev_data_t *data) {
   }
 }
 
+// -------------------------------------------------- frame timing probe
+//
+// Splits one screen change into the three costs that are otherwise
+// indistinguishable from the outside, where the whole thing just measures
+// ~100ms (2026-08-21, timed over POST /api/screen):
+//
+//   render - ColorScreenRenderer filling the 360x360 RGB565 canvas
+//   lvgl   - LVGL walking that canvas into its own draw buffer
+//   qspi   - draw16bitRGBBitmap actually pushing bytes to the ST77916
+//
+// Which one dominates decides what is worth fixing. Pure QSPI transfer of
+// a full frame is ~13ms at 40MHz x4, so if `qspi` comes back near that,
+// the remaining ~85ms is on this side of the bus and no bus-level change
+// (faster clock, bigger chunks) will help much. Both buffers living in
+// PSRAM is the obvious suspect, and it is a one-line change to test -
+// but only worth making if the numbers say so.
+//
+// Always compiled, not gated behind INPUT_DEBUG: the point is to describe
+// the build that actually ships, and the cost is four
+// esp_timer_get_time() calls per screen change. Only the JSON rendering
+// sits inside the debug block, with the rest of that endpoint.
+//
+// `chunks` is the honest surprise to watch for: LVGL only refreshes on its
+// own period, so a render whose lv_timer_handler() call finds the refresh
+// timer not yet due flushes *nothing* (chunks 0) and its frame never
+// reaches the panel at all - dropped, not torn. During a fast bezel spin
+// that is the difference between "the panel is behind" and "we are
+// rendering frames nobody will ever see".
+struct FrameTiming {
+  uint32_t renderUs;
+  uint32_t lvglUs;
+  uint32_t qspiUs;
+  uint32_t gapMs;  // since the previous screen change - shows how fast input arrives
+  uint16_t chunks;
+};
+static const int FRAME_LOG_SIZE = 16;
+static FrameTiming frameLog[FRAME_LOG_SIZE];
+static uint32_t frameLogWriteIndex = 0;  // total frames ever, ring = % FRAME_LOG_SIZE
+// Accumulated by dispFlushCb across the chunks of one flush, reset per frame.
+static volatile uint32_t frameQspiUs = 0;
+static volatile uint16_t frameChunks = 0;
+static uint32_t lastFrameEndMs = 0;
+
 static void dispFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
+  const int64_t pushStart = esp_timer_get_time();
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
+  frameQspiUs += (uint32_t)(esp_timer_get_time() - pushStart);
+  frameChunks++;
   lv_disp_flush_ready(disp);
 }
 
@@ -252,13 +298,36 @@ static bool renderScreenIndex(int index) {
   if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
   const ProjectConfig &project = projectLoader.getProject();
   if (index < 0 || index >= (int)project.screens.size()) return false;
+
+  const int64_t renderStart = esp_timer_get_time();
   if (!screenRenderer->renderScreen(index)) return false;
+  const int64_t renderEnd = esp_timer_get_time();
   currentScreenIndex = index;
+
+  frameQspiUs = 0;
+  frameChunks = 0;
   canvasPresenter.present();
   // present() only marks the area dirty; pump LVGL so an HTTP caller that
   // snapshots straight after POST /api/screen sees the new frame rather than
   // the previous one - a race that would look exactly like a rendering bug.
   lv_timer_handler();
+  const int64_t flushEnd = esp_timer_get_time();
+
+  // The flush window minus what was spent inside draw16bitRGBBitmap is
+  // LVGL's own work: walking the image source into its draw buffer, plus
+  // its bookkeeping. Clamped rather than allowed to underflow - these are
+  // unsigned, and the two clocks are read at slightly different points.
+  const uint32_t flushUs = (uint32_t)(flushEnd - renderEnd);
+  const uint32_t qspiUs = frameQspiUs;
+  const uint32_t nowMs = millis();
+  FrameTiming &slot = frameLog[frameLogWriteIndex % FRAME_LOG_SIZE];
+  slot.renderUs = (uint32_t)(renderEnd - renderStart);
+  slot.qspiUs = qspiUs;
+  slot.lvglUs = flushUs > qspiUs ? flushUs - qspiUs : 0;
+  slot.chunks = frameChunks;
+  slot.gapMs = lastFrameEndMs == 0 ? 0 : nowMs - lastFrameEndMs;
+  lastFrameEndMs = nowMs;
+  frameLogWriteIndex++;
   return true;
 }
 
@@ -499,6 +568,27 @@ static String buildDebugJson() {
   out += ",\"touchPeriodMs\":" + String(touchPeriodMs);
   out += ",\"touchReadCount\":" + String(touchReadCount);
   out += ",\"touchI2cErrorCount\":" + String(touchI2cErrorCount);
+  out += ",\"frameCount\":" + String(frameLogWriteIndex);
+  // Newest last. gapMs is the wall-clock distance from the previous screen
+  // change, so a fast bezel spin shows up as a run of small gaps - if gapMs
+  // is consistently below render+lvgl+qspi, input is arriving faster than
+  // the panel can be repainted, which is the tearing everyone sees.
+  out += ",\"frames\":[";
+  {
+    uint32_t total = frameLogWriteIndex;
+    uint32_t n = total < (uint32_t)FRAME_LOG_SIZE ? total : (uint32_t)FRAME_LOG_SIZE;
+    uint32_t start = total - n;
+    for (uint32_t k = 0; k < n; k++) {
+      const FrameTiming &f = frameLog[(start + k) % FRAME_LOG_SIZE];
+      if (k > 0) out += ",";
+      out += "{\"renderUs\":" + String(f.renderUs);
+      out += ",\"lvglUs\":" + String(f.lvglUs);
+      out += ",\"qspiUs\":" + String(f.qspiUs);
+      out += ",\"chunks\":" + String(f.chunks);
+      out += ",\"gapMs\":" + String(f.gapMs) + "}";
+    }
+  }
+  out += "]";
   out += ",\"touchProbe\":[";
   {
     uint32_t total = touchProbeWriteIndex;
