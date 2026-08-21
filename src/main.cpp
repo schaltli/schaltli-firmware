@@ -88,6 +88,9 @@ Arduino_GFX *gfx = new Arduino_ST77916(
 
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *lvBuf1;
+// Where lvBuf1 actually landed - reported over /api/debug, because every
+// flush timing below means something different depending on the answer.
+static bool drawBufInternal = false;
 
 static CanvasPresenter canvasPresenter(SCREEN_SIZE, SCREEN_SIZE);
 static CanvasDisplayAdapter displayAdapter(canvasPresenter);
@@ -613,6 +616,8 @@ static String buildDebugJson() {
   out += ",\"totalChunks\":" + String(totalChunks);
   out += ",\"totalQspiMs\":" + String(totalQspiUs / 1000);
   out += ",\"totalLvglMs\":" + String(totalLvglUs / 1000);
+  out += ",\"drawBufInternal\":" + String(drawBufInternal ? "true" : "false");
+  out += ",\"freeInternalHeap\":" + String((uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   // Newest last. gapMs is the wall-clock distance from the previous screen
   // change, so a fast bezel spin shows up as a run of small gaps - if gapMs
   // is consistently below render+lvgl+qspi, input is arriving faster than
@@ -939,8 +944,28 @@ void setup() {
   configStorage.begin();
 
   lv_init();
+  // This buffer is read twice per chunk and from two directions: LVGL walks
+  // the canvas into it, then draw16bitRGBBitmap streams it out to the panel.
+  // In PSRAM both halves pay external-memory latency, and the DMA out of it
+  // cannot run at full rate. Measured with it in PSRAM (2026-08-21): 24.6ms
+  // of QSPI per full frame against a theoretical ~13ms at 40MHz x4.
+  //
+  // 360x60x2 = 43200 bytes, which internal DRAM has room for at ~50% static
+  // usage. Falling back rather than failing if it does not: a slower flush
+  // is a far better outcome than a device that will not start, and the
+  // fallback is visible in GET /api/debug's drawBufInternal so a timing
+  // measurement can never be read against the wrong allocation.
   size_t bufPixels = SCREEN_SIZE * 60;
-  lvBuf1 = (lv_color_t *)heap_caps_malloc(bufPixels * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+  const size_t bufBytes = bufPixels * sizeof(lv_color_t);
+  lvBuf1 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+  drawBufInternal = lvBuf1 != nullptr;
+  if (!drawBufInternal) {
+    Serial.printf("[lvgl] %u-byte draw buffer did not fit in internal RAM - using PSRAM (slower flush)\n",
+                  (unsigned)bufBytes);
+    lvBuf1 = (lv_color_t *)heap_caps_malloc(bufBytes, MALLOC_CAP_SPIRAM);
+  }
+  Serial.printf("[lvgl] draw buffer: %u bytes in %s RAM\n", (unsigned)bufBytes,
+                drawBufInternal ? "internal" : "PS");
   lv_disp_draw_buf_init(&draw_buf, lvBuf1, NULL, bufPixels);
 
   static lv_disp_drv_t disp_drv;
