@@ -274,19 +274,61 @@ struct FrameTiming {
 static const int FRAME_LOG_SIZE = 16;
 static FrameTiming frameLog[FRAME_LOG_SIZE];
 static uint32_t frameLogWriteIndex = 0;  // total frames ever, ring = % FRAME_LOG_SIZE
-// Accumulated by dispFlushCb across the chunks of one flush, reset per frame.
-static volatile uint32_t frameQspiUs = 0;
-static volatile uint16_t frameChunks = 0;
 static uint32_t lastFrameEndMs = 0;
+
+// Monotonic since boot, never reset. The first version of this probe
+// accumulated per render instead, and measured a lie: it only saw what was
+// flushed inside renderScreenIndex's own lv_timer_handler() call. LVGL
+// refreshes on its own period, so when screen changes arrive faster than
+// that - which is exactly the case under investigation, a bezel spin - that
+// call finds the timer not due, returns in 0.1ms, and the flush happens in
+// the *next* pump from loop(). The probe reported chunks 0 for all 16
+// frames of a real spin, which reads as "nothing ever reached the panel"
+// and is simply false: it was measuring the wrong call site.
+//
+// So: count globally, attribute by difference between one present() and the
+// next. Everything pushed in that window belongs to the frame presented at
+// its start, wherever the pump that pushed it happened to run.
+static volatile uint32_t totalChunks = 0;
+static volatile uint32_t totalQspiUs = 0;
+static uint32_t totalLvglUs = 0;
+static uint32_t markChunks = 0, markQspiUs = 0, markLvglUs = 0;
 
 static void dispFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
   const int64_t pushStart = esp_timer_get_time();
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
-  frameQspiUs += (uint32_t)(esp_timer_get_time() - pushStart);
-  frameChunks++;
+  totalQspiUs += (uint32_t)(esp_timer_get_time() - pushStart);
+  totalChunks++;
   lv_disp_flush_ready(disp);
+}
+
+// Every pump of LVGL goes through here so its cost is counted wherever it
+// runs. (CanvasDisplayAdapter has a third call site for setup-mode text;
+// deliberately left alone - it runs before any project exists, so there is
+// no frame for it to belong to.)
+static inline void pumpLvgl() {
+  const int64_t pumpStart = esp_timer_get_time();
+  lv_timer_handler();
+  totalLvglUs += (uint32_t)(esp_timer_get_time() - pumpStart);
+}
+
+// Fills in what actually reached the panel for the most recent frame.
+// Computed from the marks rather than accumulated, so calling it repeatedly
+// is harmless - buildDebugJson() does exactly that, to report the newest
+// frame as it stands instead of a placeholder zero.
+static void closeOpenFrame() {
+  if (frameLogWriteIndex == 0) return;
+  FrameTiming &f = frameLog[(frameLogWriteIndex - 1) % FRAME_LOG_SIZE];
+  const uint32_t qspi = totalQspiUs - markQspiUs;
+  const uint32_t lvgl = totalLvglUs - markLvglUs;
+  f.chunks = (uint16_t)(totalChunks - markChunks);
+  f.qspiUs = qspi;
+  // LVGL's own share is whatever its pumps cost beyond the bytes they
+  // pushed - the walk from the canvas into the draw buffer, plus its
+  // bookkeeping.
+  f.lvglUs = lvgl > qspi ? lvgl - qspi : 0;
 }
 
 // ---------------------------------------------------------------- project
@@ -304,30 +346,28 @@ static bool renderScreenIndex(int index) {
   const int64_t renderEnd = esp_timer_get_time();
   currentScreenIndex = index;
 
-  frameQspiUs = 0;
-  frameChunks = 0;
+  // The previous frame's window ends here: it had from its own present()
+  // until now to reach the panel.
+  closeOpenFrame();
+
+  const uint32_t nowMs = millis();
+  FrameTiming &slot = frameLog[frameLogWriteIndex % FRAME_LOG_SIZE];
+  slot.renderUs = (uint32_t)(renderEnd - renderStart);
+  slot.gapMs = lastFrameEndMs == 0 ? 0 : nowMs - lastFrameEndMs;
+  slot.chunks = 0;
+  slot.qspiUs = 0;
+  slot.lvglUs = 0;
+  lastFrameEndMs = nowMs;
+  frameLogWriteIndex++;
+  markChunks = totalChunks;
+  markQspiUs = totalQspiUs;
+  markLvglUs = totalLvglUs;
+
   canvasPresenter.present();
   // present() only marks the area dirty; pump LVGL so an HTTP caller that
   // snapshots straight after POST /api/screen sees the new frame rather than
   // the previous one - a race that would look exactly like a rendering bug.
-  lv_timer_handler();
-  const int64_t flushEnd = esp_timer_get_time();
-
-  // The flush window minus what was spent inside draw16bitRGBBitmap is
-  // LVGL's own work: walking the image source into its draw buffer, plus
-  // its bookkeeping. Clamped rather than allowed to underflow - these are
-  // unsigned, and the two clocks are read at slightly different points.
-  const uint32_t flushUs = (uint32_t)(flushEnd - renderEnd);
-  const uint32_t qspiUs = frameQspiUs;
-  const uint32_t nowMs = millis();
-  FrameTiming &slot = frameLog[frameLogWriteIndex % FRAME_LOG_SIZE];
-  slot.renderUs = (uint32_t)(renderEnd - renderStart);
-  slot.qspiUs = qspiUs;
-  slot.lvglUs = flushUs > qspiUs ? flushUs - qspiUs : 0;
-  slot.chunks = frameChunks;
-  slot.gapMs = lastFrameEndMs == 0 ? 0 : nowMs - lastFrameEndMs;
-  lastFrameEndMs = nowMs;
-  frameLogWriteIndex++;
+  pumpLvgl();
   return true;
 }
 
@@ -568,7 +608,11 @@ static String buildDebugJson() {
   out += ",\"touchPeriodMs\":" + String(touchPeriodMs);
   out += ",\"touchReadCount\":" + String(touchReadCount);
   out += ",\"touchI2cErrorCount\":" + String(touchI2cErrorCount);
+  closeOpenFrame();
   out += ",\"frameCount\":" + String(frameLogWriteIndex);
+  out += ",\"totalChunks\":" + String(totalChunks);
+  out += ",\"totalQspiMs\":" + String(totalQspiUs / 1000);
+  out += ",\"totalLvglMs\":" + String(totalLvglUs / 1000);
   // Newest last. gapMs is the wall-clock distance from the previous screen
   // change, so a fast bezel spin shows up as a run of small gaps - if gapMs
   // is consistently below render+lvgl+qspi, input is arriving faster than
@@ -939,7 +983,7 @@ void loop() {
   sampleTouch();
 
   lv_tick_inc(5);
-  lv_timer_handler();
+  pumpLvgl();
 
   if (setupModeActive) {
     wifiSetupServer.handleClient();
