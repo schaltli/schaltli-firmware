@@ -61,58 +61,107 @@ bool CanvasPresenter::begin() {
   lv_img_set_src(image_, &descriptor_);
   lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
 
-  // The transition canvas. A failure here is not fatal: everything works
-  // exactly as before without it, screen changes just cut instead of
-  // sliding. Far better than refusing to boot over an animation.
-  transitionCanvas_ = new ClippedCanvas16(width_, height_);
-  if (transitionCanvas_ == nullptr || transitionCanvas_->getBuffer() == nullptr) {
-    Serial.println("[CanvasPresenter] no transition canvas - screen changes will cut, not slide");
-    delete transitionCanvas_;
-    transitionCanvas_ = nullptr;
-    return true;
+  // The transition canvases. A failure here is not fatal: everything works
+  // exactly as before without them, screen changes just cut instead of
+  // sliding. Far better than refusing to boot over an animation. Both or
+  // neither, so no code below has to ask how many there turned out to be.
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    transitionCanvas_[slot] = new ClippedCanvas16(width_, height_);
+    if (transitionCanvas_[slot] == nullptr || transitionCanvas_[slot]->getBuffer() == nullptr) {
+      Serial.println("[CanvasPresenter] no transition canvases - screen changes will cut, not slide");
+      for (int i = 0; i <= slot; i++) {
+        delete transitionCanvas_[i];
+        transitionCanvas_[i] = nullptr;
+      }
+      return true;
+    }
+    transitionDescriptor_[slot] = descriptor_;
+    transitionDescriptor_[slot].data = (const uint8_t*)transitionCanvas_[slot]->getBuffer();
+    transitionImage_[slot] = lv_img_create(lv_scr_act());
+    lv_img_set_src(transitionImage_[slot], &transitionDescriptor_[slot]);
+    lv_obj_add_flag(transitionImage_[slot], LV_OBJ_FLAG_HIDDEN);
+    lv_obj_align(transitionImage_[slot], LV_ALIGN_CENTER, 0, 0);
+    Serial.printf("[CanvasPresenter] transition canvas %d at %p (%s)\n", slot,
+                  transitionCanvas_[slot]->getBuffer(),
+                  esp_ptr_external_ram(transitionCanvas_[slot]->getBuffer()) ? "PSRAM" : "internal SRAM");
   }
-  transitionDescriptor_ = descriptor_;
-  transitionDescriptor_.data = (const uint8_t*)transitionCanvas_->getBuffer();
-  transitionImage_ = lv_img_create(lv_scr_act());
-  lv_img_set_src(transitionImage_, &transitionDescriptor_);
-  lv_obj_add_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, 0, 0);
-  Serial.printf("[CanvasPresenter] transition canvas at %p (%s)\n",
-                transitionCanvas_->getBuffer(),
-                esp_ptr_external_ram(transitionCanvas_->getBuffer()) ? "PSRAM" : "internal SRAM");
   return true;
 }
 
-void CanvasPresenter::beginTransition(int16_t baseX, int16_t baseY) {
-  if (transitionImage_ == nullptr) return;
+int CanvasPresenter::slotHolding(int screenIndex) const {
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    if (transitionScreen_[slot] == screenIndex) return slot;
+  }
+  return -1;
+}
+
+int CanvasPresenter::slotToRenderInto(int screenIndex) const {
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    if (transitionScreen_[slot] < 0) return slot;
+  }
+  // Both taken: overwrite one that is not the screen being asked for. The
+  // other one is very likely the opposite neighbour and worth keeping.
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    if (transitionScreen_[slot] != screenIndex) return slot;
+  }
+  return 0;
+}
+
+void CanvasPresenter::invalidateSlots() {
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) transitionScreen_[slot] = -1;
+}
+
+int16_t CanvasPresenter::transitionImageX() const {
+  const int slot = activeSlot_ >= 0 ? activeSlot_ : 0;
+  return transitionImage_[slot] ? lv_obj_get_x(transitionImage_[slot]) : 0;
+}
+
+int16_t CanvasPresenter::transitionImageY() const {
+  const int slot = activeSlot_ >= 0 ? activeSlot_ : 0;
+  return transitionImage_[slot] ? lv_obj_get_y(transitionImage_[slot]) : 0;
+}
+
+bool CanvasPresenter::transitionImageHidden() const {
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    if (transitionImage_[slot] && !lv_obj_has_flag(transitionImage_[slot], LV_OBJ_FLAG_HIDDEN)) return false;
+  }
+  return true;
+}
+
+void CanvasPresenter::beginTransition(int slot, int16_t baseX, int16_t baseY) {
+  if (slot < 0 || slot >= TRANSITION_SLOTS || transitionImage_[slot] == nullptr) return;
+  activeSlot_ = slot;
   transitionBaseX_ = baseX;
   transitionBaseY_ = baseY;
   transitionActive_ = true;
   // Invalidated explicitly: the descriptor's data pointer never changes, so
   // LVGL has no way of knowing the pixels behind it were just redrawn.
-  lv_obj_invalidate(transitionImage_);
-  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, baseX, baseY);
-  lv_obj_clear_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_invalidate(transitionImage_[slot]);
+  lv_obj_align(transitionImage_[slot], LV_ALIGN_CENTER, baseX, baseY);
+  lv_obj_clear_flag(transitionImage_[slot], LV_OBJ_FLAG_HIDDEN);
 }
 
 void CanvasPresenter::setTransitionOffset(int16_t dx, int16_t dy) {
-  if (!transitionActive_) return;
+  if (!transitionActive_ || activeSlot_ < 0) return;
   lv_obj_align(image_, LV_ALIGN_CENTER, dx, dy);
-  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, transitionBaseX_ + dx, transitionBaseY_ + dy);
+  lv_obj_align(transitionImage_[activeSlot_], LV_ALIGN_CENTER, transitionBaseX_ + dx, transitionBaseY_ + dy);
 }
 
 bool CanvasPresenter::adoptTransitionCanvas() {
-  if (canvas_ == nullptr || transitionCanvas_ == nullptr) return false;
-  memcpy(canvas_->getBuffer(), transitionCanvas_->getBuffer(),
+  if (canvas_ == nullptr || activeSlot_ < 0 || transitionCanvas_[activeSlot_] == nullptr) return false;
+  memcpy(canvas_->getBuffer(), transitionCanvas_[activeSlot_]->getBuffer(),
          (size_t)width_ * (size_t)height_ * sizeof(uint16_t));
   lv_obj_invalidate(image_);
   return true;
 }
 
 void CanvasPresenter::endTransition() {
-  if (transitionImage_ == nullptr) return;
+  if (transitionImage_[0] == nullptr) return;
   transitionActive_ = false;
-  lv_obj_add_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+  for (int slot = 0; slot < TRANSITION_SLOTS; slot++) {
+    lv_obj_add_flag(transitionImage_[slot], LV_OBJ_FLAG_HIDDEN);
+  }
+  activeSlot_ = -1;
   lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
   // lv_obj_align only marks the layout dirty; the coordinates it implies
   // are not real until a refresh applies them. Everywhere else that is

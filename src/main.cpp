@@ -571,7 +571,17 @@ static const char *lastReleaseVerdict = "none yet";
 // finger, and the rendered screen is one flat image with no LVGL objects in
 // it, so there is nothing for it to attribute a swipe to.
 static const int SWIPE_MIN_DISTANCE = 60;   // px, well past a jittery tap
-static const int SWIPE_MAX_OFF_AXIS = 70;   // px, keeps a diagonal drag from counting
+// How straight a swipe has to be, as a ratio rather than a fixed number of
+// pixels. This was an absolute 70px cap, and that produced a plain
+// contradiction on real gestures (recorded 2026-08-22): a 309px swipe up
+// with 90px of drift was rejected as diagonal, while a 127px swipe with
+// 51px of drift - a visibly wonkier gesture - was accepted, purely because
+// the shorter one had less absolute drift. A finger pivoting from the wrist
+// drifts in proportion to how far it travels, so the rule has to be
+// proportional too. 2:1 accepts everything a human means as a swipe (the
+// straightest observed was 14:1, the wonkiest accepted 2.5:1) and still
+// rejects a genuine 1:1 diagonal.
+static const int SWIPE_AXIS_RATIO = 2;
 static const unsigned long SWIPE_MAX_MS = 900;
 
 static bool touchDown = false;
@@ -655,6 +665,27 @@ static int lastFlickPxPerSecond = 0;
 // number that should stay small: every one of them wasted a render of a
 // screen that was never shown.
 static uint32_t dragAxisAbandoned = 0;
+
+// Every released gesture, not just the last one. Diagnosing "sometimes it
+// does not open" needs the failures side by side with the successes from
+// the same run - and it cannot be done by polling from outside, because
+// each debug request blocks the loop for a few milliseconds and so costs
+// exactly the touch samples under suspicion.
+struct GestureRecord {
+  int16_t dx, dy;
+  uint16_t durationMs;
+  uint16_t samples;   // touch reads this gesture actually got
+  bool dragStarted;
+  bool dragAbandoned;
+  bool menuWasOpen;   // before this gesture was dispatched
+  char verdict[16];
+  uint32_t atMs;
+};
+static const int GESTURE_LOG_SIZE = 24;
+static GestureRecord gestureLog[GESTURE_LOG_SIZE];
+static uint32_t gestureLogIndex = 0;
+static uint16_t gestureSamples = 0;
+static bool gestureDragStarted = false;
 #endif
 
 static void applyDragOffset(int v) {
@@ -669,6 +700,53 @@ static void applyDragOffset(int v) {
 static int clampDragOffset(int v) {
   if (dragTravel > 0) return v < 0 ? 0 : (v > dragTravel ? dragTravel : v);
   return v > 0 ? 0 : (v < dragTravel ? dragTravel : v);
+}
+
+// Renders a screen into one of the presenter's spare canvases. The renderer
+// is pointed at the spare and back again around the call - and it must be
+// put back even when the render fails, or every later screen would be drawn
+// into a buffer nobody displays.
+static bool renderIntoSlot(int slot, int screenIndex) {
+  if (screenRenderer == nullptr || !canvasPresenter.canTransition()) return false;
+  screenRenderer->setCanvas(&canvasPresenter.slotCanvas(slot));
+  const bool ok = screenRenderer->renderScreen(screenIndex);
+  screenRenderer->setCanvas(&canvasPresenter.canvas());
+  canvasPresenter.setSlotScreen(slot, ok ? screenIndex : -1);
+  return ok;
+}
+
+// Keeps both neighbours of the current screen rendered and waiting, so that
+// starting a drag costs nothing. One screen per call: each render blocks the
+// loop for as long as a screen takes (165ms on a real project), and doing
+// both back to back would leave a third of a second in which a swipe cannot
+// be seen - which is the very fault this exists to remove.
+//
+// Only while nothing is happening: no drag, no settle, no finger on the
+// glass, no menu, and a quiet spell since the last touch. The quiet spell
+// matters most - a user paging repeatedly leaves roughly a second between
+// gestures, comfortably more than one render, and this must land inside
+// that gap rather than under their next swipe.
+static const uint32_t PRERENDER_IDLE_MS = 400;
+static uint32_t lastTouchActivityMs = 0;
+
+static void prerenderNeighbours() {
+  if (dragActive || dragAnimating || touchDown) return;
+  if (screenMenu && screenMenu->isActive()) return;
+  if (!projectLoader.isLoaded() || screenRenderer == nullptr) return;
+  if (!canvasPresenter.canTransition()) return;
+  if (millis() - lastTouchActivityMs < PRERENDER_IDLE_MS) return;
+
+  const int count = (int)projectLoader.getProject().screens.size();
+  if (count < 2) return;
+  const int wanted[2] = {
+      ((currentScreenIndex + 1) % count + count) % count,
+      ((currentScreenIndex - 1) % count + count) % count,
+  };
+  for (int i = 0; i < 2; i++) {
+    if (canvasPresenter.slotHolding(wanted[i]) >= 0) continue;
+    renderIntoSlot(canvasPresenter.slotToRenderInto(wanted[i]), wanted[i]);
+    return;  // one per pass
+  }
 }
 
 static void tryStartDrag(int dx, int dy) {
@@ -697,21 +775,31 @@ static void tryStartDrag(int dx, int dy) {
   // index arithmetic.
   const int16_t base = (int16_t)((horizontal ? (dx > 0 ? -1 : 1) : (dy > 0 ? -1 : 1)) * SCREEN_SIZE);
 
+  const int target = ((currentScreenIndex + delta) % count + count) % count;
+
+  // Usually already there, rendered while the device was idle - which is the
+  // whole point. Rendering here blocks the loop for as long as a screen
+  // takes, and the panel is not read at all meanwhile, so the rest of the
+  // gesture is lost.
   const uint32_t stallStart = millis();
-  screenRenderer->setCanvas(&canvasPresenter.transitionCanvas());
-  const bool ok = screenRenderer->renderScreen(((currentScreenIndex + delta) % count + count) % count);
-  screenRenderer->setCanvas(&canvasPresenter.canvas());
+  int slot = canvasPresenter.slotHolding(target);
+  if (slot < 0) {
+    slot = canvasPresenter.slotToRenderInto(target);
+    if (!renderIntoSlot(slot, target)) return;
+  }
 #if INPUT_DEBUG
   lastStartStallMs = millis() - stallStart;
   if (lastStartStallMs > worstStartStallMs) worstStartStallMs = lastStartStallMs;
 #endif
-  if (!ok) return;
 
-  dragTargetIndex = ((currentScreenIndex + delta) % count + count) % count;
+  dragTargetIndex = target;
   dragHorizontal = horizontal;
   dragTravel = -base;
-  canvasPresenter.beginTransition(horizontal ? base : 0, horizontal ? 0 : base);
+  canvasPresenter.beginTransition(slot, horizontal ? base : 0, horizontal ? 0 : base);
   dragActive = true;
+#if INPUT_DEBUG
+  gestureDragStarted = true;
+#endif
   applyDragOffset(0);
 }
 
@@ -789,10 +877,11 @@ static void updateDragAnimation() {
 
 // Works from sampleTouch()'s cached reading, never from cst816Read() - see
 // its comment for why a second read would find nothing.
-static void pollTouchGestures() {
+static void pollTouchGesturesInner() {
   if (touchIsDown) {
 #if INPUT_DEBUG
     touchSampleCount++;
+    gestureSamples++;
     lastTouchSampleX = touchX;
     lastTouchSampleY = touchY;
 #endif
@@ -802,10 +891,15 @@ static void pollTouchGestures() {
       touchStartY = touchY;
       touchStartMs = millis();
       dragDecided = false;
+#if INPUT_DEBUG
+      gestureSamples = 0;
+      gestureDragStarted = false;
+#endif
     }
     touchLastX = touchX;
     touchLastY = touchY;
     touchLastDownMs = millis();
+    lastTouchActivityMs = touchLastDownMs;
 
     const int dx = touchX - touchStartX;
     const int dy = touchY - touchStartY;
@@ -877,7 +971,13 @@ static void pollTouchGestures() {
     // Guarded by DRAG_START_PX so that jitter over a millisecond - which is
     // arbitrarily fast - cannot page a screen; it has to be movement that
     // was deliberate enough to have started the drag in the first place.
-    const bool flicked = travelled >= DRAG_START_PX &&
+    // Floored at half a normal swipe. The speed rule exists to rescue a fast
+    // gesture whose travel was cut short, and pre-rendering the neighbours
+    // removed the thing that cut it short - so its job now is only genuinely
+    // quick short swipes. At the old floor (the 12px that starts a drag at
+    // all) a 14px brush across the glass paged a screen, recorded on
+    // hardware in the same run that found the off-axis rule above.
+    const bool flicked = travelled >= DRAG_FLICK_PX / 2 &&
                          (unsigned long)(travelled * 1000) >= (unsigned long)FLICK_PX_PER_SECOND * duration;
     const bool commit = travelled >= DRAG_COMMIT_PX ||
                         (duration <= DRAG_FLICK_MS && travelled >= DRAG_FLICK_PX) ||
@@ -916,9 +1016,9 @@ static void pollTouchGestures() {
 
   const char *buttonId = nullptr;
   if (abs(dx) > abs(dy)) {
-    if (abs(dy) <= SWIPE_MAX_OFF_AXIS) buttonId = dx > 0 ? "swipe-right" : "swipe-left";
+    if (abs(dx) >= abs(dy) * SWIPE_AXIS_RATIO) buttonId = dx > 0 ? "swipe-right" : "swipe-left";
   } else {
-    if (abs(dx) <= SWIPE_MAX_OFF_AXIS) buttonId = dy > 0 ? "swipe-down" : "swipe-up";
+    if (abs(dy) >= abs(dx) * SWIPE_AXIS_RATIO) buttonId = dy > 0 ? "swipe-down" : "swipe-up";
   }
 #if INPUT_DEBUG
   lastReleaseVerdict = buttonId ? buttonId : "off-axis";
@@ -934,6 +1034,39 @@ static void pollTouchGestures() {
   }
   dispatchInput(buttonId);
 }
+
+// One row per released gesture, whichever of the inner function's several
+// exits produced it. Wrapping is deliberate: the release path returns from
+// half a dozen places (settled drag, tap, off-axis, menu kept open,
+// dispatch) and threading a log call through all of them is how one gets
+// missed. touchReleaseCount changing is the single reliable "a gesture just
+// ended" signal, and lastReleaseVerdict is final by then.
+static void pollTouchGesturesRecorded() {
+#if INPUT_DEBUG
+  const uint32_t releasesBefore = touchReleaseCount;
+  const uint32_t abandonedBefore = dragAxisAbandoned;
+  const bool menuWasOpen = screenMenu && screenMenu->isActive();
+  const uint16_t samples = gestureSamples;
+  const bool dragStarted = gestureDragStarted;
+  pollTouchGesturesInner();
+  if (touchReleaseCount == releasesBefore) return;
+  GestureRecord &g = gestureLog[gestureLogIndex % GESTURE_LOG_SIZE];
+  g.dx = (int16_t)lastReleaseDx;
+  g.dy = (int16_t)lastReleaseDy;
+  g.durationMs = (uint16_t)lastReleaseDurationMs;
+  g.samples = samples;
+  g.dragStarted = dragStarted;
+  g.dragAbandoned = dragAxisAbandoned != abandonedBefore;
+  g.menuWasOpen = menuWasOpen;
+  strncpy(g.verdict, lastReleaseVerdict, sizeof(g.verdict) - 1);
+  g.verdict[sizeof(g.verdict) - 1] = ' ';
+  g.atMs = millis();
+  gestureLogIndex++;
+#else
+  pollTouchGesturesInner();
+#endif
+}
+
 
 #if INPUT_DEBUG
 // Waveform recorder for the encoder pins, retrieved over GET /api/debug -
@@ -1070,6 +1203,25 @@ static String buildDebugJson() {
   }
   out += ",\"lastFlickPxPerSecond\":" + String(lastFlickPxPerSecond);
   out += ",\"dragAxisAbandoned\":" + String(dragAxisAbandoned);
+  out += ",\"slotScreens\":[" + String(canvasPresenter.slotScreen(0)) + "," +
+         String(canvasPresenter.slotScreen(1)) + "]";
+  out += ",\"gestureCount\":" + String(gestureLogIndex);
+  out += ",\"gestures\":[";
+  {
+    uint32_t total = gestureLogIndex;
+    uint32_t n = total < (uint32_t)GESTURE_LOG_SIZE ? total : (uint32_t)GESTURE_LOG_SIZE;
+    for (uint32_t k = 0; k < n; k++) {
+      const GestureRecord &g = gestureLog[(total - n + k) % GESTURE_LOG_SIZE];
+      if (k > 0) out += ",";
+      out += "{\"dx\":" + String(g.dx) + ",\"dy\":" + String(g.dy);
+      out += ",\"ms\":" + String(g.durationMs) + ",\"samples\":" + String(g.samples);
+      out += ",\"dragStarted\":" + String(g.dragStarted ? "true" : "false");
+      out += ",\"dragAbandoned\":" + String(g.dragAbandoned ? "true" : "false");
+      out += ",\"menuWasOpen\":" + String(g.menuWasOpen ? "true" : "false");
+      out += ",\"verdict\":\"" + String(g.verdict) + "\",\"at\":" + String(g.atMs) + "}";
+    }
+  }
+  out += "]";
   out += ",\"lastStartStallMs\":" + String(lastStartStallMs);
   out += ",\"worstStartStallMs\":" + String(worstStartStallMs);
   // Which screen the device believes it is on. Without it the only way to
@@ -1168,6 +1320,7 @@ static void loadAndRenderProject() {
   // Icon paths are screen-id-based, not content-hashed, so a redeploy can
   // change what a path's bytes are - the cache must not survive a reload.
   ColorAssetLoader::clearGrayscaleMaskCache();
+  canvasPresenter.invalidateSlots();
   if (screenRenderer == nullptr) {
     screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
   }
@@ -1281,6 +1434,9 @@ static void onMqttMessage(const String &topic, const String &payload) {
 
   if (!projectLoader.isLoaded()) return;
   projectLoader.setTopicValue(topic, payload);
+  // Any screen may show this value, so every pre-rendered neighbour is now
+  // a picture of how that screen used to look.
+  canvasPresenter.invalidateSlots();
 
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
@@ -1554,8 +1710,9 @@ void loop() {
   mqttClient.loop();
   subscribeToAllTopics();
 
-  pollTouchGestures();
+  pollTouchGesturesRecorded();
   updateDragAnimation();
+  prerenderNeighbours();
   watchForOffCentre();
   pollEncoder();
 

@@ -69,12 +69,41 @@ public:
   // Deliberately no ownership of *what* the transition means: the caller
   // decides which screen is incoming and from which edge. This class only
   // knows that two images move together.
-  ClippedCanvas16& transitionCanvas() { return *transitionCanvas_; }
+  // Two of them, one per neighbour, so both directions can be standing
+  // ready before a finger ever touches the glass.
+  //
+  // Rendering the incoming screen at the moment a drag starts blocks the
+  // loop for as long as that project's screen takes - 165ms measured on a
+  // real one - and the panel is not read at all while it does. A swipe that
+  // finishes inside that window is truncated to whatever was sampled before
+  // it began, which is a handful of pixels, and everything downstream then
+  // judges the gesture on those: it looked like a nudge, sprang back, and
+  // whatever the swipe was bound to never fired. Three failures in ten real
+  // attempts, recorded on hardware 2026-08-22.
+  static const int TRANSITION_SLOTS = 2;
+
+  ClippedCanvas16& slotCanvas(int slot) { return *transitionCanvas_[slot]; }
+
+  // Which screen a slot currently holds, or -1 if nothing usable.
+  int slotScreen(int slot) const { return transitionScreen_[slot]; }
+  void setSlotScreen(int slot, int screenIndex) { transitionScreen_[slot] = screenIndex; }
+
+  // The slot already holding this screen, or -1.
+  int slotHolding(int screenIndex) const;
+
+  // A slot to render this screen into: an empty one if there is one, else
+  // the one not holding the screen we are coming from.
+  int slotToRenderInto(int screenIndex) const;
+
+  // Forget what the slots hold. Anything that can change what a screen looks
+  // like - a new project, a topic value arriving - has to call this, or a
+  // drag will slide in a picture of how that screen used to look.
+  void invalidateSlots();
 
   // Parks the incoming image at (baseX, baseY) relative to centre - the
   // edge it will travel in from - and makes it visible. Call after
   // rendering into transitionCanvas().
-  void beginTransition(int16_t baseX, int16_t baseY);
+  void beginTransition(int slot, int16_t baseX, int16_t baseY);
 
   // Moves both images: the outgoing one to (dx, dy), the incoming one to
   // its base plus the same delta. So the two stay rigidly joined and the
@@ -109,7 +138,7 @@ public:
 
   // False when the second canvas could not be allocated. Callers fall back
   // to an instant screen change rather than skipping the change itself.
-  bool canTransition() const { return transitionImage_ != nullptr; }
+  bool canTransition() const { return transitionImage_[0] != nullptr; }
 
   // Where the two images actually sit, straight out of LVGL rather than out
   // of the caller's idea of where it put them. The distinction matters: the
@@ -118,11 +147,11 @@ public:
   // own belief back would confirm every such bug as fine.
   int16_t imageX() const { return image_ ? lv_obj_get_x(image_) : 0; }
   int16_t imageY() const { return image_ ? lv_obj_get_y(image_) : 0; }
-  int16_t transitionImageX() const { return transitionImage_ ? lv_obj_get_x(transitionImage_) : 0; }
-  int16_t transitionImageY() const { return transitionImage_ ? lv_obj_get_y(transitionImage_) : 0; }
-  bool transitionImageHidden() const {
-    return transitionImage_ == nullptr || lv_obj_has_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
-  }
+  int16_t transitionImageX() const;
+  int16_t transitionImageY() const;
+  // True only when *no* slot is showing - "the transition is over" has to
+  // mean all of them, not whichever one was asked about.
+  bool transitionImageHidden() const;
 
 private:
   uint16_t width_;
@@ -130,9 +159,11 @@ private:
   ClippedCanvas16* canvas_ = nullptr;
   lv_img_dsc_t descriptor_ = {};
   lv_obj_t* image_ = nullptr;
-  ClippedCanvas16* transitionCanvas_ = nullptr;
-  lv_img_dsc_t transitionDescriptor_ = {};
-  lv_obj_t* transitionImage_ = nullptr;
+  ClippedCanvas16* transitionCanvas_[TRANSITION_SLOTS] = {nullptr, nullptr};
+  lv_img_dsc_t transitionDescriptor_[TRANSITION_SLOTS] = {};
+  lv_obj_t* transitionImage_[TRANSITION_SLOTS] = {nullptr, nullptr};
+  int transitionScreen_[TRANSITION_SLOTS] = {-1, -1};
+  int activeSlot_ = -1;
   int16_t transitionBaseX_ = 0;
   int16_t transitionBaseY_ = 0;
   bool transitionActive_ = false;
