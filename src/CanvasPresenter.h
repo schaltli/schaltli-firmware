@@ -92,6 +92,19 @@ public:
   // still the one on screen, so the swap never has to happen.
   void endTransition();
 
+  // Copies the incoming screen's pixels into the normal canvas, so the
+  // transition can end without rendering that screen a second time.
+  //
+  // The alternative - re-rendering the destination - was what shipped first,
+  // and it was wrong for a reason that only shows on a heavy project. The
+  // whole call happens with the display frozen in whatever pose the last
+  // animation step left, because nothing pumps LVGL while it runs. At 13ms a
+  // screen nobody could see it; at 181ms (measured on a real project, 2026
+  // -08-22) the screen sat visibly part-way across for a fifth of a second
+  // at the end of every swipe. A 259KB copy is ~10ms and, unlike a re-render,
+  // cannot disagree with what the user just watched slide into place.
+  bool adoptTransitionCanvas();
+
   bool transitionActive() const { return transitionActive_; }
 
   // False when the second canvas could not be allocated. Callers fall back

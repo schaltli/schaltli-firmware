@@ -583,6 +583,19 @@ static bool dragAnimCommits = false;
 static int dragAnimFrom = 0, dragAnimTo = 0;
 static uint32_t dragAnimStartMs = 0;
 
+#if INPUT_DEBUG
+// The two points where the loop blocks and the display therefore freezes
+// mid-gesture: rendering the incoming screen at the start, and finishing
+// the transition at the end. The off-centre watchdog further down cannot
+// see either of them - the loop is not running, so there is nothing to
+// tick - which is exactly how a fifth of a second of visibly off-centre
+// screen passed a green test suite.
+static uint32_t lastCommitStallMs = 0;
+static uint32_t worstCommitStallMs = 0;
+static uint32_t lastStartStallMs = 0;
+static uint32_t worstStartStallMs = 0;
+#endif
+
 static void applyDragOffset(int v) {
   dragOffset = v;
   if (dragHorizontal) canvasPresenter.setTransitionOffset((int16_t)v, 0);
@@ -623,9 +636,14 @@ static void tryStartDrag(int dx, int dy) {
   // index arithmetic.
   const int16_t base = (int16_t)((horizontal ? (dx > 0 ? -1 : 1) : (dy > 0 ? -1 : 1)) * SCREEN_SIZE);
 
+  const uint32_t stallStart = millis();
   screenRenderer->setCanvas(&canvasPresenter.transitionCanvas());
   const bool ok = screenRenderer->renderScreen(((currentScreenIndex + delta) % count + count) % count);
   screenRenderer->setCanvas(&canvasPresenter.canvas());
+#if INPUT_DEBUG
+  lastStartStallMs = millis() - stallStart;
+  if (lastStartStallMs > worstStartStallMs) worstStartStallMs = lastStartStallMs;
+#endif
   if (!ok) return;
 
   dragTargetIndex = ((currentScreenIndex + delta) % count + count) % count;
@@ -688,13 +706,23 @@ static void updateDragAnimation() {
   }
   applyDragOffset(dragAnimTo);
   dragAnimating = false;
-  // Order matters. At this point the incoming image is centred and the
-  // outgoing one is parked off-screen, so rendering the destination into
-  // the normal canvas is invisible - and endTransition then brings that
-  // canvas back to centre already showing the destination. Reversing the
-  // two would put the old screen back on display for one frame.
-  if (dragAnimCommits) renderScreenIndex(dragTargetIndex);
+  // Everything from here to endTransition runs with the display frozen -
+  // nothing pumps LVGL in between - so it must be short. Copying the pixels
+  // the transition canvas already holds is ~10ms; re-rendering that screen,
+  // which is what this did first, is however long the project takes, and on
+  // a real one that was 181ms of the screen sitting visibly part-way across
+  // at the end of every swipe. Reported from hardware, and the reason the
+  // first fix for "not centred" was not enough: the position was right, the
+  // display was just still showing the pose from before it was set.
+  const uint32_t stallStart = millis();
+  if (dragAnimCommits && canvasPresenter.adoptTransitionCanvas()) {
+    currentScreenIndex = dragTargetIndex;
+  }
   canvasPresenter.endTransition();
+#if INPUT_DEBUG
+  lastCommitStallMs = millis() - stallStart;
+  if (lastCommitStallMs > worstCommitStallMs) worstCommitStallMs = lastCommitStallMs;
+#endif
   dragActive = false;
 }
 
@@ -757,7 +785,13 @@ static void pollTouchGestures() {
   // to settle it one way or the other. It must never also fall through to
   // the classifier below, or the screen would page twice from one gesture.
   if (dragActive) {
-    const int travelled = abs(dragOffset);
+    // Measured from the finger, not from dragOffset. The two are the same
+    // only while the loop keeps up: rendering the incoming screen blocks it
+    // for as long as that project's screen takes (181ms on a real one), and
+    // a quick flick delivered during that block would be judged on an offset
+    // still sitting near zero and cancelled - the swipe simply doing
+    // nothing.
+    const int travelled = abs(dragHorizontal ? dx : dy);
     const bool commit = travelled >= DRAG_COMMIT_PX ||
                         (duration <= DRAG_FLICK_MS && travelled >= DRAG_FLICK_PX);
     dragAnimFrom = dragOffset;
@@ -903,6 +937,10 @@ static String buildDebugJson() {
   out += ",\"offCentreLastX\":" + String(offCentreLastX);
   out += ",\"offCentreLastY\":" + String(offCentreLastY);
   out += ",\"offCentreLongestMs\":" + String(offCentreLongestMs);
+  out += ",\"lastCommitStallMs\":" + String(lastCommitStallMs);
+  out += ",\"worstCommitStallMs\":" + String(worstCommitStallMs);
+  out += ",\"lastStartStallMs\":" + String(lastStartStallMs);
+  out += ",\"worstStartStallMs\":" + String(worstStartStallMs);
   // Which screen the device believes it is on. Without it the only way to
   // check where a burst of navigation ended is to stream a 260KB snapshot
   // and read pixels, which needs a fixture whose screens differ visibly -

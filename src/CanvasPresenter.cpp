@@ -94,6 +94,14 @@ void CanvasPresenter::setTransitionOffset(int16_t dx, int16_t dy) {
   lv_obj_align(transitionImage_, LV_ALIGN_CENTER, transitionBaseX_ + dx, transitionBaseY_ + dy);
 }
 
+bool CanvasPresenter::adoptTransitionCanvas() {
+  if (canvas_ == nullptr || transitionCanvas_ == nullptr) return false;
+  memcpy(canvas_->getBuffer(), transitionCanvas_->getBuffer(),
+         (size_t)width_ * (size_t)height_ * sizeof(uint16_t));
+  lv_obj_invalidate(image_);
+  return true;
+}
+
 void CanvasPresenter::endTransition() {
   if (transitionImage_ == nullptr) return;
   transitionActive_ = false;
