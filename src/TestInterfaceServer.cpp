@@ -11,6 +11,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   canvas_ = &canvas;
   webServer_ = new WebServer(port);
   webServer_->on("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
+  webServer_->on("/panel.bmp", HTTP_GET, [this]() { this->handlePanel(); });
   webServer_->on("/ddf.zip", HTTP_GET, [this]() { this->handleDdfZip(); });
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
@@ -277,7 +278,16 @@ void TestInterfaceServer::handleClient() {
 }
 
 void TestInterfaceServer::handleSnapshot() {
-  sendBMP();
+  sendBMP(canvas_->getBuffer());
+}
+
+void TestInterfaceServer::handlePanel() {
+  const uint16_t* shadow = panelShadowHandler_ ? panelShadowHandler_() : nullptr;
+  if (shadow == nullptr) {
+    sendJSONResponse(false, "No panel shadow on this build");
+    return;
+  }
+  sendBMP(shadow);
 }
 
 void TestInterfaceServer::handleDdfZip() {
@@ -354,7 +364,7 @@ void TestInterfaceServer::generateBMPHeader(uint8_t* header, int width, int heig
   header[53] = 0;
 }
 
-void TestInterfaceServer::sendBMP() {
+void TestInterfaceServer::sendBMP(const uint16_t* source) {
   int width = canvas_->width();
   int height = canvas_->height();
   int rowBytes = width * 3;
@@ -371,7 +381,7 @@ void TestInterfaceServer::sendBMP() {
   webServer_->send(200, "image/bmp", "");
   webServer_->client().write(header, 54);
 
-  uint16_t* buffer = canvas_->getBuffer();
+  const uint16_t* buffer = source;
   uint8_t* rowBuffer = (uint8_t*)malloc(paddedRowBytes);
   if (!rowBuffer) {
     Serial.println("[TestInterface] out of memory building snapshot row");

@@ -50,6 +50,13 @@ bool CanvasPresenter::begin() {
   descriptor_.data_size = (uint32_t)width_ * height_ * sizeof(lv_color_t);
   descriptor_.data = (const uint8_t*)buffer;
 
+  // An LVGL screen is scrollable by default, and the transition parks a
+  // full-screen child a whole screen width outside it. That makes the screen
+  // scrollable in earnest, and a scrolled screen draws its children shifted -
+  // which shows up as a band of bare screen background along the edge that
+  // no image covers any more, exactly where a swipe left the pair.
+  lv_obj_clear_flag(lv_scr_act(), LV_OBJ_FLAG_SCROLLABLE);
+
   image_ = lv_img_create(lv_scr_act());
   lv_img_set_src(image_, &descriptor_);
   lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
@@ -114,6 +121,36 @@ void CanvasPresenter::endTransition() {
   // wherever the drag left it, so it is forced now rather than left to
   // whenever LVGL's refresh period next comes round.
   lv_obj_update_layout(image_);
+  // And repaint the whole screen, not just what LVGL worked out had moved.
+  //
+  // Measured on hardware (2026-08-22) with a readback of what actually
+  // reached the panel: after a committed drag a 34px stripe down the right
+  // edge still held the previous composition, every row, while the rest of
+  // the glass was correct. The panel has no framebuffer to fall back on -
+  // whatever is not rewritten simply stays - so an invalidation that is
+  // even slightly short leaves a permanent seam, and the exact geometry
+  // depends on where the settle happened to stop.
+  //
+  // Working out precisely which areas the two images left uncovered while
+  // one of them is being hidden and the other moved a whole screen width is
+  // possible, and it is not worth it: this happens once at the end of a
+  // gesture and costs one full repaint that was going to happen anyway.
+  lv_obj_invalidate(lv_scr_act());
+  // And draw it now, synchronously, rather than marking it and hoping.
+  //
+  // Marking alone was not enough, and the evidence is unambiguous: with
+  // every rectangle LVGL handed to the panel logged, the last flush before
+  // this point covered the whole screen and *nothing followed it at all* -
+  // no repaint was ever issued for the invalidation above. The panel has no
+  // framebuffer to fall back on, so the screen kept the composition from
+  // mid-swipe: a stripe down the right edge still showing the screen being
+  // swiped away, indefinitely, while the canvas, the object positions and
+  // every other piece of state read perfectly healthy.
+  //
+  // lv_refr_now takes the question out of LVGL's invalidation bookkeeping
+  // entirely. It costs one full repaint, ~25ms, which is a repaint this
+  // transition needs by definition.
+  lv_refr_now(NULL);
 }
 
 void CanvasPresenter::present() {

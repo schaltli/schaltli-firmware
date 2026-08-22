@@ -68,6 +68,18 @@ public:
   // real detector, the real transition and the real settle.
   using TouchHandler = std::function<void(int16_t x, int16_t y, bool down)>;
 
+  // A copy of every pixel that has actually been pushed to the panel, or
+  // null if the firmware is not keeping one.
+  //
+  // /snapshot.bmp serves the canvas, which is what the renderer *drew*. The
+  // panel has no framebuffer anyone here can read, and it keeps whatever was
+  // last written to it, so the two can disagree - and twice now a fault has
+  // been invisible from the canvas side while being the only thing on the
+  // glass: a screen frozen part-way through a swipe, with the canvas, the
+  // object positions and the watchdog all reporting perfect health. This is
+  // the readback that ends that argument.
+  using PanelShadowHandler = std::function<const uint16_t*()>;
+
   // Serves whatever JSON the firmware wants to expose for bring-up
   // diagnosis at GET /api/debug. Exists because serial monitoring is not a
   // neutral observer on this board: the S3's native USB interprets DTR/RTS
@@ -87,6 +99,7 @@ public:
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
   void setTouchHandler(TouchHandler handler) { touchHandler_ = handler; }
+  void setPanelShadowHandler(PanelShadowHandler handler) { panelShadowHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
   void stop();
 
@@ -104,6 +117,8 @@ private:
   void handleGetTopicValues();
   void handleInput();
   void handleTouch();
+  void handlePanel();
+  void sendBMP(const uint16_t* source);
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();
@@ -122,6 +137,7 @@ private:
   TopicValueHandler topicValueHandler_;
   InputHandler inputHandler_;
   TouchHandler touchHandler_;
+  PanelShadowHandler panelShadowHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
 };

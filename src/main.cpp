@@ -305,6 +305,24 @@ static uint32_t lastFrameEndMs = 0;
 // So: count globally, attribute by difference between one present() and the
 // next. Everything pushed in that window belongs to the frame presented at
 // its start, wherever the pump that pushed it happened to run.
+#if INPUT_DEBUG
+// Mirrors every pixel handed to the panel, so GET /panel.bmp can show what
+// is on the glass rather than what the renderer drew. Kept out of the qspi
+// and lvgl attributions below - it is measurement scaffolding and must not
+// be charged to either.
+static uint16_t *panelShadow = nullptr;
+// Every rectangle LVGL hands to the panel, newest last. The chunk *count*
+// says how much was pushed but not where, and "6 chunks pushed, most of the
+// screen still wrong" is a sentence that can only be resolved by knowing
+// which six.
+struct FlushArea { int16_t x1, y1, x2, y2; uint16_t atMs; };
+static const int FLUSH_LOG_SIZE = 12;
+static FlushArea flushLog[FLUSH_LOG_SIZE];
+static uint32_t flushLogIndex = 0;
+static volatile uint32_t totalShadowUs = 0;
+static uint32_t markShadowUs = 0;
+#endif
+
 static volatile uint32_t totalChunks = 0;
 static volatile uint32_t totalQspiUs = 0;
 static uint32_t totalLvglUs = 0;
@@ -317,6 +335,22 @@ static void dispFlushCb(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *
   gfx->draw16bitRGBBitmap(area->x1, area->y1, (uint16_t *)color_p, w, h);
   totalQspiUs += (uint32_t)(esp_timer_get_time() - pushStart);
   totalChunks++;
+#if INPUT_DEBUG
+  {
+    FlushArea &fa = flushLog[flushLogIndex % FLUSH_LOG_SIZE];
+    fa.x1 = area->x1; fa.y1 = area->y1; fa.x2 = area->x2; fa.y2 = area->y2;
+    fa.atMs = (uint16_t)millis();
+    flushLogIndex++;
+  }
+  if (panelShadow != nullptr) {
+    const int64_t shadowStart = esp_timer_get_time();
+    const uint16_t *src = (const uint16_t *)color_p;
+    for (uint32_t row = 0; row < h; row++) {
+      memcpy(&panelShadow[(area->y1 + row) * SCREEN_SIZE + area->x1], src + row * w, w * sizeof(uint16_t));
+    }
+    totalShadowUs += (uint32_t)(esp_timer_get_time() - shadowStart);
+  }
+#endif
   lv_disp_flush_ready(disp);
 }
 
@@ -338,7 +372,14 @@ static void closeOpenFrame() {
   if (frameLogWriteIndex == 0) return;
   FrameTiming &f = frameLog[(frameLogWriteIndex - 1) % FRAME_LOG_SIZE];
   const uint32_t qspi = totalQspiUs - markQspiUs;
-  const uint32_t lvgl = totalLvglUs - markLvglUs;
+  uint32_t lvgl = totalLvglUs - markLvglUs;
+#if INPUT_DEBUG
+  // The shadow copy runs inside the flush and so inside the LVGL pump that
+  // called it; charged to LVGL it would make every timing here a lie about
+  // the shipping build.
+  const uint32_t shadow = totalShadowUs - markShadowUs;
+  lvgl = lvgl > shadow ? lvgl - shadow : 0;
+#endif
   f.chunks = (uint16_t)(totalChunks - markChunks);
   f.qspiUs = qspi;
   // LVGL's own share is whatever its pumps cost beyond the bytes they
@@ -378,6 +419,9 @@ static bool renderScreenIndex(int index) {
   markChunks = totalChunks;
   markQspiUs = totalQspiUs;
   markLvglUs = totalLvglUs;
+#if INPUT_DEBUG
+  markShadowUs = totalShadowUs;
+#endif
 
   canvasPresenter.present();
   // present() only marks the area dirty; pump LVGL so an HTTP caller that
@@ -939,6 +983,45 @@ static String buildDebugJson() {
   out += ",\"offCentreLongestMs\":" + String(offCentreLongestMs);
   out += ",\"lastCommitStallMs\":" + String(lastCommitStallMs);
   out += ",\"worstCommitStallMs\":" + String(worstCommitStallMs);
+  // Pixels where the glass disagrees with what was drawn. Computed here
+  // rather than by downloading both bitmaps, because each of those is 388KB
+  // and streams for about a second with the loop blocked - far too coarse to
+  // measure how long a stale region survives, which is the whole question.
+  {
+    uint32_t diff = 0;
+    if (panelShadow != nullptr) {
+      const uint16_t *drawn = canvasPresenter.canvas().getBuffer();
+      const uint32_t n = (uint32_t)SCREEN_SIZE * SCREEN_SIZE;
+      for (uint32_t i = 0; i < n; i++) {
+        if (panelShadow[i] != drawn[i]) diff++;
+      }
+    }
+    out += ",\"panelDiffPixels\":" + String(diff);
+    // A cheap fingerprint of the canvas, so "is anything still redrawing
+    // the screen?" can be answered by polling instead of by downloading a
+    // 388KB bitmap twice and hoping nothing moved in between.
+    uint32_t hash = 2166136261u;
+    const uint16_t *drawnPixels = canvasPresenter.canvas().getBuffer();
+    for (uint32_t i = 0; i < (uint32_t)SCREEN_SIZE * SCREEN_SIZE; i += 7) {
+      hash = (hash ^ drawnPixels[i]) * 16777619u;
+    }
+    out += ",\"canvasHash\":" + String(hash);
+    out += ",\"scrollX\":" + String(lv_obj_get_scroll_x(lv_scr_act()));
+    out += ",\"scrollY\":" + String(lv_obj_get_scroll_y(lv_scr_act()));
+    out += ",\"screenMenuActive\":" + String(screenMenu && screenMenu->isActive() ? "true" : "false");
+    out += ",\"flushes\":[";
+    {
+      uint32_t total = flushLogIndex;
+      uint32_t n = total < (uint32_t)FLUSH_LOG_SIZE ? total : (uint32_t)FLUSH_LOG_SIZE;
+      for (uint32_t k = 0; k < n; k++) {
+        const FlushArea &fa = flushLog[(total - n + k) % FLUSH_LOG_SIZE];
+        if (k > 0) out += ",";
+        out += "[" + String(fa.x1) + "," + String(fa.y1) + "," + String(fa.x2) + "," +
+               String(fa.y2) + "," + String(fa.atMs) + "]";
+      }
+    }
+    out += "]";
+  }
   out += ",\"lastStartStallMs\":" + String(lastStartStallMs);
   out += ",\"worstStartStallMs\":" + String(worstStartStallMs);
   // Which screen the device believes it is on. Without it the only way to
@@ -1205,6 +1288,7 @@ static void setupWiFi() {
       testInterface.setScreenSwitchHandler(renderScreenIndex);
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
 #if INPUT_DEBUG
+      testInterface.setPanelShadowHandler([]() -> const uint16_t * { return panelShadow; });
       // Guarded with the rest of the diagnosis surface: the suppression
       // window it writes to only exists in that build, so registering it
       // unconditionally would break the moment INPUT_DEBUG is turned off -
@@ -1349,6 +1433,19 @@ void setup() {
   indev_drv.type = LV_INDEV_TYPE_POINTER;
   indev_drv.read_cb = touchReadCb;
   lv_indev_drv_register(&indev_drv);
+
+#if INPUT_DEBUG
+  // Allocated before the first flush can happen. A failure is not fatal -
+  // /panel.bmp simply says it has nothing, and everything else runs as
+  // usual.
+  panelShadow = (uint16_t *)heap_caps_malloc((size_t)SCREEN_SIZE * SCREEN_SIZE * sizeof(uint16_t),
+                                             MALLOC_CAP_SPIRAM);
+  if (panelShadow == nullptr) {
+    Serial.println("[panel] no shadow buffer - GET /panel.bmp will be unavailable");
+  } else {
+    memset(panelShadow, 0, (size_t)SCREEN_SIZE * SCREEN_SIZE * sizeof(uint16_t));
+  }
+#endif
 
   if (!canvasPresenter.begin()) {
     Serial.println("FATAL: no canvas - nothing can be rendered");
