@@ -616,6 +616,15 @@ static const int DRAG_COMMIT_PX = 120;  // a third of the way across
 // identically whether or not its direction happens to be bound to paging.
 static const unsigned long DRAG_FLICK_MS = 250;
 static const int DRAG_FLICK_PX = SWIPE_MIN_DISTANCE;
+// A flick is better recognised by speed than by distance, because distance
+// is exactly what gets lost. Rendering the incoming screen blocks the loop
+// for as long as that project's screen takes - 181ms on a real one - and
+// the panel cannot be sampled while it does, so a fast swipe is over before
+// the follow ever starts and reports whatever tiny travel was seen in the
+// millisecond before the render began. Judged on distance it reads as a
+// nudge and springs back; judged on speed, 25px in 12ms is unmistakably a
+// throw. 500px/s, as travelled*2 >= duration to keep it in integers.
+static const int FLICK_PX_PER_SECOND = 500;
 static const uint32_t DRAG_SETTLE_MS = 160;
 
 static bool dragDecided = false;  // this gesture has already been offered a drag
@@ -638,6 +647,9 @@ static uint32_t lastCommitStallMs = 0;
 static uint32_t worstCommitStallMs = 0;
 static uint32_t lastStartStallMs = 0;
 static uint32_t worstStartStallMs = 0;
+// Speed of the last released gesture, so a swipe that did not page can be
+// told apart from one that was never seen as fast.
+static int lastFlickPxPerSecond = 0;
 #endif
 
 static void applyDragOffset(int v) {
@@ -836,15 +848,23 @@ static void pollTouchGestures() {
     // still sitting near zero and cancelled - the swipe simply doing
     // nothing.
     const int travelled = abs(dragHorizontal ? dx : dy);
+    // Guarded by DRAG_START_PX so that jitter over a millisecond - which is
+    // arbitrarily fast - cannot page a screen; it has to be movement that
+    // was deliberate enough to have started the drag in the first place.
+    const bool flicked = travelled >= DRAG_START_PX &&
+                         (unsigned long)(travelled * 1000) >= (unsigned long)FLICK_PX_PER_SECOND * duration;
     const bool commit = travelled >= DRAG_COMMIT_PX ||
-                        (duration <= DRAG_FLICK_MS && travelled >= DRAG_FLICK_PX);
+                        (duration <= DRAG_FLICK_MS && travelled >= DRAG_FLICK_PX) ||
+                        flicked;
     dragAnimFrom = dragOffset;
     dragAnimTo = commit ? dragTravel : 0;
     dragAnimCommits = commit;
     dragAnimStartMs = millis();
     dragAnimating = true;
 #if INPUT_DEBUG
-    lastReleaseVerdict = commit ? "drag-commit" : "drag-cancel";
+    lastReleaseVerdict = commit ? (flicked && travelled < DRAG_COMMIT_PX ? "drag-flick" : "drag-commit")
+                                : "drag-cancel";
+    lastFlickPxPerSecond = duration > 0 ? (int)((travelled * 1000L) / (long)duration) : 0;
 #endif
     return;
   }
@@ -1022,6 +1042,7 @@ static String buildDebugJson() {
     }
     out += "]";
   }
+  out += ",\"lastFlickPxPerSecond\":" + String(lastFlickPxPerSecond);
   out += ",\"lastStartStallMs\":" + String(lastStartStallMs);
   out += ",\"worstStartStallMs\":" + String(worstStartStallMs);
   // Which screen the device believes it is on. Without it the only way to
