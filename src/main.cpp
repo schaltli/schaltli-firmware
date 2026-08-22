@@ -374,6 +374,65 @@ static bool renderScreenIndex(int index) {
   return true;
 }
 
+// ------------------------------------------------------------- navigation
+//
+// Paging is separated from drawing (2026-08-21). Every detent used to
+// render a whole screen synchronously, and at ~32ms per frame a fast bezel
+// spin put 269 of 359 intermediate screens on the panel - measured. That is
+// what reads as flashing, and it got *worse* as the pipeline got faster:
+// the frames that used to be quietly dropped because LVGL's refresh timer
+// was not due now had time to complete. Optimizing the frame cost was
+// pushing on the wrong axis; the intermediate screens should not be drawn
+// at all.
+//
+// The obvious fix - draw only where the turn ends - was built and tried on
+// hardware, and it was rejected there. With no frames at all during the
+// turn the knob feels stuck, and that is subjectively worse than the
+// flashing it removes: 89 detents produced 26 frames, every one of them
+// displayed, and the verdict was still "klemmt". The intermediate frames
+// are not only noise, they are the feedback that the input is being heard.
+// Removing them removed the wrong half.
+//
+// So neither extreme, but a *rate limit*. While a turn is running the
+// screen is repainted at most every navFrameMs, showing wherever the
+// position has got to by then, and the position the turn ends on is always
+// painted. The knob keeps answering at a legible ~8 frames a second
+// instead of a 30Hz strobe, and no frame is computed that nobody sees.
+//
+// A detent still moves the *logical* position immediately, rather than
+// accumulating a delta to apply later: the next detent looks up its action
+// on the screen it is now on, and screens may bind their buttons
+// differently - a burst has to walk them exactly as a slow turn would.
+//
+// Deliberately only for next/previous-screen. A goto-screen binding, the
+// screen menu's own pick and POST /api/screen are all deliberate,
+// non-repeating acts that should render immediately - and the HTTP path
+// must, since its caller snapshots as soon as it returns.
+static bool pendingScreenRender = false;
+static uint32_t lastNavRenderMs = 0;
+// Live-adjustable over GET /api/debug?set=navFrameMs=..., so the feel can be
+// tuned against a real turn instead of one reflash per candidate value.
+// 0 restores a repaint per detent. Values below the cost of a frame itself
+// (~32ms) change nothing - that cost is the real floor.
+static uint32_t navFrameMs = 120;
+
+static void renderPendingScreen() {
+  if (!pendingScreenRender) return;
+  pendingScreenRender = false;
+  // Timed from the start of the repaint rather than its end, so the cadence
+  // is navFrameMs and not navFrameMs plus however long a repaint takes.
+  lastNavRenderMs = millis();
+  renderScreenIndex(currentScreenIndex);
+}
+
+static void navigateToScreen(int index) {
+  currentScreenIndex = index;
+  pendingScreenRender = true;
+  // Leading edge: a detent arriving after a quiet spell is drawn at once,
+  // so a single click stays instant and a spin starts answering immediately.
+  if ((millis() - lastNavRenderMs) >= navFrameMs) renderPendingScreen();
+}
+
 // ----------------------------------------------------------- input actions
 
 // One dispatcher for every named input - the knob's two directions, the four
@@ -392,7 +451,7 @@ static void dispatchButtonAction(const ButtonAction &action) {
   if (action.type == "next-screen" || action.type == "previous-screen") {
     if (count == 0) return;
     int delta = (action.type == "next-screen") ? 1 : -1;
-    renderScreenIndex(((currentScreenIndex + delta) % count + count) % count);
+    navigateToScreen(((currentScreenIndex + delta) % count + count) % count);
   } else if (action.type == "goto-screen") {
     for (int i = 0; i < count; i++) {
       if (project.screens[i].id == action.targetScreenId) {
@@ -617,6 +676,13 @@ static String buildDebugJson() {
   out += ",\"totalQspiMs\":" + String(totalQspiUs / 1000);
   out += ",\"totalLvglMs\":" + String(totalLvglUs / 1000);
   out += ",\"drawBufInternal\":" + String(drawBufInternal ? "true" : "false");
+  out += ",\"navFrameMs\":" + String(navFrameMs);
+  // Which screen the device believes it is on. Without it the only way to
+  // check where a burst of navigation ended is to stream a 260KB snapshot
+  // and read pixels, which needs a fixture whose screens differ visibly -
+  // far too much machinery for "did the rate limit lose the last detent".
+  out += ",\"screenIndex\":" + String(currentScreenIndex);
+  out += ",\"pendingScreenRender\":" + String(pendingScreenRender ? "true" : "false");
   out += ",\"freeInternalHeap\":" + String((uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
   // Newest last. gapMs is the wall-clock distance from the previous screen
   // change, so a fast bezel spin shows up as a run of small gaps - if gapMs
@@ -874,7 +940,18 @@ static void setupWiFi() {
 
       testInterface.setScreenSwitchHandler(renderScreenIndex);
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
-      testInterface.setInputHandler([](const String &buttonId) { dispatchInput(buttonId.c_str()); });
+      testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
+        dispatchInput(buttonId.c_str());
+        // The navigation rate limit is there for a physical turn, where the
+        // next detent is milliseconds away. An HTTP caller is not turning
+        // anything: it dispatches one input and photographs the panel the
+        // moment this returns, so a withheld frame would hand it the
+        // previous screen - a race that reads exactly like "the action never
+        // ran". Forced out here rather than left to the leading edge, which
+        // only happens to cover it while navFrameMs stays below the time a
+        // snapshot takes.
+        if (!deferRender) renderPendingScreen();
+      });
 #if INPUT_DEBUG
       // GET /api/debug?set=touchPeriodMs=30 adjusts the touch sample
       // period per request - the polling-rate hypothesis is tested over
@@ -883,6 +960,11 @@ static void setupWiFi() {
         if (setArg.startsWith("touchPeriodMs=")) {
           long v = setArg.substring(14).toInt();
           if (v >= 1 && v <= 500) touchPeriodMs = (uint32_t)v;
+        } else if (setArg.startsWith("navFrameMs=")) {
+          // 0 lifts the limit entirely (every detent repaints), which is how
+          // the before/after can be compared without reflashing.
+          long v = setArg.substring(11).toInt();
+          if (v >= 0 && v <= 2000) navFrameMs = (uint32_t)v;
         }
         return buildDebugJson();
       });
@@ -1050,6 +1132,14 @@ void loop() {
 
   pollTouchGestures();
   pollEncoder();
+
+  // The rate limit's trailing edge - see navigateToScreen. Placed after this
+  // pass's input polling so a detent that just arrived is already included
+  // in the frame it triggers, and so the screen a turn ends on is always
+  // painted even when the last detent fell inside a closed window.
+  if (pendingScreenRender && (millis() - lastNavRenderMs) >= navFrameMs) {
+    renderPendingScreen();
+  }
 
   // No serial reporting here on purpose - the recorder is read over
   // GET /api/debug, so nothing needs a COM port open (see the recorder's

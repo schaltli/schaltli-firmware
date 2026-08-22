@@ -52,7 +52,13 @@ public:
   // whether the *action bound to that input* resolves and runs correctly is
   // ordinary logic, and this makes that half automatable. Without it every
   // change to action dispatch would need someone standing at the device.
-  using InputHandler = std::function<void(const String& buttonId)>;
+  // `deferRender` asks for the input to be dispatched exactly as the
+  // hardware would deliver it, rate limit and all. It defaults to false:
+  // a caller over HTTP dispatches one input and snapshots as soon as this
+  // returns, so by default the resulting frame has to be on the panel by
+  // then, whatever navFrameMs happens to be set to. Only a test that is
+  // deliberately bursting - measuring the rate limit itself - passes true.
+  using InputHandler = std::function<void(const String& buttonId, bool deferRender)>;
 
   // Serves whatever JSON the firmware wants to expose for bring-up
   // diagnosis at GET /api/debug. Exists because serial monitoring is not a

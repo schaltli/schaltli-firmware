@@ -108,7 +108,10 @@ void TestInterfaceServer::handleInput() {
     return;
   }
   String id = webServer_->arg("id");
-  inputHandler_(id);
+  // defer=1 reproduces a physical burst: the frame may be withheld by the
+  // navigation rate limit instead of being forced out before the ack.
+  const bool deferRender = webServer_->arg("defer") == "1";
+  inputHandler_(id, deferRender);
   sendJSONResponse(true, "Dispatched " + id);
 }
 
