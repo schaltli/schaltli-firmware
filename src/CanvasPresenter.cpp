@@ -99,6 +99,13 @@ void CanvasPresenter::endTransition() {
   transitionActive_ = false;
   lv_obj_add_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
   lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
+  // lv_obj_align only marks the layout dirty; the coordinates it implies
+  // are not real until a refresh applies them. Everywhere else that is
+  // harmless - the next refresh draws the right thing either way - but here
+  // it is the difference between the screen being centred and sitting
+  // wherever the drag left it, so it is forced now rather than left to
+  // whenever LVGL's refresh period next comes round.
+  lv_obj_update_layout(image_);
 }
 
 void CanvasPresenter::present() {

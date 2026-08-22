@@ -640,6 +640,41 @@ static void tryStartDrag(int dx, int dy) {
 // earned it, back to the start if not. Hand-rolled rather than an lv_anim
 // because it finishes by calling renderScreenIndex, which pumps LVGL: doing
 // that from an animation's ready callback would re-enter lv_timer_handler.
+// Watches for the exact symptom reported from hardware on 2026-08-22: the
+// screen left sitting part-way across once a swipe has finished. Anything
+// other than dead centre while no transition is running is that fault, so it
+// is recorded rather than reasoned about - a state that only lasts a frame
+// and one that persists look identical in a screenshot, and completely
+// different here.
+#if INPUT_DEBUG
+static uint32_t offCentreTicks = 0;
+static int16_t offCentreLastX = 0, offCentreLastY = 0;
+static uint32_t offCentreRunStartMs = 0;
+static uint32_t offCentreLongestMs = 0;
+#endif
+
+static void watchForOffCentre() {
+#if INPUT_DEBUG
+  if (dragActive || dragAnimating) {
+    offCentreRunStartMs = 0;
+    return;
+  }
+  const int16_t x = canvasPresenter.imageX();
+  const int16_t y = canvasPresenter.imageY();
+  if (x == 0 && y == 0) {
+    offCentreRunStartMs = 0;
+    return;
+  }
+  offCentreTicks++;
+  offCentreLastX = x;
+  offCentreLastY = y;
+  const uint32_t now = millis();
+  if (offCentreRunStartMs == 0) offCentreRunStartMs = now;
+  const uint32_t runMs = now - offCentreRunStartMs;
+  if (runMs > offCentreLongestMs) offCentreLongestMs = runMs;
+#endif
+}
+
 static void updateDragAnimation() {
   if (!dragAnimating) return;
   const uint32_t elapsed = millis() - dragAnimStartMs;
@@ -693,7 +728,12 @@ static void pollTouchGestures() {
         (abs(dx) >= DRAG_START_PX || abs(dy) >= DRAG_START_PX)) {
       tryStartDrag(dx, dy);
     }
-    if (dragActive) applyDragOffset(clampDragOffset(dragHorizontal ? dx : dy));
+    // Not while the settle is running. This panel latches its last gesture
+    // for ~450ms after a lift (see sampleTouch's probe notes), which is
+    // longer than the settle - so a phantom touch lands mid-animation, with
+    // touchStart taken from its frozen coordinates, and yanks the pair to a
+    // raw offset the animation then fights for the rest of its run.
+    if (dragActive && !dragAnimating) applyDragOffset(clampDragOffset(dragHorizontal ? dx : dy));
     return;
   }
   if (!touchDown) return;
@@ -854,6 +894,15 @@ static String buildDebugJson() {
   out += ",\"dragAnimating\":" + String(dragAnimating ? "true" : "false");
   out += ",\"dragOffset\":" + String(dragOffset);
   out += ",\"dragTargetIndex\":" + String(dragTargetIndex);
+  out += ",\"imageX\":" + String(canvasPresenter.imageX());
+  out += ",\"imageY\":" + String(canvasPresenter.imageY());
+  out += ",\"transitionX\":" + String(canvasPresenter.transitionImageX());
+  out += ",\"transitionY\":" + String(canvasPresenter.transitionImageY());
+  out += ",\"transitionHidden\":" + String(canvasPresenter.transitionImageHidden() ? "true" : "false");
+  out += ",\"offCentreTicks\":" + String(offCentreTicks);
+  out += ",\"offCentreLastX\":" + String(offCentreLastX);
+  out += ",\"offCentreLastY\":" + String(offCentreLastY);
+  out += ",\"offCentreLongestMs\":" + String(offCentreLongestMs);
   // Which screen the device believes it is on. Without it the only way to
   // check where a burst of navigation ended is to stream a 260KB snapshot
   // and read pixels, which needs a fixture whose screens differ visibly -
@@ -1324,6 +1373,7 @@ void loop() {
 
   pollTouchGestures();
   updateDragAnimation();
+  watchForOffCentre();
   pollEncoder();
 
   // The rate limit's trailing edge - see navigateToScreen. Placed after this

@@ -98,6 +98,19 @@ public:
   // to an instant screen change rather than skipping the change itself.
   bool canTransition() const { return transitionImage_ != nullptr; }
 
+  // Where the two images actually sit, straight out of LVGL rather than out
+  // of the caller's idea of where it put them. The distinction matters: the
+  // whole class of bug here is the display ending up somewhere the state
+  // machine believes it is not, and a probe that reports the state machine's
+  // own belief back would confirm every such bug as fine.
+  int16_t imageX() const { return image_ ? lv_obj_get_x(image_) : 0; }
+  int16_t imageY() const { return image_ ? lv_obj_get_y(image_) : 0; }
+  int16_t transitionImageX() const { return transitionImage_ ? lv_obj_get_x(transitionImage_) : 0; }
+  int16_t transitionImageY() const { return transitionImage_ ? lv_obj_get_y(transitionImage_) : 0; }
+  bool transitionImageHidden() const {
+    return transitionImage_ == nullptr || lv_obj_has_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+  }
+
 private:
   uint16_t width_;
   uint16_t height_;
