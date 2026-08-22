@@ -6,11 +6,11 @@
 // device-scan-section.tsx can fetch+cache this device's own DDF directly
 // from a live device, the same way the e-paper firmware already does.
 //
-// Regenerate whenever ddf-source/ changes - the generator also bumps
-// DeviceInfo.h's DDF_VERSION, which is what tells the designer a cached
-// copy is stale and needs refetching.
+// Regenerate whenever ddf-source/ changes - the generator also updates
+// DeviceInfo.h's DDF_HASH, which is what tells the designer a cached copy
+// is stale and needs refetching.
 //
-// DDF version embedded here: 1.1
+// DDF version embedded here: 1.1, content hash 4b4e9cb05f153ada
 static const uint8_t DDF_ZIP[74521] = {
   0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x21, 0x00, 0xd5, 0xdb,
   0x76, 0xd6, 0x68, 0x08, 0x00, 0x00, 0x69, 0x13, 0x00, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x61, 0x64,

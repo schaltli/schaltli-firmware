@@ -1398,13 +1398,18 @@ static void publishHello() {
   JsonDocument doc;
   doc["deviceId"] = DEVICE_ID;
   doc["firmwareVersion"] = FIRMWARE_VERSION;
-  // ddfVersion+url are what make this device appear under "Announced
-  // Devices" at all - without them the designer treats it as older firmware
-  // that publishes no DDF and skips it. Still ddfVersion rather than the DDF
-  // content hash the designer is moving to, deliberately: its auto-discovery
-  // does not understand a hash yet, and no device should run ahead of a
-  // designer feature that does not exist (see DeviceInfo.h's DDF_VERSION).
-  doc["ddfVersion"] = DDF_VERSION;
+  // What this firmware can read, as one major.minor (DeviceInfo.h). The
+  // designer's deploy dialog checks it *before* uploading, so a device on
+  // an older major says so in the dialog rather than refusing the download
+  // afterwards, where the only evidence is a serial log nobody is watching.
+  doc["systemGeneration"] = String(SYSTEM_GENERATION_MAJOR) + "." + String(SYSTEM_GENERATION_MINOR);
+  // ddfHash+url are what make this device appear under "Announced Devices"
+  // at all - without them the designer treats it as firmware that publishes
+  // no DDF and skips it. The hash is the identity of the bytes served at
+  // url, and the designer verifies one against the other: if they disagree
+  // the fetch is refused rather than cached, so an announcement that lies
+  // is visible instead of quietly poisoning the designer's copy.
+  doc["ddfHash"] = DDF_HASH;
   doc["url"] = "http://" + WiFi.localIP().toString() + "/ddf.zip";
   String payload;
   serializeJson(doc, payload);

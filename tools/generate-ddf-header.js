@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Regenerates src/ddf_zip.h from this repo's own ddf-source/ (the DDF's
 // real editable source - device.json + adornment.svg + fonts/*.bdf), and
-// keeps DeviceInfo.h's DDF_VERSION in sync with the version inside it.
+// keeps DeviceInfo.h's DDF_HASH in sync with the bytes it just wrote.
 //
 // Ported from screenbee-m5dial@d73d0ff on 2026-08-19, unchanged apart from
 // this comment block and the flash command below. The designer carries no
@@ -28,6 +28,7 @@
 const fs = require("fs")
 const path = require("path")
 const zlib = require("zlib")
+const crypto = require("crypto")
 
 const REPO = path.join(__dirname, "..")
 const DEFAULT_SOURCE = path.join(REPO, "ddf-source")
@@ -160,6 +161,18 @@ const entries = collectEntries(sourceDir)
 const version = JSON.parse(fs.readFileSync(path.join(sourceDir, "device.json"), "utf8")).ddfVersion
 const zip = buildZip(entries)
 
+// The DDF's identity, and the only thing the designer compares: sha256 of
+// the served bytes, first 16 hex characters, lowercase (designer repo's
+// lib/ddf-name.ts, docs/device-contract.md §4). Computed here rather than on
+// the device precisely because here it hashes the bytes it is about to
+// write, so it cannot drift from them - and the designer *verifies* it
+// against what it downloads, refusing the fetch on a mismatch. A hash that
+// drifts does not degrade discovery, it ends it.
+//
+// Truncation is deliberate and matches the designer: this identifies a
+// build, it is not a security boundary.
+const ddfHash = crypto.createHash("sha256").update(zip).digest("hex").slice(0, 16)
+
 const lines = []
 for (let i = 0; i < zip.length; i += 16) {
   const row = Array.from(zip.subarray(i, i + 16))
@@ -176,11 +189,11 @@ const header = `#pragma once
 // device-scan-section.tsx can fetch+cache this device's own DDF directly
 // from a live device, the same way the e-paper firmware already does.
 //
-// Regenerate whenever ddf-source/ changes - the generator also bumps
-// DeviceInfo.h's DDF_VERSION, which is what tells the designer a cached
-// copy is stale and needs refetching.
+// Regenerate whenever ddf-source/ changes - the generator also updates
+// DeviceInfo.h's DDF_HASH, which is what tells the designer a cached copy
+// is stale and needs refetching.
 //
-// DDF version embedded here: ${version}
+// DDF version embedded here: ${version}, content hash ${ddfHash}
 static const uint8_t DDF_ZIP[${zip.length}] = {
 ${lines.join("\n")}
 };
@@ -188,25 +201,25 @@ ${lines.join("\n")}
 
 const existingHeader = fs.existsSync(HEADER) ? fs.readFileSync(HEADER, "utf8") : ""
 const deviceInfo = fs.readFileSync(DEVICE_INFO, "utf8")
-const versionPattern = /#define DDF_VERSION "([^"]*)"/
-const currentVersion = (deviceInfo.match(versionPattern) || [])[1]
+const hashPattern = /#define DDF_HASH "([^"]*)"/
+const currentHash = (deviceInfo.match(hashPattern) || [])[1]
 
 if (checkOnly) {
   const headerStale = existingHeader !== header
-  const versionStale = currentVersion !== version
-  if (headerStale || versionStale) {
+  const hashStale = currentHash !== ddfHash
+  if (headerStale || hashStale) {
     if (headerStale) console.error(`src/ddf_zip.h is stale (DDF is ${zip.length} bytes, version ${version})`)
-    if (versionStale) console.error(`DeviceInfo.h DDF_VERSION is "${currentVersion}", DDF says "${version}"`)
+    if (hashStale) console.error(`DeviceInfo.h DDF_HASH is "${currentHash}", the DDF bytes hash to "${ddfHash}"`)
     console.error("Run: node tools/generate-ddf-header.js")
     process.exit(1)
   }
-  console.log(`Up to date (DDF version ${version}, ${zip.length} bytes)`)
+  console.log(`Up to date (DDF ${ddfHash}, version ${version}, ${zip.length} bytes)`)
   process.exit(0)
 }
 
 fs.writeFileSync(HEADER, header)
-if (currentVersion !== version) {
-  fs.writeFileSync(DEVICE_INFO, deviceInfo.replace(versionPattern, `#define DDF_VERSION "${version}"`))
-  console.log(`DDF_VERSION ${currentVersion} -> ${version}`)
+if (currentHash !== ddfHash) {
+  fs.writeFileSync(DEVICE_INFO, deviceInfo.replace(hashPattern, `#define DDF_HASH "${ddfHash}"`))
+  console.log(`DDF_HASH ${currentHash} -> ${ddfHash}`)
 }
-console.log(`Wrote src/ddf_zip.h (${zip.length} bytes) from ${sourceDir}`)
+console.log(`Wrote src/ddf_zip.h (${zip.length} bytes, ${ddfHash}) from ${sourceDir}`)
