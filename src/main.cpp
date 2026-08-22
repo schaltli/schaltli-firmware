@@ -650,6 +650,11 @@ static uint32_t worstStartStallMs = 0;
 // Speed of the last released gesture, so a swipe that did not page can be
 // told apart from one that was never seen as fast.
 static int lastFlickPxPerSecond = 0;
+// How often a drag was abandoned because the gesture turned out to be on
+// the other axis. Not an error - it is the correction working - but a
+// number that should stay small: every one of them wasted a render of a
+// screen that was never shown.
+static uint32_t dragAxisAbandoned = 0;
 #endif
 
 static void applyDragOffset(int v) {
@@ -836,6 +841,27 @@ static void pollTouchGestures() {
   lastReleaseDurationMs = duration;
   lastReleaseVerdict = "tap-or-none";
 #endif
+
+  // The axis was chosen from the first 12px of movement, which on a real
+  // finger is mostly noise: a swipe up that begins with a slight sideways
+  // drift looks horizontal at that point and locks the drag to the wrong
+  // axis. It then swallows the gesture - the classifier below never runs -
+  // so the action actually bound to the swipe never fires. Found on
+  // hardware 2026-08-22 as "swipe up no longer opens the screen menu";
+  // measured, a 14px sideways start followed by 220px straight up.
+  //
+  // Judged again here, on the whole gesture, where the intent is
+  // unambiguous. The transition is dropped rather than settled: the offset
+  // is whatever the wrong axis picked up, a few pixels, so snapping it back
+  // is invisible, and it has to be gone before the classifier runs or a
+  // paging action from it would be discarded by navigateToScreen.
+  if (dragActive && (dragHorizontal ? abs(dy) > abs(dx) : abs(dx) > abs(dy))) {
+    canvasPresenter.endTransition();
+    dragActive = false;
+#if INPUT_DEBUG
+    dragAxisAbandoned++;
+#endif
+  }
 
   // A followed drag has already done the navigating; all that is left is
   // to settle it one way or the other. It must never also fall through to
@@ -1043,6 +1069,7 @@ static String buildDebugJson() {
     out += "]";
   }
   out += ",\"lastFlickPxPerSecond\":" + String(lastFlickPxPerSecond);
+  out += ",\"dragAxisAbandoned\":" + String(dragAxisAbandoned);
   out += ",\"lastStartStallMs\":" + String(lastStartStallMs);
   out += ",\"worstStartStallMs\":" + String(worstStartStallMs);
   // Which screen the device believes it is on. Without it the only way to
