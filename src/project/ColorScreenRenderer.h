@@ -50,7 +50,16 @@ public:
   // buffer while the outgoing one is still on display. A setter rather than
   // a second renderer instance because this one caches decoded assets - two
   // instances would decode and hold every image twice.
-  void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
+  void setCanvas(ClippedCanvas16* canvas) {
+    canvas_ = canvas;
+    // u8g2_ holds its own pointer to the GFX target, bound once in the
+    // constructor. Repointing canvas_ alone left every glyph going to the
+    // canvas this renderer was built with, so a screen rendered into the
+    // transition buffer came out complete except for its text - and the text
+    // was drawn onto the screen being swiped away instead. Boxes and icons
+    // go through canvas_ directly and hid the problem by looking perfect.
+    u8g2_.begin(*canvas_);
+  }
   ClippedCanvas16* canvas() const { return canvas_; }
 
   // Renders every object on the given screen index into the canvas
