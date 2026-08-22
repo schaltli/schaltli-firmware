@@ -51,10 +51,63 @@ public:
   // during a screen transition, overlay LVGL widgets on top.
   lv_obj_t* imageObject() { return image_; }
 
+  // ---------------------------------------------------------- transitions
+  //
+  // A second canvas of the same size, normally parked off-screen, so a
+  // screen change can be *shown* moving instead of appearing. The incoming
+  // screen is rendered into it while the outgoing one is still visible, and
+  // both are then moved together - which is what lets a swipe drag the
+  // boundary under the finger rather than cutting at release.
+  //
+  // This is the composition the class comment above promised: no change to
+  // ColorScreenRenderer, which still draws a flat RGB565 screen into a
+  // canvas and knows nothing about any of this. It costs a second 259KB
+  // buffer in PSRAM, which is why it is allocated once at begin() rather
+  // than per gesture - a mid-gesture 259KB allocation would stall exactly
+  // when smoothness matters, and could fail.
+  //
+  // Deliberately no ownership of *what* the transition means: the caller
+  // decides which screen is incoming and from which edge. This class only
+  // knows that two images move together.
+  ClippedCanvas16& transitionCanvas() { return *transitionCanvas_; }
+
+  // Parks the incoming image at (baseX, baseY) relative to centre - the
+  // edge it will travel in from - and makes it visible. Call after
+  // rendering into transitionCanvas().
+  void beginTransition(int16_t baseX, int16_t baseY);
+
+  // Moves both images: the outgoing one to (dx, dy), the incoming one to
+  // its base plus the same delta. So the two stay rigidly joined and the
+  // seam between them tracks the finger exactly.
+  void setTransitionOffset(int16_t dx, int16_t dy);
+
+  // Hides the incoming image and puts the outgoing one back in the centre.
+  //
+  // Note what this deliberately does NOT do: swap the two canvases. Several
+  // objects captured `&canvas()` at startup (the screen-menu overlay, the
+  // test interface), and swapping would leave every one of them drawing
+  // into a buffer nobody displays - a fault that would look like random
+  // missing overlays much later. A committed transition instead re-renders
+  // the destination into the normal canvas while the incoming image is
+  // still the one on screen, so the swap never has to happen.
+  void endTransition();
+
+  bool transitionActive() const { return transitionActive_; }
+
+  // False when the second canvas could not be allocated. Callers fall back
+  // to an instant screen change rather than skipping the change itself.
+  bool canTransition() const { return transitionImage_ != nullptr; }
+
 private:
   uint16_t width_;
   uint16_t height_;
   ClippedCanvas16* canvas_ = nullptr;
   lv_img_dsc_t descriptor_ = {};
   lv_obj_t* image_ = nullptr;
+  ClippedCanvas16* transitionCanvas_ = nullptr;
+  lv_img_dsc_t transitionDescriptor_ = {};
+  lv_obj_t* transitionImage_ = nullptr;
+  int16_t transitionBaseX_ = 0;
+  int16_t transitionBaseY_ = 0;
+  bool transitionActive_ = false;
 };

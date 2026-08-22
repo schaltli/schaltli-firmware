@@ -45,6 +45,14 @@ class ColorScreenRenderer {
 public:
   ColorScreenRenderer(IProjectLoader& projectLoader, ClippedCanvas16* canvas);
 
+  // Redirects rendering to another canvas of the same size. Used to draw the
+  // incoming screen of a swipe transition into CanvasPresenter's second
+  // buffer while the outgoing one is still on display. A setter rather than
+  // a second renderer instance because this one caches decoded assets - two
+  // instances would decode and hold every image twice.
+  void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
+  ClippedCanvas16* canvas() const { return canvas_; }
+
   // Renders every object on the given screen index into the canvas
   // (z-index order, matching sortChildrenByZIndex on the designer side).
   // Does NOT blit to the display - caller does that once after this

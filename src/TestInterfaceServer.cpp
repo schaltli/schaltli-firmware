@@ -17,6 +17,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
+  webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
                      debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
@@ -98,6 +99,24 @@ void TestInterfaceServer::handleMqttConfigure() {
 // itself - swipe decoding and quadrature decoding still need a human's hands
 // to verify - but everything downstream of "an input fired" becomes testable
 // without one, which is the part that changes most often.
+void TestInterfaceServer::handleTouch() {
+  if (!touchHandler_) {
+    sendJSONResponse(false, "Touch injection is not available on this device");
+    return;
+  }
+  if (!webServer_->hasArg("x") || !webServer_->hasArg("y")) {
+    sendJSONResponse(false, "Missing 'x'/'y' parameter");
+    return;
+  }
+  const int16_t x = (int16_t)webServer_->arg("x").toInt();
+  const int16_t y = (int16_t)webServer_->arg("y").toInt();
+  // Absent means down: a drag is mostly down-samples, and the lift is the
+  // one call that has to say so.
+  const bool down = webServer_->arg("down") != "0";
+  touchHandler_(x, y, down);
+  sendJSONResponse(true, String("Touch ") + (down ? "down" : "up") + " at " + x + "," + y);
+}
+
 void TestInterfaceServer::handleInput() {
   if (!webServer_->hasArg("id")) {
     sendJSONResponse(false, "Missing 'id' parameter");

@@ -174,9 +174,22 @@ static TouchProbe touchProbeBuf[TOUCH_PROBE_SIZE];
 static uint32_t touchProbeWriteIndex = 0;  // total ever, ring = % TOUCH_PROBE_SIZE
 #endif
 
+#if INPUT_DEBUG
+// While this is in the future the panel is not read at all and whatever the
+// last injected sample left in touchX/touchY/touchIsDown stands. Without the
+// suppression the very next real read - of a panel nobody is touching -
+// would overwrite an injected drag with "finger lifted" within 5ms, and the
+// injection would look like it had never arrived.
+static uint32_t touchInjectUntilMs = 0;
+static const uint32_t TOUCH_INJECT_HOLD_MS = 400;
+#endif
+
 static void sampleTouch() {
   static unsigned long lastSampleMs = 0;
   unsigned long now = millis();
+#if INPUT_DEBUG
+  if (now < touchInjectUntilMs) return;
+#endif
   // Keeps the previous state between samples rather than resetting it, so
   // a longer period does not fabricate releases.
   if (now - lastSampleMs < touchPeriodMs) return;
@@ -408,6 +421,12 @@ static bool renderScreenIndex(int index) {
 // screen menu's own pick and POST /api/screen are all deliberate,
 // non-repeating acts that should render immediately - and the HTTP path
 // must, since its caller snapshots as soon as it returns.
+// Declared up here because navigateToScreen has to know about them; the
+// machinery itself lives further down, next to the gesture detector that
+// drives it.
+static bool dragActive = false;
+static bool dragAnimating = false;
+
 static bool pendingScreenRender = false;
 static uint32_t lastNavRenderMs = 0;
 // Live-adjustable over GET /api/debug?set=navFrameMs=..., so the feel can be
@@ -426,6 +445,11 @@ static void renderPendingScreen() {
 }
 
 static void navigateToScreen(int index) {
+  // A swipe transition owns both canvases while it runs. A detent arriving
+  // inside that window would render into the buffer parked off-screen and
+  // be lost, so it is dropped rather than queued: turning the knob during a
+  // swipe is not a real gesture, and queueing would page twice from it.
+  if (dragActive || dragAnimating) return;
   currentScreenIndex = index;
   pendingScreenRender = true;
   // Leading edge: a detent arriving after a quiet spell is drawn at once,
@@ -521,6 +545,124 @@ static unsigned long touchLastDownMs = 0;
 // it.
 static const unsigned long RELEASE_DEBOUNCE_MS = 80;
 
+// ------------------------------------------------- follow-the-finger swipe
+//
+// A paging swipe drags the boundary between the two screens under the
+// finger instead of cutting to the next screen when the finger lifts.
+//
+// Why this is the answer to the flashing rather than another frame-cost
+// optimization (see the navigation rate limit above for that whole arc):
+// the artifact is only visible where consecutive frames *differ*, and here
+// they differ by a few pixels of translation rather than by a whole screen
+// of new colour. Nothing is repainted from scratch mid-turn, so there is no
+// full-screen change racing the panel's scan to be seen tearing.
+//
+// It is a presentation of the existing paging action, not a new input
+// concept: the drag only starts if the direction the finger is going is
+// bound to next-screen or previous-screen on this screen. Anything else -
+// unbound, send-mqtt, the screen menu on swipe-up - keeps the old behaviour
+// of classifying once at release. That is what makes it work on both axes
+// without a second binding system: a project that pages vertically binds
+// swipe-up/down, and the same code follows the finger down the other axis.
+static const int DRAG_START_PX = 12;    // past a jittery touch, still instant
+static const int DRAG_COMMIT_PX = 120;  // a third of the way across
+// A short flick should page even though it never travelled a third: below
+// this duration the intent is a throw, not a drag. Deliberately the same
+// distance the non-interactive classifier uses, so a quick swipe behaves
+// identically whether or not its direction happens to be bound to paging.
+static const unsigned long DRAG_FLICK_MS = 250;
+static const int DRAG_FLICK_PX = SWIPE_MIN_DISTANCE;
+static const uint32_t DRAG_SETTLE_MS = 160;
+
+static bool dragDecided = false;  // this gesture has already been offered a drag
+static int dragTargetIndex = -1;
+static bool dragHorizontal = true;
+static int dragTravel = 0;  // signed offset at which the incoming screen is centred
+static int dragOffset = 0;
+static bool dragAnimCommits = false;
+static int dragAnimFrom = 0, dragAnimTo = 0;
+static uint32_t dragAnimStartMs = 0;
+
+static void applyDragOffset(int v) {
+  dragOffset = v;
+  if (dragHorizontal) canvasPresenter.setTransitionOffset((int16_t)v, 0);
+  else canvasPresenter.setTransitionOffset(0, (int16_t)v);
+}
+
+// Keeps the pair between "no movement" and "incoming exactly centred", so
+// dragging back past the start does not pull a third, non-existent screen
+// into view, and overshooting cannot push the incoming one past centre.
+static int clampDragOffset(int v) {
+  if (dragTravel > 0) return v < 0 ? 0 : (v > dragTravel ? dragTravel : v);
+  return v > 0 ? 0 : (v < dragTravel ? dragTravel : v);
+}
+
+static void tryStartDrag(int dx, int dy) {
+  dragDecided = true;
+  if (!canvasPresenter.canTransition() || screenRenderer == nullptr) return;
+  if (!projectLoader.isLoaded()) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  const int count = (int)project.screens.size();
+  if (count < 2) return;
+
+  const bool horizontal = abs(dx) > abs(dy);
+  const char *id;
+  if (horizontal) id = dx > 0 ? "swipe-right" : "swipe-left";
+  else id = dy > 0 ? "swipe-down" : "swipe-up";
+
+  const ButtonAction &action = projectLoader.getButtonAction(currentScreenIndex, String(id));
+  int delta;
+  if (action.type == "next-screen") delta = 1;
+  else if (action.type == "previous-screen") delta = -1;
+  else return;  // not a paging gesture here - the release classifier handles it
+
+  // The incoming screen enters from the edge the finger is heading toward,
+  // regardless of *which* screen it is. A project that binds swipe-left to
+  // previous-screen still sees it come in from the right, because that is
+  // where the finger is pulling from - the motion follows the hand, not the
+  // index arithmetic.
+  const int16_t base = (int16_t)((horizontal ? (dx > 0 ? -1 : 1) : (dy > 0 ? -1 : 1)) * SCREEN_SIZE);
+
+  screenRenderer->setCanvas(&canvasPresenter.transitionCanvas());
+  const bool ok = screenRenderer->renderScreen(((currentScreenIndex + delta) % count + count) % count);
+  screenRenderer->setCanvas(&canvasPresenter.canvas());
+  if (!ok) return;
+
+  dragTargetIndex = ((currentScreenIndex + delta) % count + count) % count;
+  dragHorizontal = horizontal;
+  dragTravel = -base;
+  canvasPresenter.beginTransition(horizontal ? base : 0, horizontal ? 0 : base);
+  dragActive = true;
+  applyDragOffset(0);
+}
+
+// Runs the settle after the finger lifts - to the destination if the drag
+// earned it, back to the start if not. Hand-rolled rather than an lv_anim
+// because it finishes by calling renderScreenIndex, which pumps LVGL: doing
+// that from an animation's ready callback would re-enter lv_timer_handler.
+static void updateDragAnimation() {
+  if (!dragAnimating) return;
+  const uint32_t elapsed = millis() - dragAnimStartMs;
+  if (elapsed < DRAG_SETTLE_MS) {
+    // Ease-out: fast away from the finger, gentle into place. Integer math
+    // in thousandths - no float, and no overflow at these magnitudes.
+    const int32_t t = (int32_t)((elapsed * 1000) / DRAG_SETTLE_MS);
+    const int32_t e = 1000 - ((1000 - t) * (1000 - t)) / 1000;
+    applyDragOffset(dragAnimFrom + (int)(((int32_t)(dragAnimTo - dragAnimFrom) * e) / 1000));
+    return;
+  }
+  applyDragOffset(dragAnimTo);
+  dragAnimating = false;
+  // Order matters. At this point the incoming image is centred and the
+  // outgoing one is parked off-screen, so rendering the destination into
+  // the normal canvas is invisible - and endTransition then brings that
+  // canvas back to centre already showing the destination. Reversing the
+  // two would put the old screen back on display for one frame.
+  if (dragAnimCommits) renderScreenIndex(dragTargetIndex);
+  canvasPresenter.endTransition();
+  dragActive = false;
+}
+
 // Works from sampleTouch()'s cached reading, never from cst816Read() - see
 // its comment for why a second read would find nothing.
 static void pollTouchGestures() {
@@ -535,10 +677,23 @@ static void pollTouchGestures() {
       touchStartX = touchX;
       touchStartY = touchY;
       touchStartMs = millis();
+      dragDecided = false;
     }
     touchLastX = touchX;
     touchLastY = touchY;
     touchLastDownMs = millis();
+
+    const int dx = touchX - touchStartX;
+    const int dy = touchY - touchStartY;
+    // Offered once per gesture, at the first movement worth calling a drag.
+    // Once refused - unbound direction, single-screen project, no second
+    // canvas - it is not reconsidered, so the decision cannot flip halfway
+    // through and start a transition from a stale origin.
+    if (!dragDecided && !dragAnimating && !(screenMenu && screenMenu->isActive()) &&
+        (abs(dx) >= DRAG_START_PX || abs(dy) >= DRAG_START_PX)) {
+      tryStartDrag(dx, dy);
+    }
+    if (dragActive) applyDragOffset(clampDragOffset(dragHorizontal ? dx : dy));
     return;
   }
   if (!touchDown) return;
@@ -557,6 +712,24 @@ static void pollTouchGestures() {
   lastReleaseDurationMs = duration;
   lastReleaseVerdict = "tap-or-none";
 #endif
+
+  // A followed drag has already done the navigating; all that is left is
+  // to settle it one way or the other. It must never also fall through to
+  // the classifier below, or the screen would page twice from one gesture.
+  if (dragActive) {
+    const int travelled = abs(dragOffset);
+    const bool commit = travelled >= DRAG_COMMIT_PX ||
+                        (duration <= DRAG_FLICK_MS && travelled >= DRAG_FLICK_PX);
+    dragAnimFrom = dragOffset;
+    dragAnimTo = commit ? dragTravel : 0;
+    dragAnimCommits = commit;
+    dragAnimStartMs = millis();
+    dragAnimating = true;
+#if INPUT_DEBUG
+    lastReleaseVerdict = commit ? "drag-commit" : "drag-cancel";
+#endif
+    return;
+  }
 
   bool isSwipe = duration <= SWIPE_MAX_MS &&
                  (abs(dx) >= SWIPE_MIN_DISTANCE || abs(dy) >= SWIPE_MIN_DISTANCE);
@@ -677,6 +850,10 @@ static String buildDebugJson() {
   out += ",\"totalLvglMs\":" + String(totalLvglUs / 1000);
   out += ",\"drawBufInternal\":" + String(drawBufInternal ? "true" : "false");
   out += ",\"navFrameMs\":" + String(navFrameMs);
+  out += ",\"dragActive\":" + String(dragActive ? "true" : "false");
+  out += ",\"dragAnimating\":" + String(dragAnimating ? "true" : "false");
+  out += ",\"dragOffset\":" + String(dragOffset);
+  out += ",\"dragTargetIndex\":" + String(dragTargetIndex);
   // Which screen the device believes it is on. Without it the only way to
   // check where a burst of navigation ended is to stream a 260KB snapshot
   // and read pixels, which needs a fixture whose screens differ visibly -
@@ -940,6 +1117,21 @@ static void setupWiFi() {
 
       testInterface.setScreenSwitchHandler(renderScreenIndex);
       testInterface.setTopicValueHandler([](const String &topic) { return projectLoader.getTopicValue(topic); });
+#if INPUT_DEBUG
+      // Guarded with the rest of the diagnosis surface: the suppression
+      // window it writes to only exists in that build, so registering it
+      // unconditionally would break the moment INPUT_DEBUG is turned off -
+      // a build failure hiding in a flag nobody flips often.
+      testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
+        touchX = x;
+        touchY = y;
+        touchIsDown = down;
+        // A lift ends the hold rather than extending it, so the release
+        // debounce runs against the real panel (also reading idle) instead
+        // of against 400ms of frozen injected state.
+        touchInjectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
+      });
+#endif
       testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
         dispatchInput(buttonId.c_str());
         // The navigation rate limit is there for a physical turn, where the
@@ -1131,6 +1323,7 @@ void loop() {
   subscribeToAllTopics();
 
   pollTouchGestures();
+  updateDragAnimation();
   pollEncoder();
 
   // The rate limit's trailing edge - see navigateToScreen. Placed after this

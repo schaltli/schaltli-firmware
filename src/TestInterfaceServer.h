@@ -60,6 +60,14 @@ public:
   // deliberately bursting - measuring the rate limit itself - passes true.
   using InputHandler = std::function<void(const String& buttonId, bool deferRender)>;
 
+  // One synthetic touch sample, fed to the firmware as if the panel had
+  // reported it. Exists because a gesture is not otherwise reachable from a
+  // test: POST /api/input dispatches the *action* a swipe is bound to, which
+  // says nothing about whether a drag decodes into that swipe, follows the
+  // finger, or settles where it should. Posting a series of these drives the
+  // real detector, the real transition and the real settle.
+  using TouchHandler = std::function<void(int16_t x, int16_t y, bool down)>;
+
   // Serves whatever JSON the firmware wants to expose for bring-up
   // diagnosis at GET /api/debug. Exists because serial monitoring is not a
   // neutral observer on this board: the S3's native USB interprets DTR/RTS
@@ -78,6 +86,7 @@ public:
   void setScreenSwitchHandler(ScreenSwitchHandler handler) { screenSwitchHandler_ = handler; }
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
+  void setTouchHandler(TouchHandler handler) { touchHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
   void stop();
 
@@ -94,6 +103,7 @@ private:
   void handleForgetWiFi();
   void handleGetTopicValues();
   void handleInput();
+  void handleTouch();
   void handleProjectUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();
@@ -111,6 +121,7 @@ private:
   ScreenSwitchHandler screenSwitchHandler_;
   TopicValueHandler topicValueHandler_;
   InputHandler inputHandler_;
+  TouchHandler touchHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
 };

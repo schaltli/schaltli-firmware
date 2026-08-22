@@ -53,7 +53,52 @@ bool CanvasPresenter::begin() {
   image_ = lv_img_create(lv_scr_act());
   lv_img_set_src(image_, &descriptor_);
   lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
+
+  // The transition canvas. A failure here is not fatal: everything works
+  // exactly as before without it, screen changes just cut instead of
+  // sliding. Far better than refusing to boot over an animation.
+  transitionCanvas_ = new ClippedCanvas16(width_, height_);
+  if (transitionCanvas_ == nullptr || transitionCanvas_->getBuffer() == nullptr) {
+    Serial.println("[CanvasPresenter] no transition canvas - screen changes will cut, not slide");
+    delete transitionCanvas_;
+    transitionCanvas_ = nullptr;
+    return true;
+  }
+  transitionDescriptor_ = descriptor_;
+  transitionDescriptor_.data = (const uint8_t*)transitionCanvas_->getBuffer();
+  transitionImage_ = lv_img_create(lv_scr_act());
+  lv_img_set_src(transitionImage_, &transitionDescriptor_);
+  lv_obj_add_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, 0, 0);
+  Serial.printf("[CanvasPresenter] transition canvas at %p (%s)\n",
+                transitionCanvas_->getBuffer(),
+                esp_ptr_external_ram(transitionCanvas_->getBuffer()) ? "PSRAM" : "internal SRAM");
   return true;
+}
+
+void CanvasPresenter::beginTransition(int16_t baseX, int16_t baseY) {
+  if (transitionImage_ == nullptr) return;
+  transitionBaseX_ = baseX;
+  transitionBaseY_ = baseY;
+  transitionActive_ = true;
+  // Invalidated explicitly: the descriptor's data pointer never changes, so
+  // LVGL has no way of knowing the pixels behind it were just redrawn.
+  lv_obj_invalidate(transitionImage_);
+  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, baseX, baseY);
+  lv_obj_clear_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void CanvasPresenter::setTransitionOffset(int16_t dx, int16_t dy) {
+  if (!transitionActive_) return;
+  lv_obj_align(image_, LV_ALIGN_CENTER, dx, dy);
+  lv_obj_align(transitionImage_, LV_ALIGN_CENTER, transitionBaseX_ + dx, transitionBaseY_ + dy);
+}
+
+void CanvasPresenter::endTransition() {
+  if (transitionImage_ == nullptr) return;
+  transitionActive_ = false;
+  lv_obj_add_flag(transitionImage_, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_align(image_, LV_ALIGN_CENTER, 0, 0);
 }
 
 void CanvasPresenter::present() {
