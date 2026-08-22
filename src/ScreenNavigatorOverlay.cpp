@@ -62,6 +62,7 @@ void ScreenNavigatorOverlay::beginOrExtend() {
   if (phase_ == Phase::Idle) {
     phase_ = Phase::Entering;
     phaseStartMs_ = millis();
+    lastDrawnProgress_ = -1.0f;
   } else if (phase_ == Phase::Entering) {
     // Already mid fly-in - leave it alone and let the radius ramp finish
     // on its own schedule (update() flips Entering->Holding once ENTER_MS
@@ -83,6 +84,7 @@ void ScreenNavigatorOverlay::beginOrExtend() {
     // animation - see this class's own header comment.
     phase_ = Phase::Holding;
     phaseStartMs_ = millis();
+    lastDrawnProgress_ = -1.0f;
   }
 }
 
@@ -96,7 +98,7 @@ void ScreenNavigatorOverlay::triggerContinuous(float scrollPosition) {
   beginOrExtend();
 }
 
-bool ScreenNavigatorOverlay::update(ColorScreenRenderer* screenRenderer, int currentScreenIndex) {
+bool ScreenNavigatorOverlay::update(const std::function<void()>& restoreBackdrop) {
   if (phase_ == Phase::Idle) return false;
 
   unsigned long elapsed = millis() - phaseStartMs_;
@@ -107,11 +109,13 @@ bool ScreenNavigatorOverlay::update(ColorScreenRenderer* screenRenderer, int cur
     if (progress >= 1.0f) {
       phase_ = Phase::Holding;
       phaseStartMs_ = millis();
+    lastDrawnProgress_ = -1.0f;
     }
   } else if (phase_ == Phase::Holding) {
     if (elapsed >= HOLD_MS) {
       phase_ = Phase::Exiting;
       phaseStartMs_ = millis();
+    lastDrawnProgress_ = -1.0f;
       elapsed = 0;
     }
     progress = 1.0f;
@@ -126,13 +130,18 @@ bool ScreenNavigatorOverlay::update(ColorScreenRenderer* screenRenderer, int cur
     if (exitProgress >= 1.0f) phase_ = Phase::Idle;
   }
 
-  if (!screenRenderer) {
+  if (!restoreBackdrop) {
     phase_ = Phase::Idle;
     return false;
   }
 
-  screenRenderer->renderScreen(currentScreenIndex);
+  // Nothing has moved since the last frame - only the hold timer is
+  // running. Skipping the redraw also tells the caller not to present.
+  if (phase_ == Phase::Holding && progress == lastDrawnProgress_) return false;
+
+  restoreBackdrop();
   drawTablets(progress);
+  lastDrawnProgress_ = progress;
   return true;
 }
 

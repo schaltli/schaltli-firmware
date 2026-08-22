@@ -147,6 +147,20 @@ void CanvasPresenter::setTransitionOffset(int16_t dx, int16_t dy) {
   lv_obj_align(transitionImage_[activeSlot_], LV_ALIGN_CENTER, transitionBaseX_ + dx, transitionBaseY_ + dy);
 }
 
+bool CanvasPresenter::copyCanvasToSlot(int slot) {
+  if (slot < 0 || slot >= TRANSITION_SLOTS || canvas_ == nullptr || transitionCanvas_[slot] == nullptr) return false;
+  memcpy(transitionCanvas_[slot]->getBuffer(), canvas_->getBuffer(),
+         (size_t)width_ * (size_t)height_ * sizeof(uint16_t));
+  return true;
+}
+
+bool CanvasPresenter::copySlotToCanvas(int slot) {
+  if (slot < 0 || slot >= TRANSITION_SLOTS || canvas_ == nullptr || transitionCanvas_[slot] == nullptr) return false;
+  memcpy(canvas_->getBuffer(), transitionCanvas_[slot]->getBuffer(),
+         (size_t)width_ * (size_t)height_ * sizeof(uint16_t));
+  return true;
+}
+
 bool CanvasPresenter::adoptTransitionCanvas() {
   if (canvas_ == nullptr || activeSlot_ < 0 || transitionCanvas_[activeSlot_] == nullptr) return false;
   memcpy(canvas_->getBuffer(), transitionCanvas_[activeSlot_]->getBuffer(),

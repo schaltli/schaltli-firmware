@@ -726,6 +726,20 @@ static bool renderIntoSlot(int slot, int screenIndex) {
 // matters most - a user paging repeatedly leaves roughly a second between
 // gestures, comfortably more than one render, and this must land inside
 // that gap rather than under their next swipe.
+// Slot 0 is borrowed as the menu's backdrop while it is open. Safe because a
+// drag cannot start with the menu up, and prerenderNeighbours() stands down
+// for the same reason - nothing else touches the spares in that window.
+static const int MENU_BACKDROP_SLOT = 0;
+static bool menuBackdropReady = false;
+#if INPUT_DEBUG
+// What one frame of the menu's fly-in costs, and how many it got. The
+// animation runs on wall-clock time, so an expensive frame does not slow it
+// down - it just means fewer frames, and at one or two the menu does not
+// animate at all, it appears late and all at once.
+static uint32_t menuFrameMs = 0;
+static uint32_t menuFrames = 0;
+#endif
+
 static const uint32_t PRERENDER_IDLE_MS = 400;
 static uint32_t lastTouchActivityMs = 0;
 
@@ -1187,6 +1201,8 @@ static String buildDebugJson() {
     out += ",\"canvasHash\":" + String(hash);
     out += ",\"scrollX\":" + String(lv_obj_get_scroll_x(lv_scr_act()));
     out += ",\"scrollY\":" + String(lv_obj_get_scroll_y(lv_scr_act()));
+    out += ",\"menuFrameMs\":" + String(menuFrameMs);
+    out += ",\"menuFrames\":" + String(menuFrames);
     out += ",\"screenMenuActive\":" + String(screenMenu && screenMenu->isActive() ? "true" : "false");
     out += ",\"flushes\":[";
     {
@@ -1435,8 +1451,10 @@ static void onMqttMessage(const String &topic, const String &payload) {
   if (!projectLoader.isLoaded()) return;
   projectLoader.setTopicValue(topic, payload);
   // Any screen may show this value, so every pre-rendered neighbour is now
-  // a picture of how that screen used to look.
+  // a picture of how that screen used to look - including the menu's
+  // backdrop, which is one of those slots.
   canvasPresenter.invalidateSlots();
+  menuBackdropReady = false;
 
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
@@ -1732,8 +1750,38 @@ void loop() {
   // screen and composites the tablets on top in one pass, so nothing else
   // may render underneath it. Doing both would show a bare frame between
   // them - the M5 Dial hit exactly that as a visible flicker on every jump.
-  if (screenMenu && screenMenu->isActive() && screenMenu->update(screenRenderer, currentScreenIndex)) {
-    canvasPresenter.present();
+  // The overlay redraws from scratch each frame and needs the screen
+  // underneath put back first. It used to re-render it - 165ms a frame on a
+  // real project, so a 250ms fly-in got two frames and the menu took most of
+  // a second to appear. The screen underneath does not change while the menu
+  // is up, so it is copied aside once and restored per frame instead.
+  if (screenMenu && screenMenu->isActive()) {
+    if (!menuBackdropReady) {
+      menuBackdropReady = canvasPresenter.copyCanvasToSlot(MENU_BACKDROP_SLOT);
+      // Borrowed, so the neighbour cache must not think a screen is still in
+      // there. prerenderNeighbours() refills it once the menu is gone.
+      if (menuBackdropReady) canvasPresenter.setSlotScreen(MENU_BACKDROP_SLOT, -1);
+    }
+    const uint32_t menuFrameStart = millis();
+    const bool drew = screenMenu->update([]() {
+      if (!menuBackdropReady || !canvasPresenter.copySlotToCanvas(MENU_BACKDROP_SLOT)) {
+        // No spare to borrow: fall back to the old way rather than leaving
+        // the previous frame's tablets smeared across the screen.
+        if (screenRenderer) screenRenderer->renderScreen(currentScreenIndex);
+      }
+    });
+    if (drew) {
+      canvasPresenter.present();
+#if INPUT_DEBUG
+      menuFrameMs = millis() - menuFrameStart;
+      menuFrames++;
+#endif
+    }
+  } else {
+    menuBackdropReady = false;
+#if INPUT_DEBUG
+    menuFrames = 0;
+#endif
   }
 
   // Run here, after mqttClient.loop() has returned and PubSubClient's own

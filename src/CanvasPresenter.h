@@ -100,6 +100,13 @@ public:
   // drag will slide in a picture of how that screen used to look.
   void invalidateSlots();
 
+  // Straight copies between the live canvas and a spare, for anything that
+  // needs to put the screen back the way it was without paying to render it
+  // again. 259KB, about 12ms, against 165ms to re-render a screen on a real
+  // project - which is the difference between an animation and a slideshow.
+  bool copyCanvasToSlot(int slot);
+  bool copySlotToCanvas(int slot);
+
   // Parks the incoming image at (baseX, baseY) relative to centre - the
   // edge it will travel in from - and makes it visible. Call after
   // rendering into transitionCanvas().

@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <Arduino.h>
 #include "ClippedCanvas16.h"
 #include "interfaces/IProjectLoader.h"
@@ -69,7 +70,14 @@ public:
   // in rather than read from a stored field so this always draws whatever
   // screen is actually current, even if something else changed it
   // mid-animation.
-  bool update(ColorScreenRenderer* screenRenderer, int currentScreenIndex);
+  // restoreBackdrop must put the screen back exactly as it looked before
+  // any tablet was drawn on it - this redraws from scratch every frame and
+  // has no other way to erase the previous one. It used to re-render the
+  // screen itself, which costs whatever that project's screen costs: 165ms
+  // on a real one, so the fly-in got two frames and took most of a second
+  // to arrive (reported from hardware 2026-08-22). Handing the job out lets
+  // the caller restore a copy instead, which is a memcpy.
+  bool update(const std::function<void()>& restoreBackdrop);
 
   bool isActive() const { return phase_ != Phase::Idle; }
 
@@ -103,6 +111,12 @@ private:
   Phase phase_ = Phase::Idle;
   unsigned long phaseStartMs_ = 0;
   float scrollPosition_ = 0.0f;
+  // What the last drawn frame showed. While the menu simply sits there
+  // nothing about it changes, so redrawing is writing the same 259KB to the
+  // panel again - which mattered little at 190ms a frame and a great deal at
+  // 20ms, where it means fifty identical repaints a second for the whole
+  // four-second hold.
+  float lastDrawnProgress_ = -1.0f;
 
   // Shared by trigger()/triggerContinuous(): Idle->Entering (start the
   // fly-in), otherwise->Holding (already visible/animating - just restart
