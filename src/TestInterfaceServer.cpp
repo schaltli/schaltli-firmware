@@ -21,6 +21,13 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
   webServer_->on("/recovery-project", HTTP_GET, [this]() { this->handleRecoveryProject(); });
+  // What the filesystem is holding, and why the last install refused. A
+  // project install writes the upload to LittleFS before unpacking it, so a
+  // filesystem with no room refuses installs while the device otherwise
+  // behaves perfectly - it renders, answers, reports healthy. Without this
+  // the only way to see that was a serial monitor, whose attach resets the
+  // board.
+  webServer_->on("/api/fs", HTTP_GET, [this]() { this->handleFilesystemInfo(); });
   // Device settings, served in normal operation rather than only from the
   // setup AP. Needing to put a device into setup mode to change how long
   // its screen stays lit would mean taking it off the network to adjust a
@@ -315,8 +322,16 @@ void TestInterfaceServer::handleProjectUploadChunk() {
     size_t fileSize = checkFile.size();
     checkFile.close();
     if (fileSize < 100) {
+      // Almost always a short *write*, not a short upload: LittleFS fails
+      // the write when it is full and what lands on disk is a stub. Say so
+      // with the numbers - a bare "zip too small" sent two perfectly good
+      // uploads chasing the wrong problem.
+      lastInstallError_ = "upload landed as only " + String(fileSize) +
+                          " bytes - filesystem has " +
+                          String(LittleFS.totalBytes() - LittleFS.usedBytes()) +
+                          " of " + String(LittleFS.totalBytes()) + " bytes free";
+      Serial.printf("[TestInterface] %s\n", lastInstallError_.c_str());
       LittleFS.remove("/temp_upload.zip");
-      Serial.println("[TestInterface] zip too small");
       return;
     }
 
@@ -324,6 +339,7 @@ void TestInterfaceServer::handleProjectUploadChunk() {
     LittleFS.remove("/temp_upload.zip");
 
     if (ok) {
+      lastInstallError_ = "";
       // Reboot to pick the newly-installed /PROJECT/project.json up fresh,
       // rather than tearing down and rebuilding live render state
       // mid-request. A HIL orchestrator polling for the device to come back
@@ -340,6 +356,38 @@ void TestInterfaceServer::handleProjectUploadComplete() {
   sendJSONResponse(true, "Processing upload...");
 }
 
+// Walks one directory recursively, appending {"name","size"} objects.
+static void appendDirJson(const char* path, String& out, bool& first) {
+  File dir = LittleFS.open(path);
+  if (!dir || !dir.isDirectory()) return;
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    String full = String(path);
+    if (!full.endsWith("/")) full += "/";
+    full += f.name();
+    if (f.isDirectory()) {
+      appendDirJson(full.c_str(), out, first);
+    } else {
+      if (!first) out += ",";
+      first = false;
+      out += "{\"name\":\"" + full + "\",\"size\":" + String(f.size()) + "}";
+    }
+  }
+}
+
+void TestInterfaceServer::handleFilesystemInfo() {
+  String json = "{";
+  json += "\"totalBytes\":" + String(LittleFS.totalBytes());
+  json += ",\"usedBytes\":" + String(LittleFS.usedBytes());
+  json += ",\"freeBytes\":" + String(LittleFS.totalBytes() - LittleFS.usedBytes());
+  json += ",\"lastInstallError\":\"" + lastInstallError_ + "\"";
+  json += ",\"files\":[";
+  bool first = true;
+  appendDirJson("/", json, first);
+  json += "]}";
+  webServer_->send(200, "application/json", json);
+}
+
+
 bool TestInterfaceServer::validateAndInstallZip() {
   // Generation first, before anything else in the file is trusted - a shape
   // this firmware cannot parse says nothing reliable about its own
@@ -350,8 +398,10 @@ bool TestInterfaceServer::validateAndInstallZip() {
   // skip and log" and "missing field -> default" conventions.
   long uploadedMajor = ProjectInstaller::peekProjectSystemGenerationMajor("/temp_upload.zip");
   if (uploadedMajor > SYSTEM_GENERATION_MAJOR) {
-    Serial.printf("[TestInterface] project is system generation %ld.x, this firmware understands %d.%d - refusing\n",
-                  uploadedMajor, SYSTEM_GENERATION_MAJOR, SYSTEM_GENERATION_MINOR);
+    lastInstallError_ = "project is system generation " + String(uploadedMajor) +
+                        ".x, this firmware understands " + String(SYSTEM_GENERATION_MAJOR) +
+                        "." + String(SYSTEM_GENERATION_MINOR);
+    Serial.printf("[TestInterface] %s - refusing\n", lastInstallError_.c_str());
     return false;
   }
 
@@ -360,13 +410,15 @@ bool TestInterfaceServer::validateAndInstallZip() {
   // that basis alone.
   String uploadedDeviceId = ProjectInstaller::peekProjectDeviceId("/temp_upload.zip");
   if (!uploadedDeviceId.isEmpty() && uploadedDeviceId != DEVICE_ID) {
-    Serial.printf("[TestInterface] deviceId mismatch: zip says \"%s\", this is \"%s\"\n",
-                  uploadedDeviceId.c_str(), DEVICE_ID);
+    lastInstallError_ = "deviceId mismatch: zip says \"" + uploadedDeviceId +
+                        "\", this is \"" + String(DEVICE_ID) + "\"";
+    Serial.printf("[TestInterface] %s\n", lastInstallError_.c_str());
     return false;
   }
 
   String error;
   if (!ProjectInstaller::installProjectZipFromFile("/temp_upload.zip", error)) {
+    lastInstallError_ = error;
     Serial.print("[TestInterface] install error: ");
     Serial.println(error);
     return false;

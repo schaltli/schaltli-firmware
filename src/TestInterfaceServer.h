@@ -125,6 +125,7 @@ private:
   void handleInput();
   void handleTouch();
   void handleRecoveryProject();
+  void handleFilesystemInfo();
   void handleSettingsPage();
   void handleSettingsSave();
   void handlePanel();
@@ -151,4 +152,11 @@ private:
   SettingsChangedHandler settingsChangedHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
+  // Why the last install refused, kept so it can be read back over HTTP.
+  // The upload reply is sent before the install even runs ("Processing
+  // upload..."), so a refusal used to reach nobody but the serial console -
+  // and attaching that resets this board, which is how a full filesystem
+  // spent two upload attempts looking like a device that simply ignored
+  // them.
+  String lastInstallError_;
 };

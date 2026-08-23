@@ -1,6 +1,7 @@
 #include "ProjectInstaller.h"
 #include <LittleFS.h>
 #include <ArduinoJson.h>
+#include <vector>
 
 #ifndef MINIZ_EXPORT
 #define MINIZ_EXPORT
@@ -14,48 +15,67 @@
 
 namespace {
 
-// Iterative directory deletion to avoid stack overflow - ported verbatim
-// from MqttEPaperDisplay2's ProjectInstaller.cpp.
-void deleteDirectoryIterative(const String& path) {
-  File root = LittleFS.open(path);
-  if (root && root.isDirectory()) {
-    File file = root.openNextFile();
-    while (file) {
-      String filePath = path + "/" + String(file.name());
-      if (!file.isDirectory()) {
-        LittleFS.remove(filePath);
+// Removes everything under `path` and then `path` itself. Returns whether
+// the tree is really gone, which the caller is expected to act on.
+//
+// Iterative rather than recursive to avoid stack overflow, as the version
+// ported from MqttEPaperDisplay2 was - but every entry in a directory is
+// collected *before* any of them is deleted, which that version did not do,
+// and that was a real bug rather than a stylistic difference:
+//
+// LittleFS hands out directory entries through a cursor that openNextFile()
+// advances. Removing the file it has just returned shifts the entries behind
+// the cursor, so the next call skips one. Deleting inside the walk therefore
+// leaves roughly half of a large directory behind on each pass, and it left
+// /PROJECT/assets non-empty on every install. The old code then could not
+// rmdir the directory either - but nothing checked, and mkdir("/PROJECT") on
+// the surviving directory does not fail, so the install carried on and
+// reported success while writing the new project's files alongside the old
+// one's.
+//
+// The cost was invisible until it wasn't: orphaned background bitmaps from
+// every project ever installed accumulated in /PROJECT/assets - 388KB
+// apiece - until the 3.5MB filesystem no longer had room to stage an upload,
+// at which point the device refused every install while rendering, replying
+// and reporting itself perfectly healthy (2026-08-23).
+bool removeTree(const String& path) {
+  std::vector<String> dirsFound;   // parents before children
+  std::vector<String> toVisit;
+  toVisit.push_back(path);
+
+  while (!toVisit.empty()) {
+    const String current = toVisit.back();
+    toVisit.pop_back();
+    dirsFound.push_back(current);
+
+    File dir = LittleFS.open(current);
+    if (!dir || !dir.isDirectory()) continue;
+
+    std::vector<String> filesHere;
+    for (File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
+      String child = current;
+      if (!child.endsWith("/")) child += "/";
+      child += entry.name();
+      if (entry.isDirectory()) {
+        toVisit.push_back(child);
+      } else {
+        filesHere.push_back(child);
       }
-      file = root.openNextFile();
     }
-    root.close();
+    dir.close();
+
+    // Only now, with the walk finished and the cursor closed.
+    for (size_t i = 0; i < filesHere.size(); i++) {
+      LittleFS.remove(filesHere[i]);
+    }
   }
 
-  root = LittleFS.open(path);
-  if (root && root.isDirectory()) {
-    File file = root.openNextFile();
-    while (file) {
-      String filePath = path + "/" + String(file.name());
-      if (file.isDirectory()) {
-        File subdir = LittleFS.open(filePath);
-        if (subdir && subdir.isDirectory()) {
-          File subfile = subdir.openNextFile();
-          while (subfile) {
-            String subFilePath = filePath + "/" + String(subfile.name());
-            if (!subfile.isDirectory()) {
-              LittleFS.remove(subFilePath);
-            }
-            subfile = subdir.openNextFile();
-          }
-          subdir.close();
-        }
-        LittleFS.rmdir(filePath);
-      }
-      file = root.openNextFile();
-    }
-    root.close();
+  // Deepest first, since a directory has to be empty to go.
+  for (int i = (int)dirsFound.size() - 1; i >= 0; i--) {
+    LittleFS.rmdir(dirsFound[i]);
   }
 
-  LittleFS.rmdir(path);
+  return !LittleFS.exists(path);
 }
 
 // Ported verbatim from MqttEPaperDisplay2's ProjectInstaller.cpp.
@@ -462,7 +482,12 @@ long peekProjectSystemGenerationMajor(const String& zipPath) {
 
 bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
   if (LittleFS.exists("/PROJECT")) {
-    deleteDirectoryIterative("/PROJECT");
+    // Checked, not assumed. Silently installing on top of a directory that
+    // could not be cleared is what filled this filesystem up over months.
+    if (!removeTree("/PROJECT")) {
+      errorOut = "Could not clear the previous project from /PROJECT";
+      return false;
+    }
   }
   if (!LittleFS.mkdir("/PROJECT")) {
     errorOut = "Failed to create /PROJECT directory";
