@@ -656,6 +656,12 @@ static const int SETUP_HOLD_MAX_DRIFT = 40;
 static bool setupHoldCountdownShown = false;
 static int setupHoldLastSecond = -1;
 static bool setupHoldConsumed = false;  // this contact belongs to the gesture now
+// This contact started on a dark screen, so it wakes and does nothing else.
+// A separate flag from setupHoldConsumed because the two coexist: a wake
+// touch may still be held into the setup gesture, which is deliberate -
+// holding is unambiguous, and making someone touch twice to reach setup
+// would be a worse first touch.
+static bool wokeOnThisContact = false;
 
 // Draws the countdown over whatever is on screen. Deliberately the plain
 // text display rather than anything composited: this runs while a finger
@@ -1032,6 +1038,7 @@ static void pollTouchGesturesInner() {
       touchStartY = touchY;
       touchStartMs = millis();
       dragDecided = false;
+      wokeOnThisContact = false;
       setupHoldCountdownShown = false;
       setupHoldLastSecond = -1;
       setupHoldConsumed = false;
@@ -1052,11 +1059,13 @@ static void pollTouchGesturesInner() {
     const bool wasOff = displayIsOff;
     wakeDisplay();
     if (wasOff) {
-      // The touch that woke the screen still counts towards the reserved
-      // setup hold below: holding is unambiguous, and making someone touch
-      // twice to reach setup would be a worse first touch.
-      setupHoldConsumed = false;
-      dragDecided = true;  // but it may not become a swipe or a tap
+      // Marking dragDecided alone was not enough - that only stops the
+      // interactive drag from starting, while the release classifier still
+      // dispatched a swipe, so the first swipe on a dark screen paged
+      // anyway (caught by the HIL suite, 2026-08-23). The contact has to be
+      // swallowed at release too, which is what wokeOnThisContact does.
+      wokeOnThisContact = true;
+      dragDecided = true;
     }
 
     const int dx = touchX - touchStartX;
@@ -1116,6 +1125,17 @@ static void pollTouchGesturesInner() {
   // The setup hold owned this contact: cancelled by releasing, or already
   // acted on. Either way nothing downstream may treat it as a tap or a
   // swipe - see SETUP_HOLD_MS.
+  // Woke the screen and nothing more - see wokeOnThisContact. Checked
+  // before the setup hold, which has its own reason to swallow a contact.
+  if (wokeOnThisContact) {
+    wokeOnThisContact = false;
+    setupHoldConsumed = false;
+#if INPUT_DEBUG
+    lastReleaseVerdict = "woke-display-only";
+#endif
+    return;
+  }
+
   if (setupHoldConsumed) {
     setupHoldConsumed = false;
     if (setupHoldCountdownShown && !setupModeActive) {
