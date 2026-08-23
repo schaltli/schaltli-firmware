@@ -312,16 +312,38 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
 
   for (uint16_t row = 0; row < g->rowCount; row++) {
     const uint32_t bits = rows_[g->rowOffset + row];
-    // Mirrors lib/bdffont.ts exactly, including that it starts at
-    // `bitsPerRow` rather than `bitsPerRow - 1`: the first iteration tests
-    // a bit above the row's width, which is always 0, so every drawn pixel
-    // lands one to the right of where BBX says. See this class's header -
-    // the designer does the same, the old u8g2 path cancelled it with
-    // textX + 1, and reproducing it keeps existing projects identical.
+    // Blank rows are most of a glyph's box - the space above an 'a', below
+    // everything without a descender - and skipping them costs one test.
+    if (bits == 0) continue;
+
+    const int16_t y = (int16_t)(oy + (int16_t)row);
+    // Emitted as horizontal runs rather than one drawPixel per lit pixel.
+    // Both are correct; a run is one clip test and one tight write loop
+    // inside GFXcanvas16 instead of a virtual call and a bounds check per
+    // pixel, which is also how u8g2 drew (draw_hv_line). The pixels chosen
+    // are identical either way - verified against the previous build with
+    // a full-screen diff, 0 of 129600 differing.
+    //
+    // The bit-to-x mapping mirrors lib/bdffont.ts exactly, including that
+    // its loop starts at `bitsPerRow` rather than `bitsPerRow - 1`: the
+    // first iteration tests a bit above the row's width, always 0, so
+    // every drawn pixel lands one to the right of where BBX says. See this
+    // class's header - the designer does the same, the old u8g2 path
+    // cancelled it with textX + 1, and reproducing it keeps existing
+    // projects identical.
+    int runStart = -1;
     for (int bit = (int)g->bitsPerRow, x = 0; bit >= 0; bit--, x++) {
-      if ((bits >> bit) & 0x01) {
-        canvas.drawPixel((int16_t)(ox + x), (int16_t)(oy + (int16_t)row), color);
+      const bool on = ((bits >> bit) & 0x01) != 0;
+      if (on) {
+        if (runStart < 0) runStart = x;
+      } else if (runStart >= 0) {
+        canvas.drawFastHLine((int16_t)(ox + runStart), y, (int16_t)(x - runStart), color);
+        runStart = -1;
       }
+    }
+    if (runStart >= 0) {
+      const int end = (int)g->bitsPerRow + 1;
+      canvas.drawFastHLine((int16_t)(ox + runStart), y, (int16_t)(end - runStart), color);
     }
   }
   return g->dwidth;

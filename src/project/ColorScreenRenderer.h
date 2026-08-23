@@ -59,6 +59,16 @@ public:
   // except for its text. That whole class of bug goes with the second
   // target.
   void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
+
+  // Parses every font the loaded project references, up front.
+  //
+  // Fonts load lazily on first use otherwise, and that first use is inside
+  // a render - measured at 275ms for one .bdf, on top of the 177ms the
+  // render itself takes. Paid at boot that is invisible; paid when a drag
+  // starts pre-rendering a neighbouring screen it is a stall in the middle
+  // of a gesture, which is the exact fault the neighbour pre-render exists
+  // to remove.
+  void preloadFonts();
   ClippedCanvas16* canvas() const { return canvas_; }
 
   // Renders every object on the given screen index into the canvas

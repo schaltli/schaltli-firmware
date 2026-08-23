@@ -1339,6 +1339,10 @@ static void loadAndRenderProject() {
   if (screenRenderer == nullptr) {
     screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
   }
+  // Before the first render, so no render - and in particular no
+  // neighbour pre-render during a drag - ever pays for a font parse.
+  screenRenderer->preloadFonts();
+
   topicsSubscribed = false;
   if (!renderScreenIndex(0)) {
     Serial.println("[project] renderScreen(0) failed");

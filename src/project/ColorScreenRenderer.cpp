@@ -56,6 +56,17 @@ uint16_t ColorScreenRenderer::parseHexColor(const String& colorStr, bool* isTran
 // without a word. This still falls back - a wrong-looking label beats a
 // blank screen - but says so once, and the fallback is the DDF's own first
 // font rather than a hardcoded guess.
+void ColorScreenRenderer::preloadFonts() {
+  if (!projectLoader_.isLoaded()) return;
+  const ProjectConfig& project = projectLoader_.getProject();
+  const uint32_t start = millis();
+  for (const Font& font : project.fonts) {
+    fontStore_.get(font.id);
+  }
+  Serial.printf("[ddf-fonts] preloaded %u font(s) in %ums\n", (unsigned)project.fonts.size(),
+                (unsigned)(millis() - start));
+}
+
 const BdfFont* ColorScreenRenderer::fontFor(const String& fontId) {
   const BdfFont* font = fontStore_.get(fontId);
   if (font != nullptr) return font;
