@@ -146,6 +146,14 @@ static bool cst816ReadRaw(uint8_t buf[7]) {
 // result. They must not each read the chip: reading clears its touch
 // state, so whichever ran first consumed the event and the other saw an
 // idle panel.
+#if INPUT_DEBUG
+// Filled by sampleTouch for the contact in progress, read out into the
+// gesture log on release - see GestureRecord's own comment for why this
+// records a range rather than one sample.
+static uint8_t gestureMaxFingers = 0;
+static uint8_t gestureFingerMask = 0;
+#endif
+
 static bool touchIsDown = false;
 static int16_t touchX = 0, touchY = 0;
 
@@ -236,6 +244,10 @@ static void sampleTouch() {
     touchIsDown = true;
     touchX = x;
     touchY = y;
+#if INPUT_DEBUG
+    if (buf[2] > gestureMaxFingers) gestureMaxFingers = buf[2];
+    if (buf[2] < 8) gestureFingerMask |= (uint8_t)(1u << buf[2]);
+#endif
   } else {
     touchIsDown = false;
   }
@@ -679,6 +691,17 @@ struct GestureRecord {
   bool menuWasOpen;   // before this gesture was dispatched
   char verdict[16];
   uint32_t atMs;
+  // What the CST816 reported in byte 2 during this contact - the field the
+  // firmware treats as "touched", and which a single 2026-08-23 trial
+  // suggested also counts additional fingers (one finger short: two
+  // fingers read 1, three read 2). One trial is not a characterisation,
+  // and this chip has already had a wrong claim about byte 2 sit in the
+  // project notes for months, so this records every contact rather than
+  // one sample: highest value seen, and a bitmask of every distinct value,
+  // so a count that flickers between two numbers is visible as such
+  // instead of averaging into a plausible-looking lie.
+  uint8_t maxFingers;
+  uint8_t fingerMask;  // bit n set = byte 2 read n at least once
 };
 static const int GESTURE_LOG_SIZE = 24;
 static GestureRecord gestureLog[GESTURE_LOG_SIZE];
@@ -907,6 +930,8 @@ static void pollTouchGesturesInner() {
 #if INPUT_DEBUG
       gestureSamples = 0;
       gestureDragStarted = false;
+      gestureMaxFingers = 0;
+      gestureFingerMask = 0;
 #endif
     }
     touchLastX = touchX;
@@ -1061,6 +1086,8 @@ static void pollTouchGesturesRecorded() {
   const bool menuWasOpen = screenMenu && screenMenu->isActive();
   const uint16_t samples = gestureSamples;
   const bool dragStarted = gestureDragStarted;
+  const uint8_t maxFingers = gestureMaxFingers;
+  const uint8_t fingerMask = gestureFingerMask;
   pollTouchGesturesInner();
   if (touchReleaseCount == releasesBefore) return;
   GestureRecord &g = gestureLog[gestureLogIndex % GESTURE_LOG_SIZE];
@@ -1071,6 +1098,8 @@ static void pollTouchGesturesRecorded() {
   g.dragStarted = dragStarted;
   g.dragAbandoned = dragAxisAbandoned != abandonedBefore;
   g.menuWasOpen = menuWasOpen;
+  g.maxFingers = maxFingers;
+  g.fingerMask = fingerMask;
   strncpy(g.verdict, lastReleaseVerdict, sizeof(g.verdict) - 1);
   g.verdict[sizeof(g.verdict) - 1] = ' ';
   g.atMs = millis();
@@ -1233,6 +1262,8 @@ static String buildDebugJson() {
       out += ",\"dragStarted\":" + String(g.dragStarted ? "true" : "false");
       out += ",\"dragAbandoned\":" + String(g.dragAbandoned ? "true" : "false");
       out += ",\"menuWasOpen\":" + String(g.menuWasOpen ? "true" : "false");
+      out += ",\"maxFingers\":" + String(g.maxFingers);
+      out += ",\"fingerMask\":" + String(g.fingerMask);
       out += ",\"verdict\":\"" + String(g.verdict) + "\",\"at\":" + String(g.atMs) + "}";
     }
   }
