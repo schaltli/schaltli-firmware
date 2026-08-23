@@ -33,7 +33,6 @@
 #include <LittleFS.h>
 #include <Arduino_GFX_Library.h>
 #include <lvgl.h>
-#include <U8g2_for_Adafruit_GFX.h>
 #include "driver/rtc_io.h"
 
 #include "CanvasPresenter.h"
@@ -1203,7 +1202,7 @@ static String buildDebugJson() {
     out += ",\"scrollY\":" + String(lv_obj_get_scroll_y(lv_scr_act()));
     out += ",\"menuFrameMs\":" + String(menuFrameMs);
     out += ",\"menuFrames\":" + String(menuFrames);
-    out += ",\"screenMenuActive\":" + String(screenMenu && screenMenu->isActive() ? "true" : "false");
+      out += ",\"screenMenuActive\":" + String(screenMenu && screenMenu->isActive() ? "true" : "false");
     out += ",\"flushes\":[";
     {
       uint32_t total = flushLogIndex;

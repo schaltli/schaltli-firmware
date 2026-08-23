@@ -217,6 +217,67 @@ void useStreamingReader(mz_zip_archive& zip, ZipFileReadContext& ctx) {
 
 namespace ProjectInstaller {
 
+uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const char* entryName,
+                                   size_t* outSize) {
+  *outSize = 0;
+
+  mz_zip_archive zip;
+  memset(&zip, 0, sizeof(zip));
+  useDictReservingAllocator(zip);
+  if (!mz_zip_reader_init_mem(&zip, zipData, zipSize, 0)) {
+    Serial.printf("[zip] could not open the in-memory archive for %s\n", entryName);
+    return nullptr;
+  }
+
+  mz_uint32 fileIndex = 0;
+  if (!mz_zip_reader_locate_file_v2(&zip, entryName, nullptr, 0, &fileIndex)) {
+    Serial.printf("[zip] %s is not in the archive\n", entryName);
+    mz_zip_reader_end(&zip);
+    return nullptr;
+  }
+
+  mz_zip_archive_file_stat fileStat;
+  if (!mz_zip_reader_file_stat(&zip, fileIndex, &fileStat)) {
+    mz_zip_reader_end(&zip);
+    return nullptr;
+  }
+
+  const size_t size = (size_t)fileStat.m_uncomp_size;
+  uint8_t* data = (uint8_t*)heap_caps_malloc(size + 1, MALLOC_CAP_SPIRAM);
+  if (data == nullptr) {
+    Serial.printf("[zip] no room for %s (%u bytes)\n", entryName, (unsigned)size);
+    mz_zip_reader_end(&zip);
+    return nullptr;
+  }
+
+  // The iterator API, and the CRC verified here rather than trusting
+  // mz_zip_reader_extract_iter_free()'s own return - same reasoning as
+  // peekProjectDeviceId() below, and the same reason this helper exists.
+  bool extractOk = false;
+  mz_zip_reader_extract_iter_state* pState = mz_zip_reader_extract_iter_new(&zip, fileIndex, 0);
+  if (pState) {
+    size_t totalRead = 0;
+    while (totalRead < size) {
+      size_t bytesRead = mz_zip_reader_extract_iter_read(pState, data + totalRead, size - totalRead);
+      if (bytesRead == 0) break;
+      totalRead += bytesRead;
+    }
+    mz_zip_reader_extract_iter_free(pState);
+    extractOk = (totalRead == size) && (mz_crc32(MZ_CRC32_INIT, data, size) == fileStat.m_crc32);
+  }
+  mz_zip_reader_end(&zip);
+
+  if (!extractOk) {
+    Serial.printf("[zip] %s did not extract cleanly\n", entryName);
+    free(data);
+    return nullptr;
+  }
+
+  data[size] = 0;
+  *outSize = size;
+  return data;
+}
+
 String peekProjectDeviceId(const String& zipPath) {
   File zipFile = LittleFS.open(zipPath, "r");
   if (!zipFile) return "";

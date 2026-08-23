@@ -11,6 +11,24 @@
 // side.
 namespace ProjectInstaller {
 
+// Extracts one entry from a zip that already sits in memory - the embedded
+// DDF, in practice - into a freshly allocated buffer the caller owns
+// (heap_caps_malloc, PSRAM, one byte longer than the entry and
+// NUL-terminated so text can be used as a C string). Returns nullptr and
+// leaves *outSize at 0 on any failure.
+//
+// It lives here, rather than wherever it happens to be needed, because
+// DEFLATE extraction on this device is not a matter of calling miniz: it
+// needs the padded static dictionary buffer and the patched allocator
+// documented at the top of the .cpp, both of which exist because
+// tinfl_decompress overruns its dictionary window by 100-270 bytes and one
+// upstream miniz path frees a non-heap pointer. Reimplementing "just read a
+// file out of a zip" without those cost a boot loop on 2026-08-22 - the
+// font loader called mz_zip_reader_extract_to_mem() with plain allocators
+// and the overrun corrupted whatever PSRAM followed the dictionary.
+uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const char* entryName,
+                                   size_t* outSize);
+
 // Reads just project.json out of the zip at zipPath (without touching
 // /PROJECT at all) and returns its top-level "deviceId" field, or an empty
 // string if the zip/entry/field is missing or unparsable. Callers should

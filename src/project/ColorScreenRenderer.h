@@ -1,7 +1,8 @@
 #pragma once
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
-#include <U8g2_for_Adafruit_GFX.h>
+#include "BdfFont.h"
+#include "DdfFontStore.h"
 #include "../interfaces/IProjectLoader.h"
 #include "ProjectTypes.h"
 #include "../ClippedCanvas16.h"
@@ -50,16 +51,14 @@ public:
   // buffer while the outgoing one is still on display. A setter rather than
   // a second renderer instance because this one caches decoded assets - two
   // instances would decode and hold every image twice.
-  void setCanvas(ClippedCanvas16* canvas) {
-    canvas_ = canvas;
-    // u8g2_ holds its own pointer to the GFX target, bound once in the
-    // constructor. Repointing canvas_ alone left every glyph going to the
-    // canvas this renderer was built with, so a screen rendered into the
-    // transition buffer came out complete except for its text - and the text
-    // was drawn onto the screen being swiped away instead. Boxes and icons
-    // go through canvas_ directly and hid the problem by looking perfect.
-    u8g2_.begin(*canvas_);
-  }
+  // Text goes through canvas_ like everything else now - BdfFont writes
+  // pixels directly - so there is no second drawing target to keep in
+  // step. The u8g2 wrapper held its own pointer, bound once in the
+  // constructor, and repointing canvas_ alone sent every glyph to the old
+  // canvas: a screen rendered into the transition buffer arrived complete
+  // except for its text. That whole class of bug goes with the second
+  // target.
+  void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
   ClippedCanvas16* canvas() const { return canvas_; }
 
   // Renders every object on the given screen index into the canvas
@@ -93,7 +92,7 @@ public:
 private:
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
-  U8G2_FOR_ADAFRUIT_GFX u8g2_;
+  DdfFontStore fontStore_;
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
                      int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);
@@ -186,11 +185,26 @@ private:
   // tapering sides.
   Point shortenForArrow(const Point& tip, const Point& from, float strokeWidth);
 
-  const uint8_t* getU8g2FontById(const String& fontId) const;
+  // The font a project object asks for, taken from the .bdf this device
+  // publishes in its own DDF. Falls back to the DDF's first font when a
+  // project names one this device does not declare; nullptr only if the
+  // DDF itself is unreadable, which is a broken build.
+  const BdfFont* fontFor(const String& fontId);
+
+  // How far the clip box has to grow upward so this text's ink survives.
+  // The baseline sits at y + ascent, but ink can reach above the nominal
+  // ascent - capital umlauts do, by one pixel in helvR18 - and clipping to
+  // the nominal box shaved the dots off Ä Ö Ü.
+  //
+  // Measured from the string, not the font: helvR18's font-wide maximum is
+  // 29 against a nominal 22, from some stacked diacritic in Latin
+  // Extended, so using that would grow every label's box by seven pixels
+  // including pure ASCII ones that overhang by nothing.
+  int16_t inkOverhang(const BdfFont* font, const String& text, int16_t nominalAscent) const;
   int getFontAscentById(const String& fontId) const;
   int getFontDescentById(const String& fontId) const;
   int getFontSizeById(const String& fontId) const;
-  int16_t measureTrueTextWidth(const String& text, const uint8_t* u8font);
+  int16_t measureTrueTextWidth(const String& text, const BdfFont* font);
   String formatNumber(const String& valueStr, int decimals, const String& thousandsSeparator) const;
   float interpolateCalibration(float value, const std::vector<CalibrationPoint>& points) const;
 

@@ -11,15 +11,7 @@ static inline int16_t jsRound(float v) {
 }
 
 ColorScreenRenderer::ColorScreenRenderer(IProjectLoader& projectLoader, ClippedCanvas16* canvas)
-  : projectLoader_(projectLoader), canvas_(canvas) {
-  // Without this, u8g2_'s internal gfx pointer stays uninitialized - every
-  // other setFont/setCursor/print call on it silently "worked" (they just
-  // write into the u8g2_font_t struct), but the first real glyph draw
-  // dereferences that null/garbage pointer and crashes
-  // (Guru Meditation LoadProhibited, confirmed live via serial log +
-  // addr2line: u8g2_draw_hv_line -> ... -> drawTextBox -> u8g2_.print()).
-  u8g2_.begin(*canvas_);
-}
+  : projectLoader_(projectLoader), canvas_(canvas) {}
 
 uint16_t ColorScreenRenderer::parseHexColor(const String& colorStr, bool* isTransparent) const {
   if (isTransparent) *isTransparent = false;
@@ -56,17 +48,25 @@ uint16_t ColorScreenRenderer::parseHexColor(const String& colorStr, bool* isTran
   return 0x0000;
 }
 
-const uint8_t* ColorScreenRenderer::getU8g2FontById(const String& fontId) const {
-  const ProjectConfig& project = projectLoader_.getProject();
-  for (const Font& font : project.fonts) {
-    if (font.id == fontId) {
-      if (font.internalName == "u8g2_font_helvR08_tf") return u8g2_font_helvR08_tf;
-      if (font.internalName == "u8g2_font_helvR12_tf") return u8g2_font_helvR12_tf;
-      if (font.internalName == "u8g2_font_helvR18_tf") return u8g2_font_helvR18_tf;
-      if (font.internalName == "u8g2_font_helvR24_tf") return u8g2_font_helvR24_tf;
-    }
-  }
-  return u8g2_font_helvR18_tf;
+// Looked up by the DDF's own font id, not by an internalName mapped onto a
+// compiled-in table. That table was the bug: it named four u8g2 arrays with
+// 191 glyphs each while the DDF published .bdf files with 756, so a euro
+// sign rendered in the designer and vanished on the glass. It also fell
+// back silently, so a project naming an unknown font drew in helvR18
+// without a word. This still falls back - a wrong-looking label beats a
+// blank screen - but says so once, and the fallback is the DDF's own first
+// font rather than a hardcoded guess.
+const BdfFont* ColorScreenRenderer::fontFor(const String& fontId) {
+  const BdfFont* font = fontStore_.get(fontId);
+  if (font != nullptr) return font;
+  return fontStore_.get(fontStore_.defaultFontId());
+}
+
+int16_t ColorScreenRenderer::inkOverhang(const BdfFont* font, const String& text,
+                                        int16_t nominalAscent) const {
+  if (font == nullptr) return 0;
+  const int16_t over = (int16_t)(font->inkAscentOf(text) - nominalAscent);
+  return over > 0 ? over : 0;
 }
 
 int ColorScreenRenderer::getFontAscentById(const String& fontId) const {
@@ -134,33 +134,17 @@ float ColorScreenRenderer::interpolateCalibration(float value, const std::vector
   return 0;
 }
 
-// See MqttEPaperDisplay2's ScreenRenderer::measureTrueTextWidth() for why
-// u8g2_.getUTF8Width() isn't used directly (it disagrees with the real
-// glyph-drawing cursor advance by 1px) and why this uses a throwaway
-// U8G2_FOR_ADAFRUIT_GFX instance rather than the shared member.
-int16_t ColorScreenRenderer::measureTrueTextWidth(const String& text, const uint8_t* u8font) {
-  U8G2_FOR_ADAFRUIT_GFX measureU8g2;
-  measureU8g2.begin(*canvas_);
-  measureU8g2.setFont(u8font);
-  measureU8g2.setFontMode(1);
-
-  canvas_->setClip(0, 0, 0, 0);
-  measureU8g2.setCursor(0, 0);
-  measureU8g2.print(text);
-  int16_t width = measureU8g2.getCursorX();
-  canvas_->clearClip();
-
-  return width;
+// Sums the glyphs' own advances, which is what the designer's
+// BDFFont.measureText() does - so alignment lands on the same pixel. The
+// old version drew the string into a zero-sized clip and read u8g2's cursor
+// back, because u8g2's own getUTF8Width() disagreed with its drawing by a
+// pixel. With one font on both sides there is nothing left to reconcile.
+int16_t ColorScreenRenderer::measureTrueTextWidth(const String& text, const BdfFont* font) {
+  return font == nullptr ? 0 : font->textWidth(text);
 }
 
 void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& displayText, bool drawBorder) {
-  const uint8_t* u8font = getU8g2FontById(obj.properties.fontId);
-  // setFont() must come before setFontMode(1) - u8g2_SetFont() resets
-  // transparency to opaque whenever the font pointer changes (see
-  // checkpoint 2a's commit message for how this was found live on
-  // hardware, and MqttEPaperDisplay2's identical 2026-07-20 finding).
-  u8g2_.setFont(u8font);
-  u8g2_.setFontMode(1);
+  const BdfFont* font = fontFor(obj.properties.fontId);
 
   int fontAscent = getFontAscentById(obj.properties.fontId);
   // Box height for background/border/clip comes from the font's own size
@@ -173,9 +157,6 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
 
   bool bgTransparent = false;
   uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
-
-  u8g2_.setForegroundColor(textColor);
-  u8g2_.setBackgroundColor(bgColor);
 
   // Background -> border -> text, in that order (text last, always on top)
   // - matches the designer's draw order exactly, see MqttEPaperDisplay2's
@@ -193,18 +174,25 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
   }
 
   int16_t baselineY = obj.y + fontAscent;
-  int16_t textWidth = measureTrueTextWidth(displayText, u8font);
+  int16_t textWidth = measureTrueTextWidth(displayText, font);
 
-  int16_t textX = obj.x + 1;
+  // No +1 here any more. It used to cancel an off-by-one in the designer's
+  // glyph loop, which drew each row one pixel right of its bounding box;
+  // BdfFont reproduces that shift instead, so the compensation moved with
+  // it and every existing project stays on the same pixel. See BdfFont.h.
+  int16_t textX = obj.x;
   if (obj.properties.textAlign == "center") {
-    textX = obj.x + 1 + jsRound((obj.width - textWidth) / 2.0f);
+    textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
   } else if (obj.properties.textAlign == "right") {
-    textX = obj.x + 1 + obj.width - textWidth;
+    textX = obj.x + obj.width - textWidth;
   }
 
-  canvas_->setClip(obj.x, obj.y, obj.width, boxHeight);
-  u8g2_.setCursor(textX, baselineY);
-  u8g2_.print(displayText);
+  // The box grows upward by whatever the font's ink needs beyond its
+  // nominal ascent, so accents on capitals are drawn rather than shaved
+  // off. They land on the border, which is what the font says they do.
+  const int16_t overhang = inkOverhang(font, displayText, (int16_t)fontAscent);
+  canvas_->setClip(obj.x, obj.y - overhang, obj.width, boxHeight + overhang);
+  if (font != nullptr) font->drawText(*canvas_, displayText, textX, baselineY, textColor);
   canvas_->clearClip();
 }
 
@@ -682,40 +670,32 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   }
   if (displayText.isEmpty()) return true;
 
-  const uint8_t* u8font = getU8g2FontById(obj.properties.fontId);
-  u8g2_.setFont(u8font);
-  u8g2_.setFontMode(1);
+  const BdfFont* font = fontFor(obj.properties.fontId);
 
-  int16_t textWidth = measureTrueTextWidth(displayText, u8font);
+  int16_t textWidth = measureTrueTextWidth(displayText, font);
   int16_t fontAscent = getFontAscentById(obj.properties.fontId);
   int16_t fontDescent = getFontDescentById(obj.properties.fontId);
 
-  int16_t textX = obj.x + 1 + jsRound((obj.width - textWidth) / 2.0f);
+  int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
   int16_t fontHeight = fontAscent + fontDescent;
   int16_t verticalCenterOffset = jsRound((obj.height - fontHeight) / 2.0f);
   int16_t textY = obj.y + verticalCenterOffset + fontAscent;
 
-  u8g2_.setFontDirection(0);
-
-  // Pass 1: text in fillColor across the whole object.
-  u8g2_.setForegroundColor(fillColor);
+  // Pass 1: text in fillColor across the whole object. Clipped to the
+  // object's own box, which is taller than the text - no ink overhang to
+  // allow for here, unlike a label's font-sized box.
   canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-  u8g2_.setCursor(textX, textY);
-  u8g2_.print(displayText);
+  if (font != nullptr) font->drawText(*canvas_, displayText, textX, textY, fillColor);
   canvas_->clearClip();
 
   // Bar, painted solid over whatever text pass 1 drew there.
   if (barWidth > 0 && barHeight > 0) {
     canvas_->fillRect(barX, barY, barWidth, barHeight, fillColor);
 
-    // Pass 2: same text again, clipped to just the bar, in bgColor - font
-    // is unchanged since pass 1 (same pointer), so no setFont() call here
-    // (that would silently reset transparency - see this class's other
-    // setFont-before-setFontMode comments for why).
-    u8g2_.setForegroundColor(bgColor);
+    // Pass 2: the same text again, clipped to just the bar, in bgColor - so
+    // the digits stay readable where the bar has painted over them.
     canvas_->setClip(barX, barY, barWidth, barHeight);
-    u8g2_.setCursor(textX, textY);
-    u8g2_.print(displayText);
+    if (font != nullptr) font->drawText(*canvas_, displayText, textX, textY, bgColor);
     canvas_->clearClip();
   }
 
@@ -837,16 +817,18 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     // Mirrors render-switch.ts's own "No states defined" placeholder - an
     // empty/misconfigured Switch is still visible (and selectable, once
     // touch hit-testing exists for it) instead of a blank box.
-    const uint8_t* placeholderFont = u8g2_font_helvR08_tf;
-    u8g2_.setFont(placeholderFont);
-    u8g2_.setFontMode(1);
-    u8g2_.setForegroundColor(0x8410);  // mid gray, no designer-side default to match (empty-state only)
+    // The DDF's own first font, not a hardcoded u8g2 array - this device
+    // may not publish helvR08 at all, and a placeholder is no reason to
+    // reach for a font the DDF does not declare.
+    const BdfFont* placeholderFont = fontStore_.get(fontStore_.defaultFontId());
     String placeholder = "No states defined";
     int16_t textWidth = measureTrueTextWidth(placeholder, placeholderFont);
     int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
     canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-    u8g2_.setCursor(textX, obj.y + obj.height / 2 + 4);
-    u8g2_.print(placeholder);
+    // Mid gray; empty-state only, with no designer-side default to match.
+    if (placeholderFont != nullptr) {
+      placeholderFont->drawText(*canvas_, placeholder, textX, obj.y + obj.height / 2 + 4, 0x8410);
+    }
     canvas_->clearClip();
     return true;
   }
@@ -859,9 +841,7 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   uint16_t textColor = parseHexColor(obj.properties.textColor);
   uint16_t activeTextColor = parseHexColor(obj.properties.activeTextColor);
 
-  const uint8_t* u8font = getU8g2FontById(obj.properties.fontId);
-  u8g2_.setFont(u8font);
-  u8g2_.setFontMode(1);
+  const BdfFont* font = fontFor(obj.properties.fontId);
   int16_t fontAscent = getFontAscentById(obj.properties.fontId);
   int16_t fontDescent = getFontDescentById(obj.properties.fontId);
   int16_t fontHeight = fontAscent + fontDescent;
@@ -949,7 +929,7 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
 
     if (state.label.isEmpty()) continue;
 
-    int16_t textWidth = measureTrueTextWidth(state.label, u8font);
+    int16_t textWidth = measureTrueTextWidth(state.label, font);
     int16_t maxWidth = segW - 4;
     if (maxWidth > 0 && textWidth > maxWidth) textWidth = maxWidth;
     int16_t textX = segX + jsRound((segW - textWidth) / 2.0f);
@@ -963,14 +943,16 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
       textY = obj.y + verticalCenterOffset + fontAscent;
     }
 
-    u8g2_.setForegroundColor(isActive ? activeTextColor : textColor);
     // Clips to this segment's own rect, not the whole control - matches
     // the designer's per-segment clip fix (2026-08-13): an oversized font
     // gets cropped at the segment boundary instead of bleeding into a
-    // neighbor.
+    // neighbor. Deliberately no ink-overhang allowance here: the clip is
+    // the segment, which is taller than the text, so nothing is being
+    // shaved off in the first place.
     canvas_->setClip(segX, obj.y, segW, obj.height);
-    u8g2_.setCursor(textX, textY);
-    u8g2_.print(state.label);
+    if (font != nullptr) {
+      font->drawText(*canvas_, state.label, textX, textY, isActive ? activeTextColor : textColor);
+    }
     canvas_->clearClip();
   }
 
