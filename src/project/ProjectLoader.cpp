@@ -342,6 +342,17 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
     props.calibrationPoints = parseCalibrationPoints(propsJson["calibrationPoints"]);
   }
 
+  // arc-level properties. The defaults are the designer's own: half past
+  // seven round to half past four, the thermostat shape.
+  props.setpointTopic = propsJson["setpointTopic"] | "";
+  props.trackColor = propsJson["trackColor"] | "#303030";
+  props.markerColor = propsJson["markerColor"] | "#ffffff";
+  props.arcDirection = propsJson["direction"] | "cw";
+  props.minAngle = propsJson["minAngle"] | 225;
+  props.maxAngle = propsJson["maxAngle"] | 135;
+  props.arcThickness = propsJson["thickness"] | 22;
+  props.markerWidth = propsJson["markerWidth"] | 4;
+
   // line properties
   props.strokeWidth = propsJson["strokeWidth"] | 1;
   props.strokeStyle = propsJson["strokeStyle"] | "solid";

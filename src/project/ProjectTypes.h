@@ -112,6 +112,19 @@ struct ObjectProperties {
   String fillColor;                       // Color of filled portion of bar
   std::vector<CalibrationPoint> calibrationPoints;
 
+  // arc-level properties. Shares topic, displayValue, fillColor,
+  // backgroundColor, textColor, fontId and calibrationPoints with the bar
+  // above - it is the same readout on a circular track, and the value
+  // mapping is deliberately the identical interpolation.
+  String setpointTopic;                   // Optional second value, drawn as a marker; empty = no marker
+  String trackColor;                      // The unfilled part of the ring
+  String markerColor;                     // The setpoint marker
+  String arcDirection;                    // "cw" (default) or "ccw" - which way round the scale runs
+  int minAngle;                           // Whole degrees, 0 at twelve o'clock, where the scale starts
+  int maxAngle;                           // ... and where it ends. Equal to minAngle means a full ring.
+  int arcThickness;                       // Ring thickness in px, inwards from the object's edge
+  int markerWidth;                        // Marker width in whole degrees
+
   // line properties
   int strokeWidth;                        // Line thickness in px (1-10); box border thickness (0-10, 0 = no border)
   String strokeStyle;                     // "solid", "dashed", "dotted" - only "solid" is rendered so far

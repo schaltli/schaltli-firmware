@@ -111,6 +111,16 @@ private:
   bool renderLabel(const ScreenObject& obj);
   bool renderMQTTDataField(const ScreenObject& obj);
   bool renderLevelIndicator(const ScreenObject& obj);
+  // The round counterpart of the bar. `mixInto` is what its anti-aliased
+  // edges blend against where the object's own background is transparent -
+  // a declared colour rather than whatever happens to be on the canvas,
+  // because the designer cannot read its canvas back at an arbitrary zoom
+  // and an edge that mixes into different things on the two sides is an
+  // edge that fails the pixel comparison.
+  bool renderArcLevel(const ScreenObject& obj, uint16_t mixInto);
+
+  // The background renderScreen() filled before drawing any object.
+  uint16_t currentScreenBg_ = 0xFFFF;
   bool renderMQTTIconField(const ScreenObject& obj);
   bool renderIcon(const ScreenObject& obj);
   bool renderSoftwareButton(const ScreenObject& obj, bool isPressed);

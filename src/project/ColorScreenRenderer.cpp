@@ -1,4 +1,5 @@
 #include "ColorScreenRenderer.h"
+#include "ArcRaster.h"
 #include <algorithm>
 
 // Matches JavaScript's Math.round() exactly, including its tie-breaking
@@ -798,6 +799,142 @@ String ColorScreenRenderer::getIconPathForValue(const ScreenObject& obj, const S
   return "";
 }
 
+// The round counterpart of renderLevelIndicator. Same value mapping, same
+// text centring - the two are siblings, and matching the bar is what keeps
+// this port honest.
+//
+// Every pixel is computed rather than drawn with a primitive, because there
+// is no arc primitive on this canvas (GFXcanvas16 offers 90-degree circle
+// helpers and nothing finer) and because an arc drawn by a primitive would
+// have hard edges. See ArcRaster.h for why the arithmetic is shaped the way
+// it is.
+bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixInto) {
+  String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
+  float value = valueStr.isEmpty() ? 0.0f : valueStr.toFloat();
+  float fillPercent = interpolateCalibration(value, obj.properties.calibrationPoints);
+  if (fillPercent < 0.0f) fillPercent = 0.0f;
+  if (fillPercent > 100.0f) fillPercent = 100.0f;
+
+  // No setpoint topic, no marker - a tank level has nothing to aim at.
+  bool hasSetpoint = false;
+  float setpointPercent = 0.0f;
+  if (!obj.properties.setpointTopic.isEmpty()) {
+    String setpointStr = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+    if (!setpointStr.isEmpty()) {
+      hasSetpoint = true;
+      setpointPercent = interpolateCalibration(setpointStr.toFloat(), obj.properties.calibrationPoints);
+      if (setpointPercent < 0.0f) setpointPercent = 0.0f;
+      if (setpointPercent > 100.0f) setpointPercent = 100.0f;
+    }
+  }
+
+  const int32_t size = min(obj.width, obj.height);
+  if (size <= 0) return true;
+  int32_t thickness = obj.properties.arcThickness;
+  if (thickness < 1) thickness = 1;
+  if (thickness > size / 2) thickness = size / 2;
+
+  // Two clock positions and a direction become one clockwise sector, so the
+  // rasterizer only ever deals with clockwise sweeps. A counter-clockwise
+  // dial is the same sector filled from its other end.
+  const int32_t minA = ((obj.properties.minAngle % 360) + 360) % 360;
+  const int32_t maxA = ((obj.properties.maxAngle % 360) + 360) % 360;
+  const bool counterClockwise = obj.properties.arcDirection == "ccw";
+  const int32_t startDeg = counterClockwise ? maxA : minA;
+  int32_t spanDeg = counterClockwise ? ((minA - maxA + 360) % 360) : ((maxA - minA + 360) % 360);
+  // Equal positions mean a full ring. An arc of zero length is not something
+  // anyone builds on purpose, so the ambiguous case gets the useful reading.
+  if (spanDeg == 0) spanDeg = 360;
+
+  const int32_t start64 = startDeg * ArcRaster::ANGLE_SCALE;
+  const int32_t sweep64 = spanDeg * ArcRaster::ANGLE_SCALE;
+
+  const int32_t filled64 = ArcRaster::sweepForPercent(sweep64, fillPercent);
+  const int32_t fillStart64 = counterClockwise ? start64 + sweep64 - filled64 : start64;
+
+  ArcRaster::RingGeometry geom;
+  geom.size = size;
+  geom.thickness = thickness;
+  geom.track = ArcRaster::makeSector(start64, sweep64);
+  geom.fill = ArcRaster::makeSector(fillStart64, filled64);
+  if (hasSetpoint) {
+    const int32_t at = ArcRaster::sweepForPercent(sweep64, setpointPercent);
+    const int32_t centreAt = counterClockwise ? start64 + sweep64 - at : start64 + at;
+    int32_t markerDeg = obj.properties.markerWidth;
+    if (markerDeg < 1) markerDeg = 1;
+    const int32_t width64 = markerDeg * ArcRaster::ANGLE_SCALE;
+    geom.marker = ArcRaster::makeSector(centreAt - width64 / 2, width64);
+  } else {
+    geom.marker = ArcRaster::makeSector(0, 0);
+  }
+
+  bool backgroundTransparent = false;
+  const uint16_t backgroundPacked =
+      parseHexColor(obj.properties.backgroundColor.isEmpty() ? "transparent" : obj.properties.backgroundColor,
+                    &backgroundTransparent);
+  // Where the object declares no background of its own, the edges mix into
+  // the screen's - known to the designer too, so both mix into the same
+  // thing. Over a background image that is an approximation, but it is the
+  // same approximation on both sides, so the comparison stays exact.
+  const ArcRaster::Rgb565 mix = ArcRaster::toRgb565(backgroundTransparent ? mixInto : backgroundPacked);
+  const ArcRaster::Rgb565 trackColour = ArcRaster::toRgb565(parseHexColor(obj.properties.trackColor));
+  const ArcRaster::Rgb565 fillColour = ArcRaster::toRgb565(parseHexColor(obj.properties.fillColor));
+  const ArcRaster::Rgb565 markerColour = ArcRaster::toRgb565(parseHexColor(obj.properties.markerColor));
+
+  for (int32_t py = 0; py < size; py++) {
+    for (int32_t px = 0; px < size; px++) {
+      const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
+      const int32_t covered = bands.fill + bands.track + bands.marker;
+
+      if (covered == 0) {
+        // Nothing of the ring here. With an opaque background the object
+        // still owns its square; with a transparent one the pixel is left
+        // alone - which is what "transparent" means everywhere in this
+        // renderer: skip the draw, never mix.
+        if (!backgroundTransparent) {
+          canvas_->drawPixel(obj.x + px, obj.y + py, backgroundPacked);
+        }
+        continue;
+      }
+
+      const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, markerColour,
+                                                   bands.marker, mix, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+      canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
+    }
+  }
+
+  if (obj.properties.displayValue == "none") return true;
+
+  String displayText;
+  if (obj.properties.displayValue == "percentage") {
+    displayText = String((int)(fillPercent + 0.5f)) + "%";
+  } else if (obj.properties.displayValue == "value") {
+    displayText = valueStr;
+  }
+  if (displayText.isEmpty()) return true;
+
+  // Centred exactly as renderLevelIndicator centres its own value, so the
+  // two siblings cannot drift apart on the one thing they both do.
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  int16_t textWidth = measureTrueTextWidth(displayText, font);
+  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
+  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
+  int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
+  int16_t fontHeight = fontAscent + fontDescent;
+  int16_t textY = obj.y + jsRound((obj.height - fontHeight) / 2.0f) + fontAscent;
+
+  bool textTransparent = false;
+  uint16_t textColor = parseHexColor(obj.properties.textColor.isEmpty() ? "#ffffff" : obj.properties.textColor,
+                                     &textTransparent);
+  if (!textTransparent && font != nullptr) {
+    canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
+    font->drawText(*canvas_, displayText, textX, textY, textColor);
+    canvas_->clearClip();
+  }
+
+  return true;
+}
+
 bool ColorScreenRenderer::renderMQTTIconField(const ScreenObject& obj) {
   String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
   if (valueStr.isEmpty()) return false;
@@ -1075,6 +1212,7 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
   if (obj.type == "label") return renderLabel(obj);
   if (obj.type == "MqttDataField" || obj.type == "field") return renderMQTTDataField(obj);
   if (obj.type == "level-indicator") return renderLevelIndicator(obj);
+  if (obj.type == "arc-level") return renderArcLevel(obj, currentScreenBg_);
   if (obj.type == "MQTTIconField") return renderMQTTIconField(obj);
   if (obj.type == "icon") return renderIcon(obj);
   if (obj.type == "SoftwareButton") return renderSoftwareButton(obj, !pressedButtonId.isEmpty() && obj.id == pressedButtonId);
@@ -1112,6 +1250,10 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   bool bgTransparent = false;
   uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
   canvas_->fillScreen(bgTransparent ? 0xFFFF : screenBg);
+  // Kept for the objects that need to know what they are drawn onto - an
+  // arc-level mixes its anti-aliased edges into this when its own
+  // background is transparent, which is the usual case for a ring.
+  currentScreenBg_ = bgTransparent ? 0xFFFF : screenBg;
 
   std::vector<ScreenObject> sortedObjects = screen.objects;
   std::sort(sortedObjects.begin(), sortedObjects.end(),
