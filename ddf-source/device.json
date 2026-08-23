@@ -111,6 +111,7 @@
     "MQTTIconField",
     "label",
     "level-indicator",
+    "arc-level",
     "icon",
     "line",
     "box",
