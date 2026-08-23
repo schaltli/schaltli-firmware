@@ -127,12 +127,27 @@ bool WiFiSetupServer::startAP() {
   s_apClientConnected = false;
   apEnteredAtMs_ = millis();
 
+  // The captive portal's other half - see dnsServer_'s comment. "*" catches
+  // every name, so whatever the phone looks up resolves here and its
+  // connectivity check reaches handleNotFound below.
+  dnsServer_ = new DNSServer();
+  dnsServer_->setErrorReplyCode(DNSReplyCode::NoError);
+  if (!dnsServer_->start(53, "*", AP_IP)) {
+    Serial.println("[WiFiSetupServer] DNS server would not start - the portal will not open by itself");
+    delete dnsServer_;
+    dnsServer_ = nullptr;
+  }
+
   webServer_ = new WebServer(80);
   webServer_->on("/", HTTP_GET, [this]() { handleRoot(); });
   webServer_->on("/api/scan", HTTP_GET, [this]() { handleWiFiScan(); });
   webServer_->on("/api/wifi", HTTP_POST, [this]() { handleWiFiConfigure(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { handleMqttConfigure(); });
   webServer_->on("/api/mqtt-test", HTTP_POST, [this]() { handleMqttTest(); });
+  webServer_->on("/api/exit-setup", HTTP_POST, [this]() {
+    exitRequested_ = true;
+    webServer_->send(200, "application/json", "{\"success\":true,\"message\":\"Restarting\"}");
+  });
   webServer_->onNotFound([this]() { handleNotFound(); });
   webServer_->begin();
 
@@ -144,6 +159,11 @@ bool WiFiSetupServer::startAP() {
 }
 
 void WiFiSetupServer::stop() {
+  if (dnsServer_ != nullptr) {
+    dnsServer_->stop();
+    delete dnsServer_;
+    dnsServer_ = nullptr;
+  }
   if (!running_) return;
   if (webServer_) {
     webServer_->stop();
@@ -155,6 +175,7 @@ void WiFiSetupServer::stop() {
 }
 
 void WiFiSetupServer::handleClient() {
+  if (dnsServer_ != nullptr) dnsServer_->processNextRequest();
   if (running_ && webServer_) webServer_->handleClient();
 }
 
@@ -189,27 +210,36 @@ bool WiFiSetupServer::tick() {
 void WiFiSetupServer::showSetupScreenAP(int secondsLeft, bool clientConnected) {
   String statusLine;
   if (clientConnected) {
-    statusLine = "1 client connected";
+    statusLine = "connected";
   } else if (secondsLeft >= 0) {
-    statusLine = "Auto-reset in " + String(secondsLeft) + "s";
+    statusLine = "restart in " + String(secondsLeft) + "s";
   }
 
-  // No "Press button to cancel" line, unlike the M5 Dial's version: this
-  // board has no physical button to press, so the instruction would be a
-  // dead end. Nothing else offers that escape here either - the countdown
-  // in the status line is the only way out, and it says so.
-  display_.showLines({
-    "SCREENBEE SETUP",
-    "",
-    "1. Connect to WiFi:",
-    "SSID: " + String(AP_SSID),
-    "Pass: " + String(AP_PASSWORD),
-    "",
-    "2. Open browser:",
-    "http://192.168.4.1",
-    "",
-    statusLine,
-  });
+  // A WIFI: URI, not the config URL. Phone cameras recognise this natively
+  // and offer to join the network; a URL would be unreachable until the
+  // phone had already joined, which is the step this is meant to remove.
+  // Typing "screenbee12345" off a 46mm screen is the alternative, and it is
+  // the reason people give up on device setup.
+  String qr = "WIFI:S:";
+  qr += AP_SSID;
+  qr += ";T:WPA;P:";
+  qr += AP_PASSWORD;
+  qr += ";;";
+
+  // The countdown is the only way out and it says so - this board has no
+  // physical button, so an instruction to press one would be a dead end.
+  // It also stops as soon as someone connects, so it cannot expire while
+  // they are typing.
+  // The credentials in readable text as well as in the code. Scanning is
+  // the convenient path, not the only one - a device whose setup screen
+  // needs a second device to be legible is a bad setup screen.
+  display_.showQrScreen(qr, "SCAN TO CONNECT",
+                        {
+                            String(AP_SSID),
+                            "PW: " + String(AP_PASSWORD),
+                            statusLine,
+                            "tap to cancel",
+                        });
 }
 
 void WiFiSetupServer::showSetupScreenSTA() {
@@ -230,7 +260,9 @@ void WiFiSetupServer::showSetupScreenSTA() {
 
 void WiFiSetupServer::handleRoot() {
   Serial.println("[WiFiSetupServer] GET /");
-  webServer_->send(200, "text/html", String(WIFI_SETUP_HTML));
+  String page(WIFI_SETUP_HTML);
+  page.replace("{{DEVICE}}", DEVICE_ID);
+  webServer_->send(200, "text/html", page);
   Serial.println("[WiFiSetupServer] GET / sent");
 }
 
@@ -301,8 +333,24 @@ void WiFiSetupServer::handleMqttTest() {
 }
 
 void WiFiSetupServer::handleNotFound() {
-  Serial.print("[WiFiSetupServer] 404 for: ");
+  Serial.print("[WiFiSetupServer] unrouted: ");
   Serial.println(webServer_->uri());
+
+  // In AP mode every unrouted request is a phone asking whether this
+  // network has internet, and the answer decides whether it stays. A 404
+  // reads as "broken network" and the phone leaves for mobile data; a
+  // redirect to the setup page reads as a captive portal, which is what
+  // this is, and the phone opens it. Serving the page directly instead of
+  // redirecting also works and is what iOS prefers, but a 302 keeps the
+  // address bar honest about where the user ended up.
+  if (apMode_) {
+    webServer_->sendHeader("Location", String("http://") + AP_IP.toString() + "/", true);
+    webServer_->send(302, "text/plain", "");
+    return;
+  }
+
+  // Connected to a real network: a 404 is a 404, and pretending otherwise
+  // would hijack requests the user did not mean for this device.
   webServer_->send(404, "text/plain", "Not Found");
 }
 

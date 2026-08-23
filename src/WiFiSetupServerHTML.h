@@ -5,12 +5,17 @@
 // for this device). Styling/JS structure mirrors MqttEPaperDisplay2's
 // UnifiedConfiguratorHTML.h closely (same look across ScreenBee devices),
 // just with the "Project Upload" tab and its handlers removed.
+//
+// {{DEVICE}} is substituted with DEVICE_ID when the page is served. It used
+// to read "M5 Dial" literally - the file was ported and the name came with
+// it, so every Waveshare served a page announcing the wrong device
+// (spotted 2026-08-23). A placeholder cannot be ported wrong.
 
 static const char WIFI_SETUP_HTML[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>ScreenBee M5 Dial Setup</title><style>
+<title>ScreenBee Setup</title><style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
 .container{max-width:600px;margin:0 auto;background:white;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
@@ -44,7 +49,7 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 .loading{text-align:center;padding:20px;color:#667eea}
 </style></head><body>
 <div class="container">
-<div class="header"><h1>ScreenBee Setup</h1><p>M5 Dial - Configure WiFi and MQTT</p></div>
+<div class="header"><h1>ScreenBee Setup</h1><p>{{DEVICE}} - Configure WiFi and MQTT</p></div>
 <div class="tabs">
 <button class="tab active" onclick="switchTab('wifi')">WiFi Setup</button>
 <button class="tab" onclick="switchTab('mqtt')">MQTT Connection</button>
@@ -81,6 +86,10 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 <button class="btn" onclick="saveMqtt()" style="flex:1">Save MQTT Settings</button>
 <button class="btn" onclick="testMqtt()" style="flex:1;background:linear-gradient(135deg,#4caf50 0%,#45a049 100%)">Test MQTT Connection</button>
 </div>
+</div>
+<div style="padding:16px;text-align:center">
+<button onclick="exitSetup()" style="background:#555;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Cancel and restart</button>
+<p style="margin-top:8px;font-size:13px;opacity:.7">Leaves setup mode without changing anything.</p>
 </div>
 </div>
 <script>
@@ -184,5 +193,16 @@ else{showMessage('mqtt','error',data.message)}
 }).catch(function(err){
 showMessage('mqtt','error','MQTT test failed');
 });}
+
+// Cancel: the device restarts, so the response is the last thing this page
+// will hear from it. Say so rather than leaving a dead page behind - the
+// AP disappears a moment later and the browser would otherwise just show
+// a connection error, which reads as a failure rather than as success.
+function exitSetup(){
+if(!confirm('Leave setup mode and restart the device?')){return}
+fetch('/api/exit-setup',{method:'POST'})
+.then(function(){document.body.innerHTML='<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Restarting</h2><p>The device is leaving setup mode. This network will disappear in a moment - reconnect to your normal WiFi.</p></div>'})
+.catch(function(){document.body.innerHTML='<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Restarting</h2><p>The device is leaving setup mode.</p></div>'});
+}
 </script></body></html>
 )=====";

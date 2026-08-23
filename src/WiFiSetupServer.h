@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
@@ -24,6 +25,10 @@ public:
   // Force AP mode - for a long button-press while already connected.
   bool startAP();
   void stop();
+
+  // True once someone pressed Cancel in the portal. Latching, not a
+  // callback: the caller decides what leaving setup mode means.
+  bool exitRequested() const { return exitRequested_; }
   bool isRunning() const { return running_; }
   void handleClient();
   bool hasWiFiCredentials() const { return !configuredSSID_.isEmpty(); }
@@ -42,6 +47,19 @@ public:
 
 private:
   IDisplay& display_;
+  // Answers every DNS query with the AP's own address while the AP is up.
+  // Without it a phone joins, fails its connectivity check (Android asks
+  // for connectivitycheck.gstatic.com, iOS for captive.apple.com), decides
+  // this network leads nowhere and routes traffic to mobile data instead -
+  // so 192.168.4.1 becomes unreachable from the very device that just
+  // joined. Observed exactly that way on 2026-08-23: the server was
+  // running and answering fine over the station interface the whole time.
+  DNSServer* dnsServer_ = nullptr;
+  // Set by the portal's Cancel button. Read and acted on by the main loop
+  // rather than restarting inside the request handler, so the browser gets
+  // its response before the device goes away - a restart mid-request looks
+  // to the user like the page crashed.
+  bool exitRequested_ = false;
   IConfigStorage& config_;
   WebServer* webServer_;
   bool running_;

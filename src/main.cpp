@@ -113,6 +113,7 @@ static bool pendingDeploy = false;
 static String pendingDeployPayload;
 
 static bool renderScreenIndex(int index);
+static void enterSetupMode();
 static void dispatchInput(const char *buttonId);
 
 // ---------------------------------------------------------------- display
@@ -554,9 +555,25 @@ static void dispatchButtonAction(const ButtonAction &action) {
       Serial.printf("[action] unknown device action \"%s\" - skipping\n", action.deviceActionId.c_str());
     }
   } else if (action.type == "goto-setup-mode") {
-    setupModeActive = true;
-    wifiSetupServer.startAP();
+    enterSetupMode();
   }
+}
+
+// One way in, whether it came from a project's bound action or from the
+// reserved hold gesture - so both behave identically and there is one
+// place to change what entering setup means.
+static void enterSetupMode() {
+  if (setupModeActive) return;
+  Serial.println("[setup] entering setup mode - starting AP");
+  setupModeActive = true;
+  // The test interface owns port 80 in normal operation and the setup
+  // server wants the same port. Nothing stopped the first one before, so
+  // the second bind landed on an occupied socket - harmless-looking until
+  // the day something actually enters setup mode, which the reserved hold
+  // gesture now makes easy. Stop it first, deliberately: in setup mode the
+  // device is not serving snapshots or accepting deploys anyway.
+  testInterface.stop();
+  wifiSetupServer.startAP();
 }
 
 // --- gesture and knob input -------------------------------------------
@@ -609,6 +626,50 @@ static unsigned long touchLastDownMs = 0;
 // is measured to the last down-read, so the debounce tail never inflates
 // it.
 static const unsigned long RELEASE_DEBOUNCE_MS = 80;
+
+// ------------------------------------------------- reserved setup gesture
+//
+// One finger held for five seconds opens the setup AP, and no project can
+// take that away. See docs/device-contract.md (designer repo), "Getting
+// back into setup mode": a device that connects happily to a network you
+// cannot reach otherwise has no way back, because `goto-setup-mode` is
+// only there if whoever designed the project chose to bind it - and the
+// project this was found on bound it nowhere.
+//
+// One finger rather than several is measured, not preferred: on this
+// panel a multi-finger contact is reported for about 100ms and then stops
+// however long it is held, and the reported count saturates at 2. A
+// multi-finger hold cannot be detected here at all.
+//
+// The countdown appears after a second so the gesture explains itself
+// rather than surprising anyone, and releasing cancels it. From the moment
+// it shows, the gesture belongs to setup mode: the release dispatches
+// nothing, because someone who lets go wanted neither setup nor whatever
+// button their finger happened to be resting on.
+static const unsigned long SETUP_HOLD_MS = 5000;
+static const unsigned long SETUP_HOLD_FEEDBACK_MS = 1000;
+// A hold has to stay put. Without this a slow swipe would arm it, and on a
+// screen where swiping pages back and forth this would fire eventually.
+static const int SETUP_HOLD_MAX_DRIFT = 40;
+
+static bool setupHoldCountdownShown = false;
+static int setupHoldLastSecond = -1;
+static bool setupHoldConsumed = false;  // this contact belongs to the gesture now
+
+// Draws the countdown over whatever is on screen. Deliberately the plain
+// text display rather than anything composited: this runs while a finger
+// is held down and has to be legible instantly, and it is the same surface
+// the setup screen itself uses, so there is no second look to maintain.
+static void showSetupHoldCountdown(int secondsLeft) {
+  displayAdapter.showLines({
+      "",
+      "SETUP MODE",
+      "",
+      "in " + String(secondsLeft) + "s",
+      "",
+      "release to cancel",
+  });
+}
 
 // ------------------------------------------------- follow-the-finger swipe
 //
@@ -927,6 +988,9 @@ static void pollTouchGesturesInner() {
       touchStartY = touchY;
       touchStartMs = millis();
       dragDecided = false;
+      setupHoldCountdownShown = false;
+      setupHoldLastSecond = -1;
+      setupHoldConsumed = false;
 #if INPUT_DEBUG
       gestureSamples = 0;
       gestureDragStarted = false;
@@ -941,6 +1005,32 @@ static void pollTouchGesturesInner() {
 
     const int dx = touchX - touchStartX;
     const int dy = touchY - touchStartY;
+
+    // The reserved setup gesture, checked before anything else can claim
+    // this contact.
+    if (!setupModeActive && abs(dx) <= SETUP_HOLD_MAX_DRIFT && abs(dy) <= SETUP_HOLD_MAX_DRIFT) {
+      const unsigned long held = millis() - touchStartMs;
+      if (held >= SETUP_HOLD_MS) {
+        setupHoldConsumed = true;
+        enterSetupMode();
+        return;
+      }
+      if (held >= SETUP_HOLD_FEEDBACK_MS) {
+        setupHoldConsumed = true;
+        const int secondsLeft = (int)((SETUP_HOLD_MS - held + 999) / 1000);
+        if (secondsLeft != setupHoldLastSecond) {
+          showSetupHoldCountdown(secondsLeft);
+          setupHoldLastSecond = secondsLeft;
+          setupHoldCountdownShown = true;
+        }
+        return;  // nothing else may act on this contact any more
+      }
+    } else if (setupHoldCountdownShown) {
+      // Drifted out of the hold after the countdown had started - treat it
+      // as a cancel rather than letting it become a swipe, since the user
+      // was told a countdown was running.
+      setupHoldConsumed = true;
+    }
     // Offered once per gesture, at the first movement worth calling a drag.
     // Once refused - unbound direction, single-screen project, no second
     // canvas - it is not reconsidered, so the decision cannot flip halfway
@@ -966,6 +1056,22 @@ static void pollTouchGesturesInner() {
   int dx = touchLastX - touchStartX;
   int dy = touchLastY - touchStartY;
   unsigned long duration = touchLastDownMs - touchStartMs;
+
+  // The setup hold owned this contact: cancelled by releasing, or already
+  // acted on. Either way nothing downstream may treat it as a tap or a
+  // swipe - see SETUP_HOLD_MS.
+  if (setupHoldConsumed) {
+    setupHoldConsumed = false;
+    if (setupHoldCountdownShown && !setupModeActive) {
+      // Put the screen back the way it was; the countdown painted over it.
+      setupHoldCountdownShown = false;
+      renderScreenIndex(currentScreenIndex);
+    }
+#if INPUT_DEBUG
+    lastReleaseVerdict = "setup-hold-cancelled";
+#endif
+    return;
+  }
 #if INPUT_DEBUG
   touchReleaseCount++;
   lastReleaseDx = dx;
@@ -1247,6 +1353,12 @@ static String buildDebugJson() {
   }
   out += ",\"lastFlickPxPerSecond\":" + String(lastFlickPxPerSecond);
   out += ",\"dragAxisAbandoned\":" + String(dragAxisAbandoned);
+  // The reserved setup hold, visible so a spurious arming is diagnosable
+  // rather than only observable as "the device went into setup mode and I
+  // do not know why".
+  out += ",\"setupHoldArmed\":" + String(setupHoldCountdownShown ? "true" : "false");
+  out += ",\"setupHoldMs\":" + String(touchDown ? (millis() - touchStartMs) : 0);
+  out += ",\"setupModeActive\":" + String(setupModeActive ? "true" : "false");
   out += ",\"slotScreens\":[" + String(canvasPresenter.slotScreen(0)) + "," +
          String(canvasPresenter.slotScreen(1)) + "]";
   out += ",\"gestureCount\":" + String(gestureLogIndex);
@@ -1738,6 +1850,52 @@ void loop() {
 
   if (setupModeActive) {
     wifiSetupServer.handleClient();
+
+    // Tap below the QR code to leave setup mode again.
+    //
+    // The band rather than a drawn button: the code fills the middle of a
+    // 46mm round screen and there is no room for one that would still be
+    // hittable. Everything under the code is the target, and the screen
+    // says so on its last line.
+    //
+    // Leaving restarts rather than tearing the AP down and resuming in
+    // place - the same choice the timeout makes, and for the same reason:
+    // a restart has one well-tested path back into normal operation, while
+    // unwinding AP mode by hand has none.
+    //
+    // An accidental cancel costs a reboot and lands where whoever touched
+    // it presumably wanted to be anyway, so this is deliberately a plain
+    // tap with no confirmation.
+    static bool setupTapDown = false;
+    static int16_t setupTapStartY = 0;
+    if (touchIsDown) {
+      if (!setupTapDown) {
+        setupTapDown = true;
+        setupTapStartY = touchY;
+      }
+    } else if (setupTapDown) {
+      setupTapDown = false;
+      // Everything below the QR code, asked of the code that drew it - a
+      // hardcoded y here is what broke this once already when the layout
+      // moved. The credential lines are inside the band too; they are not
+      // interactive, the screen says what a tap does, and cancelling costs
+      // a restart that lands where an accidental tapper wanted to be.
+      const int16_t bandTop = (int16_t)(displayAdapter.qrScreenTextTop() - 6);
+      const bool inCancelBand = bandTop > 0 && setupTapStartY > bandTop && touchY > bandTop - 20;
+      if (inCancelBand) {
+        Serial.println("[setup] cancelled on the device - restarting");
+        delay(100);
+        ESP.restart();
+      }
+    }
+
+    // The portal's own Cancel button, for someone already looking at the
+    // page who decided not to change anything.
+    if (wifiSetupServer.exitRequested()) {
+      Serial.println("[setup] cancelled from the portal - restarting");
+      delay(300);  // let the response reach the browser first
+      ESP.restart();
+    }
 
     // Credentials just arrived from the portal - restart so they are applied
     // through the normal setupWiFi() path rather than trying to switch modes
