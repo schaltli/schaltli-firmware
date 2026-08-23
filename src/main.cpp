@@ -41,6 +41,7 @@
 #include "TestInterfaceServer.h"
 #include "WiFiSetupServer.h"
 #include "MqttClient.h"
+#include "DeviceSettings.h"
 #include "DeployManager.h"
 #include "DeviceInfo.h"
 #include "project/ProjectLoader.h"
@@ -823,6 +824,49 @@ static uint32_t menuFrameMs = 0;
 static uint32_t menuFrames = 0;
 #endif
 
+// ------------------------------------------------------ display blanking
+//
+// The screen turns off - backlight included - after a configured stretch
+// with no *human* input. See DeviceSettings.h for why MQTT traffic does
+// not count and why the setting lives on the device rather than in the
+// project.
+//
+// The first input afterwards only wakes the screen. It does not press the
+// button it happens to land on: this device controls heating and air
+// conditioning, and reaching for a dark panel to see what it says must not
+// switch something. That is the same rule the reserved setup hold follows
+// from the other direction - a hold is unambiguous, a stab in the dark is
+// not.
+static bool displayIsOff = false;
+static uint32_t lastHumanInputMs = 0;
+static uint32_t displayOffAfterMs = 0;  // 0 = never, cached from NVS
+
+static void wakeDisplay() {
+  lastHumanInputMs = millis();
+  if (!displayIsOff) return;
+  displayIsOff = false;
+  digitalWrite(LCD_BL, HIGH);
+  // Repaint before the backlight would reveal a stale frame - the panel
+  // keeps whatever it last received, and that is the screen from before it
+  // went dark, which may be minutes old.
+  renderScreenIndex(currentScreenIndex);
+  Serial.println("[display] woke");
+}
+
+static void blankDisplay() {
+  if (displayIsOff) return;
+  displayIsOff = true;
+  digitalWrite(LCD_BL, LOW);
+  Serial.println("[display] off after inactivity");
+}
+
+static void updateDisplayBlanking() {
+  if (setupModeActive) return;  // the setup screen must stay visible
+  if (displayOffAfterMs == 0) return;
+  if (displayIsOff) return;
+  if (millis() - lastHumanInputMs >= displayOffAfterMs) blankDisplay();
+}
+
 static const uint32_t PRERENDER_IDLE_MS = 400;
 static uint32_t lastTouchActivityMs = 0;
 
@@ -1002,6 +1046,18 @@ static void pollTouchGesturesInner() {
     touchLastY = touchY;
     touchLastDownMs = millis();
     lastTouchActivityMs = touchLastDownMs;
+
+    // Human input: keeps the screen alive, and wakes it if it had gone
+    // dark. A wake swallows the rest of this contact - see wakeDisplay.
+    const bool wasOff = displayIsOff;
+    wakeDisplay();
+    if (wasOff) {
+      // The touch that woke the screen still counts towards the reserved
+      // setup hold below: holding is unambiguous, and making someone touch
+      // twice to reach setup would be a worse first touch.
+      setupHoldConsumed = false;
+      dragDecided = true;  // but it may not become a swipe or a tap
+    }
 
     const int dx = touchX - touchStartX;
     const int dy = touchY - touchStartY;
@@ -1359,6 +1415,9 @@ static String buildDebugJson() {
   out += ",\"setupHoldArmed\":" + String(setupHoldCountdownShown ? "true" : "false");
   out += ",\"setupHoldMs\":" + String(touchDown ? (millis() - touchStartMs) : 0);
   out += ",\"setupModeActive\":" + String(setupModeActive ? "true" : "false");
+  out += ",\"displayOffAfterSeconds\":" + String(displayOffAfterMs / 1000);
+  out += ",\"displayIsOff\":" + String(displayIsOff ? "true" : "false");
+  out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
   out += ",\"slotScreens\":[" + String(canvasPresenter.slotScreen(0)) + "," +
          String(canvasPresenter.slotScreen(1)) + "]";
   out += ",\"gestureCount\":" + String(gestureLogIndex);
@@ -1454,6 +1513,12 @@ static void pollEncoder() {
   // per click rather than a burst proportional to speed. Positive = right
   // per the reader's contract; button-1 is "Rotate Right" in the DDF
   // adornment SVG, button-0 "Rotate Left".
+  // Turning the knob is human input: it keeps the screen alive, and the
+  // first detent on a dark screen only wakes it rather than also paging.
+  const bool wasOff = displayIsOff;
+  wakeDisplay();
+  if (wasOff) return;
+
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
   for (int32_t i = 0; i < abs(detents); i++) dispatchInput(buttonId);
 }
@@ -1676,6 +1741,16 @@ static void setupWiFi() {
         touchInjectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
       });
 #endif
+      // Apply a saved setting immediately. Without this the value sits in
+      // NVS and the running firmware keeps the one it read at boot -
+      // someone changes the timeout, watches nothing happen, and concludes
+      // it did not save.
+      testInterface.setSettingsChangedHandler([]() {
+        displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
+        lastHumanInputMs = millis();
+        wakeDisplay();
+        Serial.printf("[display] blanking now after %us\n", (unsigned)(displayOffAfterMs / 1000));
+      });
       testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
         dispatchInput(buttonId.c_str());
         // The navigation rate limit is there for a physical turn, where the
@@ -1747,6 +1822,10 @@ void setup() {
 
   pinMode(LCD_BL, OUTPUT);
   digitalWrite(LCD_BL, HIGH);
+  displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
+  lastHumanInputMs = millis();
+  Serial.printf("[display] blanking after %us of inactivity%s\n",
+                (unsigned)(displayOffAfterMs / 1000), displayOffAfterMs == 0 ? " (never)" : "");
 
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
   cst816Init();
@@ -1927,6 +2006,7 @@ void loop() {
 
   pollTouchGesturesRecorded();
   updateDragAnimation();
+  updateDisplayBlanking();
   prerenderNeighbours();
   watchForOffCentre();
   pollEncoder();

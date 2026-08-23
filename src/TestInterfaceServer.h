@@ -100,6 +100,13 @@ public:
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
   void setTouchHandler(TouchHandler handler) { touchHandler_ = handler; }
   void setPanelShadowHandler(PanelShadowHandler handler) { panelShadowHandler_ = handler; }
+
+  // Called after a device setting is saved, so the change takes effect
+  // without a restart - someone who just set a timeout wants to see it
+  // work, and a setting that needs a reboot invites power-cycling a device
+  // that is running fine.
+  using SettingsChangedHandler = std::function<void()>;
+  void setSettingsChangedHandler(SettingsChangedHandler handler) { settingsChangedHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
   void stop();
 
@@ -118,6 +125,8 @@ private:
   void handleInput();
   void handleTouch();
   void handleRecoveryProject();
+  void handleSettingsPage();
+  void handleSettingsSave();
   void handlePanel();
   void sendBMP(const uint16_t* source);
   void handleProjectUploadChunk();
@@ -139,6 +148,7 @@ private:
   InputHandler inputHandler_;
   TouchHandler touchHandler_;
   PanelShadowHandler panelShadowHandler_;
+  SettingsChangedHandler settingsChangedHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
 };

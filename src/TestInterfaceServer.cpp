@@ -1,6 +1,7 @@
 #include "TestInterfaceServer.h"
 #include "ddf_zip.h"
 #include "DeviceInfo.h"
+#include "DeviceSettings.h"
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -20,6 +21,13 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
   webServer_->on("/recovery-project", HTTP_GET, [this]() { this->handleRecoveryProject(); });
+  // Device settings, served in normal operation rather than only from the
+  // setup AP. Needing to put a device into setup mode to change how long
+  // its screen stays lit would mean taking it off the network to adjust a
+  // display preference - the same shape of problem as having to forget the
+  // WiFi to reach the config page.
+  webServer_->on("/settings", HTTP_GET, [this]() { this->handleSettingsPage(); });
+  webServer_->on("/api/device-settings", HTTP_POST, [this]() { this->handleSettingsSave(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
                      debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
@@ -113,6 +121,69 @@ void TestInterfaceServer::handleMqttConfigure() {
 // project deployed - while the device was displaying that very project.
 // Storing something recoverable and offering no way to fetch it is worse
 // than not storing it, because it reads as a deliberate answer.
+// A page, not only an endpoint: this is the one setting a person changes by
+// hand, and "curl the device" is no answer for someone who wants their
+// screen to stay lit a little longer. Served in normal operation, because
+// having to put a device into setup mode to adjust a display preference is
+// the same shape of problem as having to forget the WiFi to reach the
+// config page.
+void TestInterfaceServer::handleSettingsPage() {
+  const uint32_t seconds = DeviceSettings::displayOffAfterSeconds();
+  String page = F("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+                  "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                  "<title>ScreenBee Device Settings</title><style>"
+                  "body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;"
+                  "margin:0;padding:24px;line-height:1.5}"
+                  "h1{font-size:20px;margin-bottom:4px}"
+                  ".sub{opacity:.6;font-size:14px;margin-bottom:24px}"
+                  "label{display:block;margin-bottom:6px;font-size:15px}"
+                  "input{width:100%;padding:12px;font-size:16px;border-radius:8px;"
+                  "border:1px solid #444;background:#1c1c1c;color:#eee}"
+                  ".hint{opacity:.6;font-size:13px;margin-top:6px}"
+                  "button{margin-top:20px;width:100%;padding:14px;font-size:16px;border:0;"
+                  "border-radius:8px;background:#2d7;color:#000;font-weight:600}"
+                  "#msg{margin-top:16px;padding:12px;border-radius:8px;display:none}"
+                  "</style></head><body><h1>Device Settings</h1><div class=\"sub\">");
+  page += DEVICE_ID;
+  page += F("</div><label for=\"off\">Turn the display off after</label>"
+            "<input id=\"off\" type=\"number\" min=\"0\" max=\"86400\" value=\"");
+  page += String(seconds);
+  page += F("\"><div class=\"hint\">Seconds without a touch or a turn of the knob. "
+            "0 keeps the display on for good. Values arriving over MQTT do not count "
+            "as activity, so a screen showing live readings still goes dark.</div>"
+            "<button onclick=\"save()\">Save</button><div id=\"msg\"></div>"
+            "<script>function save(){"
+            "var v=document.getElementById('off').value;"
+            "var f=new FormData();f.append('displayOffAfterSeconds',v);"
+            "fetch('/api/device-settings',{method:'POST',body:f})"
+            ".then(function(r){return r.json()})"
+            ".then(function(d){var m=document.getElementById('msg');m.style.display='block';"
+            "m.style.background=d.success?'#153':'#611';m.textContent=d.message})"
+            ".catch(function(){var m=document.getElementById('msg');m.style.display='block';"
+            "m.style.background='#611';m.textContent='Could not reach the device'});}"
+            "</script></body></html>");
+  webServer_->send(200, "text/html", page);
+}
+
+void TestInterfaceServer::handleSettingsSave() {
+  if (!webServer_->hasArg("displayOffAfterSeconds")) {
+    sendJSONResponse(false, "Missing 'displayOffAfterSeconds'");
+    return;
+  }
+  const long value = webServer_->arg("displayOffAfterSeconds").toInt();
+  if (value < 0 || (unsigned long)value > DeviceSettings::MAX_DISPLAY_OFF_SECONDS) {
+    sendJSONResponse(false, "Out of range (0 - 86400)");
+    return;
+  }
+  if (!DeviceSettings::setDisplayOffAfterSeconds((uint32_t)value)) {
+    sendJSONResponse(false, "Could not save");
+    return;
+  }
+  // Applied live rather than at the next boot - see setSettingsChangedHandler.
+  if (settingsChangedHandler_) settingsChangedHandler_();
+  sendJSONResponse(true, value == 0 ? "Saved - display stays on" : "Saved");
+}
+
 void TestInterfaceServer::handleRecoveryProject() {
   if (!LittleFS.exists(RECOVERY_PROJECT_PATH)) {
     webServer_->send(404, "text/plain", "No recovery copy available on this device yet");
