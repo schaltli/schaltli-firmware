@@ -56,15 +56,62 @@ uint16_t ColorScreenRenderer::parseHexColor(const String& colorStr, bool* isTran
 // without a word. This still falls back - a wrong-looking label beats a
 // blank screen - but says so once, and the fallback is the DDF's own first
 // font rather than a hardcoded guess.
+namespace {
+
+// Every font id actually named by an object, children included - a
+// tab-control holds panels which hold ordinary objects, and a label three
+// levels down needs its font as much as one at the top.
+void collectFontIds(const std::vector<ScreenObject>& objects, std::vector<String>& out) {
+  for (const auto& obj : objects) {
+    const String& id = obj.properties.fontId;
+    if (!id.isEmpty()) {
+      bool seen = false;
+      for (const auto& existing : out) {
+        if (existing == id) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen) out.push_back(id);
+    }
+    if (!obj.children.empty()) collectFontIds(obj.children, out);
+  }
+}
+
+}  // namespace
+
 void ColorScreenRenderer::preloadFonts() {
   if (!projectLoader_.isLoaded()) return;
   const ProjectConfig& project = projectLoader_.getProject();
-  const uint32_t start = millis();
-  for (const Font& font : project.fonts) {
-    fontStore_.get(font.id);
+
+  // What the project *uses*, not what the DDF declares. Parsing one .bdf
+  // costs about 275ms and it has to happen before the first render, so
+  // preloading everything on offer puts the whole DDF's font list into the
+  // boot time - a second per four fonts, paid by every project whether it
+  // names them or not. A project typically uses one or two, and this is
+  // what makes it safe to be generous about the fonts a DDF offers.
+  std::vector<String> used;
+  for (const auto& screen : project.screens) {
+    collectFontIds(screen.objects, used);
   }
-  Serial.printf("[ddf-fonts] preloaded %u font(s) in %ums\n", (unsigned)project.fonts.size(),
-                (unsigned)(millis() - start));
+  // The fallback in fontFor() has to be there too, or the first object with
+  // an unknown font would parse one mid-render - exactly what this avoids.
+  const String fallback = fontStore_.defaultFontId();
+  if (!fallback.isEmpty()) {
+    bool seen = false;
+    for (const auto& id : used) {
+      if (id == fallback) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) used.push_back(fallback);
+  }
+
+  const uint32_t start = millis();
+  for (const String& id : used) fontStore_.get(id);
+  Serial.printf("[ddf-fonts] preloaded %u of %u declared font(s) in %ums\n", (unsigned)used.size(),
+                (unsigned)project.fonts.size(), (unsigned)(millis() - start));
 }
 
 const BdfFont* ColorScreenRenderer::fontFor(const String& fontId) {

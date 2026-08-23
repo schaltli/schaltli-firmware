@@ -19,6 +19,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
+  webServer_->on("/recovery-project", HTTP_GET, [this]() { this->handleRecoveryProject(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
                      debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
@@ -100,6 +101,43 @@ void TestInterfaceServer::handleMqttConfigure() {
 // itself - swipe decoding and quadrature decoding still need a human's hands
 // to verify - but everything downstream of "an input fired" becomes testable
 // without one, which is the part that changes most often.
+// GET /recovery-project - the last successfully-verified deploy, which
+// DeployManager promoted to RECOVERY_PROJECT_PATH and has kept unchanged
+// since (it survives a failed extraction; see DeployManager.cpp).
+//
+// Ported from screenbee-m5dial on 2026-08-23, having been missed when this
+// firmware was written: DeployManager saved the copy and DeviceInfo.h
+// described the endpoint that reads it back, but the handler itself never
+// existed here. The designer's "Recover project from device" therefore got
+// a 404 from every Waveshare and reported that the device had never had a
+// project deployed - while the device was displaying that very project.
+// Storing something recoverable and offering no way to fetch it is worse
+// than not storing it, because it reads as a deliberate answer.
+void TestInterfaceServer::handleRecoveryProject() {
+  if (!LittleFS.exists(RECOVERY_PROJECT_PATH)) {
+    webServer_->send(404, "text/plain", "No recovery copy available on this device yet");
+    return;
+  }
+
+  File f = LittleFS.open(RECOVERY_PROJECT_PATH, "r");
+  if (!f) {
+    webServer_->send(500, "text/plain", "Failed to open the recovery copy");
+    return;
+  }
+
+  webServer_->setContentLength(f.size());
+  webServer_->sendHeader("Content-Disposition", "attachment; filename=\"recovered_project.zip\"");
+  webServer_->send(200, "application/zip", "");
+
+  uint8_t buffer[1024];
+  while (f.available()) {
+    size_t n = f.read(buffer, sizeof(buffer));
+    if (n == 0) break;
+    webServer_->client().write(buffer, n);
+  }
+  f.close();
+}
+
 void TestInterfaceServer::handleTouch() {
   if (!touchHandler_) {
     sendJSONResponse(false, "Touch injection is not available on this device");

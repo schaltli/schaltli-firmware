@@ -117,6 +117,7 @@ private:
   void handleGetTopicValues();
   void handleInput();
   void handleTouch();
+  void handleRecoveryProject();
   void handlePanel();
   void sendBMP(const uint16_t* source);
   void handleProjectUploadChunk();
