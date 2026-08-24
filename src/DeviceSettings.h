@@ -38,4 +38,29 @@ static const uint32_t DEFAULT_DISPLAY_OFF_SECONDS = 15;
 // to be a timeout; 0 is how you actually say never.
 static const uint32_t MAX_DISPLAY_OFF_SECONDS = 86400;
 
+// The screen the device shows at boot, and the one it returns to when the
+// display goes dark. Empty means neither happens: boot renders screen 0 and
+// blanking leaves whatever was on screen, which is what every device did
+// before this existed.
+//
+// The point is not convenience, it is which screen a person finds when they
+// walk up. A panel that switches heating and air conditioning should not sit
+// waiting on those; it should sit on the light, where a mistaken touch costs
+// nothing, and the critical screens should have to be navigated to
+// deliberately. Leaving the device wherever the last visitor left it makes
+// that a matter of luck.
+//
+// Stored as the project's own screen *id*, not an index. An index survives
+// nothing: reorder the screens in the designer, redeploy, and the device
+// would return to a different screen while still reporting the same setting -
+// silently landing on the critical page this feature exists to keep it off.
+// An id that a redeploy removes resolves to nothing, and nothing is the safe
+// answer: the feature switches itself off rather than guessing.
+String idleScreenId();
+bool setIdleScreenId(const String& id);
+
+// NVS values are not unbounded and neither are designer screen ids; a value
+// longer than this is a caller error rather than something to truncate.
+static const size_t MAX_IDLE_SCREEN_ID_LENGTH = 64;
+
 }  // namespace DeviceSettings

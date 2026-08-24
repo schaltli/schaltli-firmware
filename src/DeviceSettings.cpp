@@ -5,6 +5,7 @@
 namespace {
 const char* NS_DEVICE = "device";
 const char* KEY_DISPLAY_OFF = "dispOffS";  // NVS keys are capped at 15 chars
+const char* KEY_IDLE_SCREEN = "idleScrId";
 }  // namespace
 
 namespace DeviceSettings {
@@ -24,6 +25,27 @@ bool setDisplayOffAfterSeconds(uint32_t seconds) {
   Preferences prefs;
   if (!prefs.begin(NS_DEVICE, false)) return false;
   const bool ok = prefs.putUInt(KEY_DISPLAY_OFF, seconds) > 0;
+  prefs.end();
+  return ok;
+}
+
+String idleScreenId() {
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, true)) return String();
+  const String value = prefs.getString(KEY_IDLE_SCREEN, String());
+  prefs.end();
+  return value;
+}
+
+bool setIdleScreenId(const String& id) {
+  if (id.length() > MAX_IDLE_SCREEN_ID_LENGTH) return false;
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, false)) return false;
+  // An empty id is how the feature is switched off, and putString("") does
+  // not reliably round-trip through NVS - remove the key instead, which
+  // getString's default already reads back as empty.
+  const bool ok = id.isEmpty() ? (prefs.remove(KEY_IDLE_SCREEN) || !prefs.isKey(KEY_IDLE_SCREEN))
+                               : (prefs.putString(KEY_IDLE_SCREEN, id) > 0);
   prefs.end();
   return ok;
 }

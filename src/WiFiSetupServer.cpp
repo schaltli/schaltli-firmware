@@ -1,5 +1,7 @@
 #include "WiFiSetupServer.h"
 #include "WiFiSetupServerHTML.h"
+#include "DeviceSettingsEndpoint.h"
+#include "DeviceSettingsHTML.h"
 #include "DeviceInfo.h"
 #include <ArduinoJson.h>
 
@@ -91,12 +93,7 @@ bool WiFiSetupServer::start() {
 
   Serial.println("[WiFiSetupServer] creating WebServer");
   webServer_ = new WebServer(80);
-  webServer_->on("/", HTTP_GET, [this]() { handleRoot(); });
-  webServer_->on("/api/scan", HTTP_GET, [this]() { handleWiFiScan(); });
-  webServer_->on("/api/wifi", HTTP_POST, [this]() { handleWiFiConfigure(); });
-  webServer_->on("/api/mqtt", HTTP_POST, [this]() { handleMqttConfigure(); });
-  webServer_->on("/api/mqtt-test", HTTP_POST, [this]() { handleMqttTest(); });
-  webServer_->onNotFound([this]() { handleNotFound(); });
+  registerRoutes();
   Serial.println("[WiFiSetupServer] calling webServer_->begin()");
   webServer_->begin();
   Serial.println("[WiFiSetupServer] webServer_->begin() done");
@@ -139,16 +136,7 @@ bool WiFiSetupServer::startAP() {
   }
 
   webServer_ = new WebServer(80);
-  webServer_->on("/", HTTP_GET, [this]() { handleRoot(); });
-  webServer_->on("/api/scan", HTTP_GET, [this]() { handleWiFiScan(); });
-  webServer_->on("/api/wifi", HTTP_POST, [this]() { handleWiFiConfigure(); });
-  webServer_->on("/api/mqtt", HTTP_POST, [this]() { handleMqttConfigure(); });
-  webServer_->on("/api/mqtt-test", HTTP_POST, [this]() { handleMqttTest(); });
-  webServer_->on("/api/exit-setup", HTTP_POST, [this]() {
-    exitRequested_ = true;
-    webServer_->send(200, "application/json", "{\"success\":true,\"message\":\"Restarting\"}");
-  });
-  webServer_->onNotFound([this]() { handleNotFound(); });
+  registerRoutes();
   webServer_->begin();
 
   int initialSecondsLeft = (int)(AP_AUTO_RESET_MS / 1000);
@@ -258,12 +246,50 @@ void WiFiSetupServer::showSetupScreenSTA() {
   });
 }
 
+void WiFiSetupServer::registerRoutes() {
+  webServer_->on("/", HTTP_GET, [this]() { handleRoot(); });
+  webServer_->on("/api/scan", HTTP_GET, [this]() { handleWiFiScan(); });
+  webServer_->on("/api/wifi", HTTP_POST, [this]() { handleWiFiConfigure(); });
+  webServer_->on("/api/mqtt", HTTP_POST, [this]() { handleMqttConfigure(); });
+  webServer_->on("/api/mqtt-test", HTTP_POST, [this]() { handleMqttTest(); });
+  webServer_->on("/api/device-settings", HTTP_GET, [this]() { handleDeviceSettingsGet(); });
+  webServer_->on("/api/device-settings", HTTP_POST, [this]() { handleDeviceSettingsSave(); });
+  webServer_->on("/api/exit-setup", HTTP_POST, [this]() {
+    exitRequested_ = true;
+    webServer_->send(200, "application/json", "{\"success\":true,\"message\":\"Restarting\"}");
+  });
+  webServer_->onNotFound([this]() { handleNotFound(); });
+}
+
 void WiFiSetupServer::handleRoot() {
   Serial.println("[WiFiSetupServer] GET /");
   String page(WIFI_SETUP_HTML);
   page.replace("{{DEVICE}}", DEVICE_ID);
+  page.replace("{{DEVICE_SETTINGS_TAB}}", DEVICE_SETTINGS_TAB_HTML);
+  page.replace("{{DEVICE_SETTINGS_JS}}", DEVICE_SETTINGS_JS);
   webServer_->send(200, "text/html", page);
   Serial.println("[WiFiSetupServer] GET / sent");
+}
+
+// Both halves of the Device tab, served here and identically by
+// TestInterfaceServer in normal operation - see DeviceSettingsHTML.h for
+// why the form has one home and two shells.
+void WiFiSetupServer::handleDeviceSettingsGet() {
+  // An empty screen list is a legitimate answer, not a failure: setup mode
+  // reached from a cold boot never loaded a project. The tab says so, and
+  // leaves any already-chosen screen id selected rather than resetting it.
+  const String screens = screenListHandler_ ? screenListHandler_() : String("[]");
+  webServer_->send(200, "application/json", DeviceSettingsEndpoint::currentJson(screens));
+}
+
+void WiFiSetupServer::handleDeviceSettingsSave() {
+  String message;
+  if (!DeviceSettingsEndpoint::save(*webServer_, message)) {
+    sendJSONResponse(false, message);
+    return;
+  }
+  if (settingsChangedHandler_) settingsChangedHandler_();
+  sendJSONResponse(true, message);
 }
 
 void WiFiSetupServer::handleWiFiScan() {

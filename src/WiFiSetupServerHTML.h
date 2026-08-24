@@ -1,10 +1,16 @@
 #pragma once
 
-// Lean setup HTML - WiFi + MQTT only, no project upload tab (that's
+// Lean setup HTML - WiFi, MQTT and this device's own settings, no project
+// upload tab (that's
 // checkpoint 4's job, tied to a ProjectInstaller that doesn't exist yet
 // for this device). Styling/JS structure mirrors MqttEPaperDisplay2's
 // UnifiedConfiguratorHTML.h closely (same look across ScreenBee devices),
 // just with the "Project Upload" tab and its handlers removed.
+//
+// The Device tab's form and script are not written here: they come from
+// DeviceSettingsHTML.h, substituted in at serve time, because /settings in
+// normal operation serves the identical form from the identical string. See
+// that header for why one fragment rather than a copy in each page.
 //
 // {{DEVICE}} is substituted with DEVICE_ID when the page is served. It used
 // to read "M5 Dial" literally - the file was ported and the name came with
@@ -47,12 +53,14 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 .network-name{font-weight:600;color:#333}
 .network-signal{font-size:13px;color:#666;margin-top:3px}
 .loading{text-align:center;padding:20px;color:#667eea}
+.hint{opacity:.65;font-size:13px;margin-top:6px;line-height:1.45}
 </style></head><body>
 <div class="container">
-<div class="header"><h1>ScreenBee Setup</h1><p>{{DEVICE}} - Configure WiFi and MQTT</p></div>
+<div class="header"><h1>ScreenBee Setup</h1><p>{{DEVICE}} - Configure WiFi, MQTT and this device</p></div>
 <div class="tabs">
 <button class="tab active" onclick="switchTab('wifi')">WiFi Setup</button>
 <button class="tab" onclick="switchTab('mqtt')">MQTT Connection</button>
+<button class="tab" onclick="switchTab('device')">Device</button>
 </div>
 <div id="wifi-tab" class="tab-content active">
 <div id="wifi-message" class="message"></div>
@@ -87,22 +95,26 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 <button class="btn" onclick="testMqtt()" style="flex:1;background:linear-gradient(135deg,#4caf50 0%,#45a049 100%)">Test MQTT Connection</button>
 </div>
 </div>
+<div id="device-tab" class="tab-content">
+{{DEVICE_SETTINGS_TAB}}
+</div>
 <div style="padding:16px;text-align:center">
 <button onclick="exitSetup()" style="background:#555;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Cancel and restart</button>
 <p style="margin-top:8px;font-size:13px;opacity:.7">Leaves setup mode without changing anything.</p>
 </div>
 </div>
 <script>
+// Driven by a list rather than the if/else pair this replaced: that one
+// treated "not wifi" as "mqtt", so a third tab would have shown the MQTT
+// pane under the Device button.
+var TAB_ORDER=['wifi','mqtt','device'];
 function switchTab(tab){
+var i=TAB_ORDER.indexOf(tab);
+if(i<0){return}
 document.querySelectorAll('.tab').forEach(function(t){t.classList.remove('active')});
 document.querySelectorAll('.tab-content').forEach(function(c){c.classList.remove('active')});
-if(tab==='wifi'){
-document.querySelectorAll('.tab')[0].classList.add('active');
-document.getElementById('wifi-tab').classList.add('active');
-}else{
-document.querySelectorAll('.tab')[1].classList.add('active');
-document.getElementById('mqtt-tab').classList.add('active');
-}}
+document.querySelectorAll('.tab')[i].classList.add('active');
+document.getElementById(tab+'-tab').classList.add('active');}
 window.addEventListener('load',scanNetworks);
 function scanNetworks(){
 fetch('/api/scan').then(function(r){return r.json()}).then(function(data){
@@ -204,5 +216,6 @@ fetch('/api/exit-setup',{method:'POST'})
 .then(function(){document.body.innerHTML='<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Restarting</h2><p>The device is leaving setup mode. This network will disappear in a moment - reconnect to your normal WiFi.</p></div>'})
 .catch(function(){document.body.innerHTML='<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Restarting</h2><p>The device is leaving setup mode.</p></div>'});
 }
+{{DEVICE_SETTINGS_JS}}
 </script></body></html>
 )=====";

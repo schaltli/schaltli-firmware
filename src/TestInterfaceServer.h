@@ -107,6 +107,13 @@ public:
   // that is running fine.
   using SettingsChangedHandler = std::function<void()>;
   void setSettingsChangedHandler(SettingsChangedHandler handler) { settingsChangedHandler_ = handler; }
+
+  // The installed project's screens as a JSON array of {"id","name"}, for
+  // the device settings page's "return to" dropdown. Same handler, same
+  // shape and set from the same place as WiFiSetupServer's - the two serve
+  // the identical form and must be able to fill it identically.
+  using ScreenListHandler = std::function<String()>;
+  void setScreenListHandler(ScreenListHandler handler) { screenListHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
   void stop();
 
@@ -127,6 +134,7 @@ private:
   void handleRecoveryProject();
   void handleFilesystemInfo();
   void handleSettingsPage();
+  void handleSettingsGet();
   void handleSettingsSave();
   void handlePanel();
   void sendBMP(const uint16_t* source);
@@ -150,6 +158,7 @@ private:
   TouchHandler touchHandler_;
   PanelShadowHandler panelShadowHandler_;
   SettingsChangedHandler settingsChangedHandler_;
+  ScreenListHandler screenListHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
   // Why the last install refused, kept so it can be read back over HTTP.

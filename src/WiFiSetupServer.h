@@ -5,6 +5,7 @@
 #include <WebServer.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
+#include <functional>
 #include "interfaces/IDisplay.h"
 #include "interfaces/IConfigStorage.h"
 
@@ -13,7 +14,9 @@
 // a ProjectInstaller that doesn't exist for this device yet - see the
 // project history for why this was deliberately split rather than
 // porting the full dual-purpose class now). Same AP/STA auto-detect
-// behavior, same /api/scan, /api/wifi, /api/mqtt, /api/mqtt-test routes.
+// behavior, same /api/scan, /api/wifi, /api/mqtt, /api/mqtt-test routes,
+// plus /api/device-settings for the Device tab (the same endpoint
+// TestInterfaceServer serves in normal operation - see DeviceSettingsHTML.h).
 class WiFiSetupServer {
 public:
   WiFiSetupServer(IDisplay& display, IConfigStorage& config);
@@ -32,6 +35,21 @@ public:
   bool isRunning() const { return running_; }
   void handleClient();
   bool hasWiFiCredentials() const { return !configuredSSID_.isEmpty(); }
+
+  // The installed project's screens, as a JSON array of {"id","name"}, for
+  // the Device tab's "return to" dropdown. A callback rather than a
+  // ProjectLoader reference because this class deliberately knows nothing
+  // about projects, and because setup mode reached from a cold boot has no
+  // project loaded at all - the handler simply returns an empty array and
+  // the tab says so.
+  using ScreenListHandler = std::function<String()>;
+  void setScreenListHandler(ScreenListHandler handler) { screenListHandler_ = handler; }
+
+  // Called after a device setting is saved, so it applies without a
+  // restart - same contract as TestInterfaceServer's handler of the same
+  // name, and set from the same place in main.cpp.
+  using SettingsChangedHandler = std::function<void()>;
+  void setSettingsChangedHandler(SettingsChangedHandler handler) { settingsChangedHandler_ = handler; }
 
   // Call every loop() iteration while in AP setup mode - updates the
   // on-screen "time left before auto-reset" / "client connected" status
@@ -66,6 +84,8 @@ private:
   bool apMode_;
 
   String configuredSSID_;
+  ScreenListHandler screenListHandler_;
+  SettingsChangedHandler settingsChangedHandler_;
 
   // AP-mode "auto-reset if nobody connects" countdown state - see tick().
   unsigned long apEnteredAtMs_ = 0;
@@ -78,8 +98,17 @@ private:
   static const IPAddress AP_SUBNET;
   static const unsigned long AP_AUTO_RESET_MS;
 
+  // One list for both start() and startAP(). They registered their routes
+  // separately before, and had already drifted: /api/exit-setup existed
+  // only in the AP path, so the Cancel button on the STA-mode setup page
+  // fell through to handleNotFound. A third pair of routes was not worth
+  // adding to that.
+  void registerRoutes();
+
   void handleRoot();
   void handleWiFiScan();
+  void handleDeviceSettingsGet();
+  void handleDeviceSettingsSave();
   void handleWiFiConfigure();
   void handleMqttConfigure();
   void handleMqttTest();

@@ -42,6 +42,7 @@
 #include "WiFiSetupServer.h"
 #include "MqttClient.h"
 #include "DeviceSettings.h"
+#include <ArduinoJson.h>
 #include "DeployManager.h"
 #include "DeviceInfo.h"
 #include "project/ProjectLoader.h"
@@ -847,6 +848,48 @@ static bool displayIsOff = false;
 static uint32_t lastHumanInputMs = 0;
 static uint32_t displayOffAfterMs = 0;  // 0 = never, cached from NVS
 
+// The screen this device comes up on and returns to when it goes dark, held
+// as the project's own screen *id* and resolved against whatever project is
+// actually loaded. See DeviceSettings.h for why an id and not an index: the
+// whole value of the feature is that the panel is never found sitting on a
+// screen where a mistaken touch matters, and an index that a redeploy
+// quietly repoints would deliver exactly that.
+static String idleScreenId;  // empty = feature off, cached from NVS
+
+// -1 when nothing is configured, no project is loaded, or the saved id is
+// not in this project. Every caller treats -1 as "leave the screen alone",
+// which is what the device did before this existed - an id the installed
+// project does not have is not a reason to guess at a substitute.
+static int resolveIdleScreenIndex() {
+  if (idleScreenId.isEmpty()) return -1;
+  if (!projectLoader.isLoaded()) return -1;
+  const ProjectConfig &project = projectLoader.getProject();
+  for (size_t i = 0; i < project.screens.size(); i++) {
+    if (project.screens[i].id == idleScreenId) return (int)i;
+  }
+  return -1;
+}
+
+// The screen list the Device tab's dropdown is built from, served by both
+// web servers. ArduinoJson rather than hand-built strings because screen
+// names are free text from the designer and a quote in one would otherwise
+// produce a broken document.
+static String buildScreenListJson() {
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  if (projectLoader.isLoaded()) {
+    const ProjectConfig &project = projectLoader.getProject();
+    for (const auto &screen : project.screens) {
+      JsonObject o = arr.add<JsonObject>();
+      o["id"] = screen.id;
+      o["name"] = screen.name;
+    }
+  }
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
 static void wakeDisplay() {
   lastHumanInputMs = millis();
   if (!displayIsOff) return;
@@ -864,6 +907,19 @@ static void blankDisplay() {
   displayIsOff = true;
   digitalWrite(LCD_BL, LOW);
   Serial.println("[display] off after inactivity");
+
+  // Back to the idle screen, *after* the backlight is off: the panel would
+  // otherwise be seen flipping pages on its way out, which reads as the
+  // device doing something rather than settling. Nothing is visible now, and
+  // wakeDisplay() repaints currentScreenIndex - which this just moved - so
+  // the next person finds the idle screen rather than wherever the last one
+  // left it.
+  const int idle = resolveIdleScreenIndex();
+  if (idle < 0) return;
+  // A navigator left open would otherwise still be up under the dark panel
+  // and be the first thing shown on wake, on top of the idle screen.
+  if (screenMenu && screenMenu->isActive()) screenMenu->dismiss();
+  if (idle != currentScreenIndex) renderScreenIndex(idle);
 }
 
 static void updateDisplayBlanking() {
@@ -871,6 +927,25 @@ static void updateDisplayBlanking() {
   if (displayOffAfterMs == 0) return;
   if (displayIsOff) return;
   if (millis() - lastHumanInputMs >= displayOffAfterMs) blankDisplay();
+}
+
+// Re-read what the Device tab just saved, so it takes effect without a
+// restart - someone who sets a timeout wants to watch it work, and a
+// setting that needs a reboot invites power-cycling a device that is
+// running fine. Registered with both web servers, because either can be
+// the one serving the form (see DeviceSettingsHTML.h).
+//
+// Deliberately does not jump to a newly chosen idle screen. The person
+// saving this is looking at a browser, not at the panel; moving the device
+// under them would be a surprise, and the next blank puts it there anyway.
+static void applyDeviceSettings() {
+  displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
+  idleScreenId = DeviceSettings::idleScreenId();
+  lastHumanInputMs = millis();
+  wakeDisplay();
+  Serial.printf("[display] blanking now after %us, idle screen \"%s\" (index %d)\n",
+                (unsigned)(displayOffAfterMs / 1000), idleScreenId.c_str(),
+                resolveIdleScreenIndex());
 }
 
 static const uint32_t PRERENDER_IDLE_MS = 400;
@@ -1437,6 +1512,11 @@ static String buildDebugJson() {
   out += ",\"setupModeActive\":" + String(setupModeActive ? "true" : "false");
   out += ",\"displayOffAfterSeconds\":" + String(displayOffAfterMs / 1000);
   out += ",\"displayIsOff\":" + String(displayIsOff ? "true" : "false");
+  // Both the stored id and what it resolves to right now: a setting that
+  // saved fine but names a screen this project does not have looks exactly
+  // like one that was never set, unless the two are reported apart.
+  out += ",\"idleScreenId\":\"" + idleScreenId + "\"";
+  out += ",\"idleScreenIndex\":" + String(resolveIdleScreenIndex());
   out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
   out += ",\"slotScreens\":[" + String(canvasPresenter.slotScreen(0)) + "," +
          String(canvasPresenter.slotScreen(1)) + "]";
@@ -1572,11 +1652,19 @@ static void loadAndRenderProject() {
   screenRenderer->preloadFonts();
 
   topicsSubscribed = false;
-  if (!renderScreenIndex(0)) {
-    Serial.println("[project] renderScreen(0) failed");
+  // Onto the idle screen, for the same reason blanking returns to it: the
+  // device should come up on something harmless rather than on whatever
+  // happens to be first in the project. Falls back to screen 0 when nothing
+  // is configured or the saved id is not in this project - which is exactly
+  // what this did before the setting existed.
+  const int startIndex = resolveIdleScreenIndex();
+  const int firstScreen = startIndex < 0 ? 0 : startIndex;
+  if (!renderScreenIndex(firstScreen)) {
+    Serial.printf("[project] renderScreen(%d) failed\n", firstScreen);
     return;
   }
-  Serial.println("[project] rendered screen 0");
+  Serial.printf("[project] rendered screen %d%s\n", firstScreen,
+                startIndex < 0 ? "" : " (idle screen)");
 }
 
 // ------------------------------------------------------------------- mqtt
@@ -1765,12 +1853,8 @@ static void setupWiFi() {
       // NVS and the running firmware keeps the one it read at boot -
       // someone changes the timeout, watches nothing happen, and concludes
       // it did not save.
-      testInterface.setSettingsChangedHandler([]() {
-        displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
-        lastHumanInputMs = millis();
-        wakeDisplay();
-        Serial.printf("[display] blanking now after %us\n", (unsigned)(displayOffAfterMs / 1000));
-      });
+      testInterface.setSettingsChangedHandler(applyDeviceSettings);
+      testInterface.setScreenListHandler(buildScreenListJson);
       testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
         dispatchInput(buttonId.c_str());
         // The navigation rate limit is there for a physical turn, where the
@@ -1844,8 +1928,13 @@ void setup() {
   digitalWrite(LCD_BL, HIGH);
   displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
   lastHumanInputMs = millis();
+  // Read before the project loads, because loadAndRenderProject() renders
+  // the idle screen and has to know which one that is.
+  idleScreenId = DeviceSettings::idleScreenId();
   Serial.printf("[display] blanking after %us of inactivity%s\n",
                 (unsigned)(displayOffAfterMs / 1000), displayOffAfterMs == 0 ? " (never)" : "");
+  Serial.printf("[display] idle screen \"%s\"%s\n", idleScreenId.c_str(),
+                idleScreenId.isEmpty() ? " (none - stays where it is)" : "");
 
   Wire.begin(TOUCH_SDA, TOUCH_SCL);
   cst816Init();
@@ -1931,6 +2020,13 @@ void setup() {
   beginWaveformRecorder();
 #endif
   RotaryEncoderReader::begin();
+
+  // The setup portal's Device tab is the same form the running device
+  // serves at /settings, so it is filled and applied the same way. Wired
+  // before setupWiFi(), which is what can put the device straight into
+  // setup mode on a board that has never seen a network.
+  wifiSetupServer.setScreenListHandler(buildScreenListJson);
+  wifiSetupServer.setSettingsChangedHandler(applyDeviceSettings);
 
   setupWiFi();
 }

@@ -1,7 +1,8 @@
 #include "TestInterfaceServer.h"
 #include "ddf_zip.h"
 #include "DeviceInfo.h"
-#include "DeviceSettings.h"
+#include "DeviceSettingsEndpoint.h"
+#include "DeviceSettingsHTML.h"
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
@@ -34,6 +35,7 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   // display preference - the same shape of problem as having to forget the
   // WiFi to reach the config page.
   webServer_->on("/settings", HTTP_GET, [this]() { this->handleSettingsPage(); });
+  webServer_->on("/api/device-settings", HTTP_GET, [this]() { this->handleSettingsGet(); });
   webServer_->on("/api/device-settings", HTTP_POST, [this]() { this->handleSettingsSave(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
@@ -128,67 +130,68 @@ void TestInterfaceServer::handleMqttConfigure() {
 // project deployed - while the device was displaying that very project.
 // Storing something recoverable and offering no way to fetch it is worse
 // than not storing it, because it reads as a deliberate answer.
-// A page, not only an endpoint: this is the one setting a person changes by
+// A page, not only an endpoint: these are the settings a person changes by
 // hand, and "curl the device" is no answer for someone who wants their
-// screen to stay lit a little longer. Served in normal operation, because
-// having to put a device into setup mode to adjust a display preference is
-// the same shape of problem as having to forget the WiFi to reach the
-// config page.
+// screen to stay lit a little longer.
 void TestInterfaceServer::handleSettingsPage() {
-  const uint32_t seconds = DeviceSettings::displayOffAfterSeconds();
+  // The Device tab of the setup portal's config page, in a standalone
+  // shell. Same markup, same script, same endpoint - only the page around
+  // it differs, because the two servers own port 80 at different times and
+  // a setting reachable from only one of them is a setting you have to put
+  // the device into the wrong mode to change. See DeviceSettingsHTML.h.
+  //
+  // The styling repeats the config page's class names rather than its own
+  // former dark theme, so the form looks the same wherever it is met.
   String page = F("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
                   "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
                   "<title>ScreenBee Device Settings</title><style>"
-                  "body{font-family:-apple-system,system-ui,sans-serif;background:#111;color:#eee;"
-                  "margin:0;padding:24px;line-height:1.5}"
-                  "h1{font-size:20px;margin-bottom:4px}"
-                  ".sub{opacity:.6;font-size:14px;margin-bottom:24px}"
-                  "label{display:block;margin-bottom:6px;font-size:15px}"
-                  "input{width:100%;padding:12px;font-size:16px;border-radius:8px;"
-                  "border:1px solid #444;background:#1c1c1c;color:#eee}"
-                  ".hint{opacity:.6;font-size:13px;margin-top:6px}"
-                  "button{margin-top:20px;width:100%;padding:14px;font-size:16px;border:0;"
-                  "border-radius:8px;background:#2d7;color:#000;font-weight:600}"
-                  "#msg{margin-top:16px;padding:12px;border-radius:8px;display:none}"
-                  "</style></head><body><h1>Device Settings</h1><div class=\"sub\">");
+                  "*{margin:0;padding:0;box-sizing:border-box}"
+                  "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;"
+                  "background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}"
+                  ".container{max-width:600px;margin:0 auto;background:white;border-radius:16px;"
+                  "box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}"
+                  ".header{background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:white;"
+                  "padding:30px;text-align:center}"
+                  ".header h1{font-size:28px;margin-bottom:5px}"
+                  ".header p{opacity:0.9;font-size:14px}"
+                  ".body{padding:30px}"
+                  ".form-group{margin-bottom:20px}"
+                  "label{display:block;margin-bottom:8px;font-weight:600;color:#333}"
+                  "input,select{width:100%;padding:12px;border:2px solid #e0e0e0;border-radius:8px;"
+                  "font-size:15px;transition:border-color 0.3s}"
+                  "input:focus,select:focus{outline:none;border-color:#667eea}"
+                  ".hint{opacity:.65;font-size:13px;margin-top:6px;line-height:1.45}"
+                  ".btn{width:100%;padding:15px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);"
+                  "color:white;border:none;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer}"
+                  ".message{padding:15px;border-radius:8px;margin-bottom:20px;display:none}"
+                  ".message.show{display:block}"
+                  ".message.success{background:#e8f5e9;color:#2e7d32;border-left:4px solid #4caf50}"
+                  ".message.error{background:#ffebee;color:#c62828;border-left:4px solid #f44336}"
+                  "</style></head><body><div class=\"container\">"
+                  "<div class=\"header\"><h1>Device Settings</h1><p>");
   page += DEVICE_ID;
-  page += F("</div><label for=\"off\">Turn the display off after</label>"
-            "<input id=\"off\" type=\"number\" min=\"0\" max=\"86400\" value=\"");
-  page += String(seconds);
-  page += F("\"><div class=\"hint\">Seconds without a touch or a turn of the knob. "
-            "0 keeps the display on for good. Values arriving over MQTT do not count "
-            "as activity, so a screen showing live readings still goes dark.</div>"
-            "<button onclick=\"save()\">Save</button><div id=\"msg\"></div>"
-            "<script>function save(){"
-            "var v=document.getElementById('off').value;"
-            "var f=new FormData();f.append('displayOffAfterSeconds',v);"
-            "fetch('/api/device-settings',{method:'POST',body:f})"
-            ".then(function(r){return r.json()})"
-            ".then(function(d){var m=document.getElementById('msg');m.style.display='block';"
-            "m.style.background=d.success?'#153':'#611';m.textContent=d.message})"
-            ".catch(function(){var m=document.getElementById('msg');m.style.display='block';"
-            "m.style.background='#611';m.textContent='Could not reach the device'});}"
-            "</script></body></html>");
+  page += F("</p></div><div class=\"body\">");
+  page += DEVICE_SETTINGS_TAB_HTML;
+  page += F("</div></div><script>");
+  page += DEVICE_SETTINGS_JS;
+  page += F("</script></body></html>");
   webServer_->send(200, "text/html", page);
 }
 
+void TestInterfaceServer::handleSettingsGet() {
+  const String screens = screenListHandler_ ? screenListHandler_() : String("[]");
+  webServer_->send(200, "application/json", DeviceSettingsEndpoint::currentJson(screens));
+}
+
 void TestInterfaceServer::handleSettingsSave() {
-  if (!webServer_->hasArg("displayOffAfterSeconds")) {
-    sendJSONResponse(false, "Missing 'displayOffAfterSeconds'");
-    return;
-  }
-  const long value = webServer_->arg("displayOffAfterSeconds").toInt();
-  if (value < 0 || (unsigned long)value > DeviceSettings::MAX_DISPLAY_OFF_SECONDS) {
-    sendJSONResponse(false, "Out of range (0 - 86400)");
-    return;
-  }
-  if (!DeviceSettings::setDisplayOffAfterSeconds((uint32_t)value)) {
-    sendJSONResponse(false, "Could not save");
+  String message;
+  if (!DeviceSettingsEndpoint::save(*webServer_, message)) {
+    sendJSONResponse(false, message);
     return;
   }
   // Applied live rather than at the next boot - see setSettingsChangedHandler.
   if (settingsChangedHandler_) settingsChangedHandler_();
-  sendJSONResponse(true, value == 0 ? "Saved - display stays on" : "Saved");
+  sendJSONResponse(true, message);
 }
 
 void TestInterfaceServer::handleRecoveryProject() {
