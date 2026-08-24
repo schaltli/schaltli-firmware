@@ -1174,6 +1174,61 @@ static void updateDragAnimation() {
 
 // Works from sampleTouch()'s cached reading, never from cst816Read() - see
 // its comment for why a second read would find nothing.
+// Was ein Antippen trifft - und was es dann ausloest.
+//
+// Bis hierher konnte dieses Geraet nur Wischen und Knopfdrehen: die einzige
+// Erwaehnung von SoftwareButton in dieser Datei war ein Kommentar "(later)".
+// Switch und SoftwareButton wurden also gezeichnet und zeigten sogar ihren
+// Zustand richtig an - der kommt ueber MQTT - aber ein Tipp darauf verpuffte.
+//
+// Von oben nach unten gesucht, also in fallender zIndex-Reihenfolge: was
+// sichtbar obenauf liegt, faengt den Tipp. Verschachtelte Objekte
+// (tab-control/panel) werden bewusst NICHT durchsucht - die Kindkoordinaten
+// sind relativ zum Elternobjekt, und das ungetestet zu bauen hiesse, einen
+// Fehler einzubauen, den heute niemand bemerkt. Ein Switch in einem Panel
+// reagiert also noch nicht; das ist eine bekannte Luecke, keine stille.
+static bool dispatchTapAt(int16_t x, int16_t y) {
+  if (!projectLoader.isLoaded()) return false;
+  const ProjectConfig &project = projectLoader.getProject();
+  if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
+  const Screen &screen = project.screens[currentScreenIndex];
+
+  const ScreenObject *treffer = nullptr;
+  for (const auto &obj : screen.objects) {
+    if (obj.type != "Switch" && obj.type != "SoftwareButton") continue;
+    if (x < obj.x || x >= obj.x + obj.width) continue;
+    if (y < obj.y || y >= obj.y + obj.height) continue;
+    if (treffer == nullptr || obj.zIndex >= treffer->zIndex) treffer = &obj;
+  }
+  if (treffer == nullptr) return false;
+
+  if (treffer->type == "SoftwareButton") {
+    Serial.printf("[tap] SoftwareButton \"%s\"\n", treffer->id.c_str());
+    dispatchButtonAction(treffer->properties.action);
+    return true;
+  }
+
+  // Switch: gleich breite Segmente ueber die Objektbreite, wie sie
+  // ColorScreenRenderer::renderSwitch() auch zeichnet. Weicht das hier ab,
+  // trifft der Finger ein anderes Segment als das, auf das er zeigt.
+  const int anzahl = (int)treffer->properties.states.size();
+  if (anzahl <= 0 || treffer->properties.writeTopic.isEmpty()) return false;
+  int index = ((int)(x - treffer->x) * anzahl) / treffer->width;
+  if (index < 0) index = 0;
+  if (index >= anzahl) index = anzahl - 1;
+
+  const String &wert = treffer->properties.states[index].writeValue;
+  if (wert.isEmpty()) return false;
+
+  Serial.printf("[tap] Switch \"%s\" Segment %d -> %s = %s\n", treffer->id.c_str(), index,
+                treffer->properties.writeTopic.c_str(), wert.c_str());
+  // Nicht retained: das ist ein Befehl, kein Zustand. Der Zustand kommt ueber
+  // das Lese-Topic zurueck und faerbt das Segment - so zeigt der Schalter,
+  // was wirklich passiert ist, statt was er zu tun glaubte.
+  mqttClient.publish(treffer->properties.writeTopic, wert, false);
+  return true;
+}
+
 static void pollTouchGesturesInner() {
   if (touchIsDown) {
 #if INPUT_DEBUG
@@ -1380,6 +1435,13 @@ static void pollTouchGesturesInner() {
       } else {
         screenMenu->keepOpen();
       }
+      return;
+    }
+    // Ausserhalb des Menues: trifft der Tipp ein bedienbares Objekt?
+    if (dispatchTapAt(touchLastX, touchLastY)) {
+#if INPUT_DEBUG
+      lastReleaseVerdict = "tap-object";
+#endif
     }
     return;
   }
