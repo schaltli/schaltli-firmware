@@ -86,6 +86,14 @@ public:
    */
   void loop() override;
 
+  // Wie oft die Verbindung neu aufgebaut werden musste, und warum sie zuletzt
+  // als getrennt galt (PubSubClient::state(): -4 = PINGREQ unbeantwortet,
+  // -3 = Socket-Lesefehler). Ueber GET /api/debug lesbar - der serielle
+  // Monitor setzt dieses Board beim Anstecken zurueck und taugt nicht als
+  // Zeuge fuer ein Problem, das nur im Betrieb auftritt.
+  uint32_t reconnectCount() const { return reconnectCount_; }
+  int lastDisconnectState() const { return lastDisconnectState_; }
+
   /**
    * This client's own stable identity ("M5Dial-" + MAC-derived hex) - also
    * used as the MQTT topic namespace segment for the deploy/hello/status
@@ -133,6 +141,8 @@ private:
   
   // Auto-reconnect
   void reconnect();
+  uint32_t reconnectCount_ = 0;
+  int lastDisconnectState_ = 0;
   unsigned long lastReconnectAttempt_;
   static const unsigned long RECONNECT_INTERVAL_MS = 5000;
 };

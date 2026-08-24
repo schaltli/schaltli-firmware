@@ -221,6 +221,13 @@ void MqttClient::loop() {
         // to avoid flooding the log while waiting out the throttle.
         Serial.printf("[MqttClient] Disconnected, PubSubClient state=%d\n", mqttClient_.state());
         lastReconnectAttempt_ = now;
+        // Zaehlen, nicht nur loggen: der serielle Monitor setzt dieses Board
+        // beim Anstecken zurueck, also ist das Log kein brauchbarer Zeuge.
+        // Ein Verbindungsversuch blockiert die einfaedige Schleife rund eine
+        // Sekunde - flattert die Verbindung, fuehlt sich das Panel genau so
+        // an, wie es der Nutzer beschreibt: meistens fluessig, dann haengt es.
+        reconnectCount_++;
+        lastDisconnectState_ = mqttClient_.state();
         reconnect();
       }
     } else {
