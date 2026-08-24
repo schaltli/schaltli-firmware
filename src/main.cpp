@@ -836,6 +836,51 @@ static uint32_t menuFrames = 0;
 #endif
 
 #if INPUT_DEBUG
+// ------------------------------------------------- Phasen-Uhr
+//
+// "Meistens flutscht es, aber manchmal haengt es sekundenlang" ist mit einer
+// Latenz-Spur allein nicht zu klaeren: die zeigt, dass zwischen zwei Marken
+// Zeit vergangen ist, nicht WORIN. Diese Schleife ist einfaedig, also blockiert
+// in so einem Moment genau ein Aufruf alles andere mit - Touch, Rendern, MQTT.
+//
+// Deshalb wird jeder Schritt in loop() gestoppt und pro Schritt der schlimmste
+// je gesehene Fall behalten, samt Zeitpunkt. Nach einem Haenger sagt
+// GET /api/debug dann direkt, welcher Aufruf es war, statt dass man raten muss.
+struct PhaseStat {
+  const char *name;
+  uint32_t worstMs;
+  uint32_t worstAtMs;
+  uint32_t calls;
+};
+static const int PHASE_MAX = 16;
+static PhaseStat phaseStats[PHASE_MAX];
+static int phaseCount = 0;
+static uint32_t worstLoopMs = 0;
+static uint32_t worstLoopAtMs = 0;
+
+static void phaseRecord(const char *name, uint32_t ms) {
+  for (int i = 0; i < phaseCount; i++) {
+    if (phaseStats[i].name != name) continue;
+    phaseStats[i].calls++;
+    if (ms > phaseStats[i].worstMs) {
+      phaseStats[i].worstMs = ms;
+      phaseStats[i].worstAtMs = millis();
+    }
+    return;
+  }
+  if (phaseCount >= PHASE_MAX) return;
+  phaseStats[phaseCount].name = name;
+  phaseStats[phaseCount].worstMs = ms;
+  phaseStats[phaseCount].worstAtMs = millis();
+  phaseStats[phaseCount].calls = 1;
+  phaseCount++;
+}
+#define PHASE(nm, stmt) do { const uint32_t _p0 = millis(); stmt; phaseRecord(nm, millis() - _p0); } while (0)
+#else
+#define PHASE(nm, stmt) do { stmt; } while (0)
+#endif
+
+#if INPUT_DEBUG
 // ------------------------------------------------- Latenz-Spur
 //
 // Wo geht die Zeit zwischen einer Rastung und dem bewegten Zeiger hin? Von
@@ -1656,6 +1701,17 @@ static String buildDebugJson() {
   out += ",\"idleScreenIndex\":" + String(resolveIdleScreenIndex());
   out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
   out += ",\"nowMs\":" + String(millis());
+  out += ",\"worstLoopMs\":" + String(worstLoopMs);
+  out += ",\"mqttReconnects\":" + String(mqttClient.reconnectCount());
+  out += ",\"mqttLastState\":" + String(mqttClient.lastDisconnectState());
+  out += ",\"worstLoopAtMs\":" + String(worstLoopAtMs);
+  out += ",\"phases\":[";
+  for (int i = 0; i < phaseCount; i++) {
+    if (i > 0) out += ",";
+    out += "[\"" + String(phaseStats[i].name) + "\"," + String(phaseStats[i].worstMs) + "," +
+           String(phaseStats[i].worstAtMs) + "," + String(phaseStats[i].calls) + "]";
+  }
+  out += "]";
   out += ",\"lat\":[";
   {
     uint32_t total = latWriteIndex;
@@ -1907,19 +1963,22 @@ static void clearDeployTrigger() {
   mqttClient.publish(deviceTopic("deploy"), "", true);
 }
 
-// Zeichnet nur den Teil neu, der sich durch einen neuen Topic-Wert aendert.
+// Zeichnet nur die Teile neu, die sich durch einen neuen Topic-Wert aendern.
 //
-// Gemessen am 2026-08-24: ein Vollbild dieses Ringes kostet 244-265ms, weil
-// pixelBands() jedes Ringpixel 16-fach abtastet - rund 380.000 Sektortests.
-// Netz und Node-RED zusammen brauchen 16ms, die Panel-Uebertragung 15ms. Die
-// Zaehigkeit beim Drehen steckt also vollstaendig im Zeichnen, und der
-// Ausschnitt ist der Hebel: beim Schritt von 40 auf 50 aendert sich ein
-// Zehntel des Bogens plus die Zahl.
+// Gemessen am 2026-08-24: ein Vollbild kostet 250-400ms, je nachdem wie viel
+// auf dem Screen liegt, weil pixelBands() jedes Ringpixel 16-fach abtastet.
+// Netz und Node-RED zusammen brauchen 16ms. Die Zaehigkeit beim Drehen steckt
+// also vollstaendig im Zeichnen.
 //
-// Liefert false, wenn der Fall nicht sicher eingegrenzt werden kann - dann
-// zeichnet der Aufrufer ein Vollbild. Sicher heisst hier: GENAU EIN Objekt
-// auf diesem Screen haengt an dem Topic, es ist ein Ring, und es gibt einen
-// vorherigen Wert. Alles andere ist die Ausnahme und darf teuer sein.
+// Die erste Fassung verlangte GENAU EIN Objekt am Topic und fiel sonst aufs
+// Vollbild zurueck. Das hielt genau so lange, bis jemand ein zweites Objekt
+// an dieselbe Helligkeit band - ein Zahlenfeld neben den Ring - und die
+// Abkuerzung lautlos wegfiel. Der Nutzer merkte es als "die Zaehigkeit ist
+// zurueck", und die Spur zeigte rnd statt prt. Deshalb jetzt: beliebig viele
+// Objekte, jedes bekommt sein eigenes Rechteck.
+//
+// Liefert false, wenn der Fall nicht sicher eingegrenzt werden kann; dann
+// zeichnet der Aufrufer ein Vollbild.
 static bool renderTopicChangePartial(const String &topic, const String &oldValue) {
   if (screenRenderer == nullptr || !projectLoader.isLoaded()) return false;
   if (oldValue.isEmpty()) return false;
@@ -1928,33 +1987,52 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
   const Screen &screen = project.screens[currentScreenIndex];
 
-  const ScreenObject *treffer = nullptr;
+  // Hoechstens so viele Rechtecke; darueber lohnt das Vollbild ohnehin.
+  const int MAX_RECHTECKE = 6;
+  int16_t rx[MAX_RECHTECKE], ry[MAX_RECHTECKE], rw[MAX_RECHTECKE], rh[MAX_RECHTECKE];
+  int anzahl = 0;
+
   for (const auto &obj : screen.objects) {
-    if (!obj.children.empty()) return false;  // verschachtelt: nicht eingegrenzt
+    // Verschachtelte Objekte sind nicht eingegrenzt - Kindkoordinaten sind
+    // relativ zum Elternobjekt.
+    if (!obj.children.empty()) return false;
     if (obj.properties.topic.isEmpty()) continue;
     if (stripJsonPath(obj.properties.topic) != topic) continue;
-    if (treffer != nullptr) return false;     // mehr als eins haengt daran
-    treffer = &obj;
+
+    if (obj.type == "arc-level") {
+      const String newValue = projectLoader.getTopicValue(obj.properties.topic);
+      if (newValue.isEmpty() || newValue == oldValue) return false;
+      if (anzahl + 2 > MAX_RECHTECKE) return false;
+      // Der bewegte Bogenabschnitt und die Zahl in der Mitte, getrennt: ihre
+      // gemeinsame Huelle waere fast das ganze Bild, weil das eine aussen und
+      // das andere in der Mitte liegt.
+      if (!screenRenderer->arcLevelDirtyRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
+                                             &rw[anzahl], &rh[anzahl])) {
+        return false;
+      }
+      anzahl++;
+      if (screenRenderer->arcLevelTextRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
+                                           &rw[anzahl], &rh[anzahl])) {
+        anzahl++;
+      }
+    } else {
+      // Alles andere: sein eigenes Rechteck. Ein Zahlenfeld oder ein Schalter
+      // ist klein, und ihn ganz neu zu zeichnen kostet nichts gegen den Ring.
+      if (anzahl + 1 > MAX_RECHTECKE) return false;
+      rx[anzahl] = obj.x;
+      ry[anzahl] = obj.y;
+      rw[anzahl] = obj.width;
+      rh[anzahl] = obj.height;
+      anzahl++;
+    }
   }
-  if (treffer == nullptr) return false;
-  if (treffer->type != "arc-level") return false;
+  if (anzahl == 0) return false;
 
-  const String newValue = projectLoader.getTopicValue(treffer->properties.topic);
-  if (newValue.isEmpty() || newValue == oldValue) return false;
-
-  // Zwei Rechtecke: der geaenderte Bogenabschnitt und die Zahl in der Mitte.
-  // Ihre gemeinsame Huelle waere fast das ganze Bild - der Bogen liegt am
-  // Rand, die Zahl in der Mitte.
-  int16_t rx = 0, ry = 0, rw = 0, rh = 0;
-  if (!screenRenderer->arcLevelDirtyRect(*treffer, oldValue, newValue, &rx, &ry, &rw, &rh)) return false;
-  if (!screenRenderer->renderScreenRegion(currentScreenIndex, rx, ry, rw, rh)) return false;
-
-  int16_t tx = 0, ty = 0, tw = 0, th = 0;
-  if (screenRenderer->arcLevelTextRect(*treffer, oldValue, newValue, &tx, &ty, &tw, &th)) {
-    if (!screenRenderer->renderScreenRegion(currentScreenIndex, tx, ty, tw, th)) return false;
+  for (int i = 0; i < anzahl; i++) {
+    if (!screenRenderer->renderScreenRegion(currentScreenIndex, rx[i], ry[i], rw[i], rh[i])) return false;
   }
 
-  latMark("prt", (String(rw) + "x" + String(rh) + "+" + String(tw)).c_str());
+  latMark("prt", (String(anzahl) + "rect").c_str());
   return true;
 }
 
@@ -2247,16 +2325,19 @@ void setup() {
 }
 
 void loop() {
+#if INPUT_DEBUG
+  const uint32_t loopStart = millis();
+#endif
   // LV_TICK_CUSTOM (LVGL calling Arduino's millis() from a .c translation
   // unit) never worked in this build - lv_tick_get() stayed at 0 even after a
   // full clean rebuild, so no periodic timer ever ran past the first paint.
   // Driving the tick manually sidesteps it entirely.
   // Before lv_timer_handler(), so LVGL and the gesture detector both work
   // from the same single reading of a register that clears when read.
-  sampleTouch();
+  PHASE("sampleTouch", sampleTouch());
 
   lv_tick_inc(5);
-  pumpLvgl();
+  PHASE("lvgl", pumpLvgl());
 
   if (setupModeActive) {
     wifiSetupServer.handleClient();
@@ -2331,16 +2412,16 @@ void loop() {
     return;
   }
 
-  testInterface.handleClient();
-  mqttClient.loop();
-  subscribeToAllTopics();
+  PHASE("http", testInterface.handleClient());
+  PHASE("mqtt", mqttClient.loop());
+  PHASE("subscribe", subscribeToAllTopics());
 
-  pollTouchGesturesRecorded();
-  updateDragAnimation();
+  PHASE("touch", pollTouchGesturesRecorded());
+  PHASE("drag", updateDragAnimation());
   updateDisplayBlanking();
-  prerenderNeighbours();
+  PHASE("prerender", prerenderNeighbours());
   watchForOffCentre();
-  pollEncoder();
+  PHASE("encoder", pollEncoder());
 
   // The rate limit's trailing edge - see navigateToScreen. Placed after this
   // pass's input polling so a detent that just arrived is already included
@@ -2403,4 +2484,11 @@ void loop() {
   }
 
   delay(5);
+#if INPUT_DEBUG
+  const uint32_t loopMs = millis() - loopStart;
+  if (loopMs > worstLoopMs) {
+    worstLoopMs = loopMs;
+    worstLoopAtMs = millis();
+  }
+#endif
 }

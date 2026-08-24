@@ -1306,7 +1306,20 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
   std::vector<ScreenObject> sortedObjects = screen.objects;
   std::sort(sortedObjects.begin(), sortedObjects.end(),
             [](const ScreenObject& a, const ScreenObject& b) { return a.zIndex < b.zIndex; });
+  // Was den Ausschnitt nicht beruehrt, wird gar nicht erst gezeichnet.
+  //
+  // Nur zu clippen genuegt hier nicht: renderObject() laedt fuer Icons und
+  // Schalter-Symbole die Bilddatei aus dem Dateisystem, bevor ueberhaupt ein
+  // Pixel geschrieben wird - der Clip unterdrueckt das Schreiben, nicht das
+  // Lesen. Gemessen kosteten drei Ausschnitte auf einem Screen mit vier
+  // Symbolen dadurch 410ms, also mehr als das Vollbild vorher.
+  //
+  // Der Rand faengt Objekte ab, die etwas ueber ihre eigenen Masse hinaus
+  // zeichnen - Text mit Unterlaenge etwa.
+  const int16_t RAND = 8;
   for (const auto& obj : sortedObjects) {
+    if (obj.x + obj.width + RAND <= rx || obj.x - RAND >= rx + rw) continue;
+    if (obj.y + obj.height + RAND <= ry || obj.y - RAND >= ry + rh) continue;
     renderObject(obj, "", "", -1, "", -1);
   }
 

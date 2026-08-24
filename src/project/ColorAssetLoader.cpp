@@ -24,6 +24,29 @@ struct CacheEntry {
 };
 std::vector<CacheEntry> maskCache;
 
+// Dasselbe fuer BMPs, aus demselben Grund - nur dass es die hier bis
+// 2026-08-24 nicht gab: drawBMPToCanvas() las die Datei bei JEDEM Aufruf neu.
+// Beim Neuzeichnen eines Ausschnitts faellt das mehrfach an, einmal je
+// Ausschnitt, und der Clip unterdrueckt nur das Schreiben, nicht das Lesen.
+// Gemessen kosteten drei Ausschnitte auf einem Screen mit vier Symbolen
+// dadurch 410ms - mehr als das Vollbild vorher.
+//
+// Fertig nach RGB565 gewandelt abgelegt, nicht als Rohbytes: die Umrechnung
+// ist derselbe Aufwand fuer jedes Pixel und muss nur einmal passieren.
+struct BmpCacheEntry {
+  String path;
+  int32_t width = 0;
+  int32_t height = 0;
+  std::vector<uint16_t> pixels;
+};
+std::vector<BmpCacheEntry> bmpCache;
+size_t bmpCacheBytes = 0;
+
+// Grosse Bilder bleiben ungecacht - ein bildschirmfuellender Hintergrund
+// waere 259KB und verdraengt genau die kleinen Symbole, um die es geht.
+const size_t BMP_CACHE_MAX_ENTRY = 32 * 1024;
+const size_t BMP_CACHE_MAX_TOTAL = 192 * 1024;
+
 // Returns the cached raw grayscale bytes for path, reading+caching from
 // LittleFS on first request for that path. nullptr if the file can't be
 // read or isn't a well-formed P5 PGM.
@@ -81,6 +104,17 @@ const CacheEntry* getCachedMask(const String& path) {
 bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int16_t y) {
   if (path.isEmpty()) return false;
 
+  for (const auto& hit : bmpCache) {
+    if (hit.path != path) continue;
+    const uint16_t* px = hit.pixels.data();
+    for (int32_t row = 0; row < hit.height; row++) {
+      for (int32_t col = 0; col < hit.width; col++) {
+        canvas->drawPixel(x + col, y + row, px[row * hit.width + col]);
+      }
+    }
+    return true;
+  }
+
   File bmpFile = LittleFS.open(path, "r");
   if (!bmpFile) {
     Serial.printf("[ColorAssetLoader] Could not open \"%s\"\n", path.c_str());
@@ -122,6 +156,18 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
     return false;
   }
 
+  // Beim ersten Zeichnen gleich mitschreiben, statt die Datei spaeter ein
+  // zweites Mal zu lesen.
+  const size_t braucht = (size_t)width * (size_t)height * sizeof(uint16_t);
+  const bool cachen = braucht <= BMP_CACHE_MAX_ENTRY && bmpCacheBytes + braucht <= BMP_CACHE_MAX_TOTAL;
+  BmpCacheEntry neu;
+  if (cachen) {
+    neu.path = path;
+    neu.width = width;
+    neu.height = height;
+    neu.pixels.resize((size_t)width * (size_t)height);
+  }
+
   for (int32_t row = 0; row < height; row++) {
     int32_t readRow = flip ? (height - 1 - row) : row;
     bmpFile.seek(dataOffset + (readRow * rowSize));
@@ -132,8 +178,14 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
       uint8_t g = rowBuffer[col * 3 + 1];
       uint8_t r = rowBuffer[col * 3 + 2];
       uint16_t rgb565 = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
+      if (cachen) neu.pixels[(size_t)row * (size_t)width + (size_t)col] = rgb565;
       canvas->drawPixel(x + col, y + row, rgb565);
     }
+  }
+
+  if (cachen) {
+    bmpCacheBytes += braucht;
+    bmpCache.push_back(std::move(neu));
   }
 
   free(rowBuffer);
@@ -166,8 +218,14 @@ bool drawGrayscaleMaskToCanvas(ClippedCanvas16* canvas, const String& path, int1
   return true;
 }
 
+// Leert BEIDE Caches. Sie haengen an denselben Icon-Pfaden: die sind
+// screen-id-basiert und nicht inhaltsgehasht, ein Redeploy kann also die
+// Bytes hinter einem Pfad austauschen. Wer nur einen leert, zeigt danach
+// aus dem anderen alte Pixel.
 void clearGrayscaleMaskCache() {
   maskCache.clear();
+  bmpCache.clear();
+  bmpCacheBytes = 0;
 }
 
 }  // namespace ColorAssetLoader
