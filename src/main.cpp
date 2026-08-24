@@ -115,6 +115,8 @@ static bool pendingDeploy = false;
 static String pendingDeployPayload;
 
 static bool renderScreenIndex(int index);
+// Definiert bei der Latenz-Spur weiter unten; dispatchButtonAction steht davor.
+static void latMark(const char *tag, const char *info);
 static void enterSetupMode();
 static void dispatchInput(const char *buttonId);
 
@@ -415,6 +417,7 @@ static bool renderScreenIndex(int index) {
   const int64_t renderStart = esp_timer_get_time();
   if (!screenRenderer->renderScreen(index)) return false;
   const int64_t renderEnd = esp_timer_get_time();
+  latMark("rnd", String((int)((renderEnd - renderStart) / 1000)).c_str());
   currentScreenIndex = index;
 
   // The previous frame's window ends here: it had from its own present()
@@ -545,6 +548,7 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // What the knob is actually for on this board: turning adjusts a value
     // (temperature, fan, brightness), bound per screen, rather than paging
     // through screens the way the M5 Dial's encoder does.
+    latMark("pub", action.mqttMessage.c_str());
     mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
   } else if (action.type == "device-action") {
     // Actions the *device* offers and the designer only names - declared in
@@ -831,6 +835,41 @@ static uint32_t menuFrameMs = 0;
 static uint32_t menuFrames = 0;
 #endif
 
+#if INPUT_DEBUG
+// ------------------------------------------------- Latenz-Spur
+//
+// Wo geht die Zeit zwischen einer Rastung und dem bewegten Zeiger hin? Von
+// aussen ist das nicht zu messen: jede Messung von einem anderen Rechner
+// enthaelt den Weg dorthin, und ein serieller Monitor setzt dieses Board beim
+// Anstecken zurueck (USB_UART_CHIP_RESET). Also stempelt das Geraet selbst,
+// und /api/debug gibt die Spur heraus.
+//
+// Vier Marken pro Rundlauf:
+//   knob  eine Rastung wurde erkannt und zugestellt
+//   pub   die MQTT-Nachricht ist rausgegangen
+//   rx    ein abonnierter Wert ist angekommen
+//   rnd   der Bildaufbau ist fertig
+// Die Abstaende dazwischen sagen, welcher Abschnitt teuer ist.
+struct LatEvent {
+  uint32_t atMs;
+  char tag[6];
+  char info[14];
+};
+static const int LAT_LOG_SIZE = 32;
+static LatEvent latLog[LAT_LOG_SIZE];
+static uint32_t latWriteIndex = 0;
+
+static void latMark(const char *tag, const char *info) {
+  LatEvent &e = latLog[latWriteIndex % LAT_LOG_SIZE];
+  e.atMs = millis();
+  snprintf(e.tag, sizeof(e.tag), "%s", tag ? tag : "");
+  snprintf(e.info, sizeof(e.info), "%s", info ? info : "");
+  latWriteIndex++;
+}
+#else
+static inline void latMark(const char *, const char *) {}
+#endif
+
 // ------------------------------------------------------ display blanking
 //
 // The screen turns off - backlight included - after a configured stretch
@@ -888,6 +927,42 @@ static String buildScreenListJson() {
   String out;
   serializeJson(doc, out);
   return out;
+}
+
+// WiFi-Stromsparen: aus, solange jemand hinschaut.
+//
+// Der ESP32 startet mit WIFI_PS_MIN_MODEM. Das Funkmodul schlaeft dann
+// zwischen den Beacons des Routers und holt eingehende Pakete erst beim
+// naechsten Aufwachen ab. Ausgehend stoert das nicht - eine Knopfdrehung geht
+// sofort raus - aber die Antwort mit dem neuen Wert wartet, und das ist genau
+// die Verzoegerung, die man beim Drehen als Zaehigkeit spuert.
+//
+// Gemessen am 2026-08-24 ueber HTTP: das Panel antwortete in 0,76-1,83s bei
+// starker Streuung, der Pi im selben Netz und auf demselben Weg in 0,012-0,019s.
+// Der Node-RED-Anteil des Rundlaufs betrug 11ms - die Zeit ging also
+// vollstaendig im schlafenden Funkmodul verloren.
+//
+// Dauerhaft aus, nicht nur waehrend die Anzeige an ist. Die Kopplung an das
+// Display war der erste Versuch und ist am 2026-08-24 gemessen durchgefallen:
+// bei dunklem Schirm antwortete das Geraet in 0,5-6,4s und lief mehrfach in
+// einen 8s-Timeout, also SCHLECHTER als der Werksstandard. WiFi.setSleep(true)
+// bildet in diesem Arduino-Core nicht auf WIFI_PS_MIN_MODEM ab, sondern auf
+// den aggressiveren Modus, der ueber mehrere Beacon-Zyklen durchschlaeft.
+//
+// Und das Display ist die meiste Zeit dunkel - genau dann muessen Deploy und
+// Geraeteerkennung des Designers das Panel aber erreichen. Ein Panel, das im
+// Ruhezustand acht Sekunden schweigt, ist keins.
+//
+// Der Preis sind grob 20-40mA Ruhestrom. Zum Vergleich: die Anzeige zieht mit
+// Hintergrundbeleuchtung rund 150mA, ohne rund 80mA.
+static void setWiFiPowerSave(bool sparen) {
+  static bool eingestellt = false;
+  static bool letzterWert = true;  // ESP32-Standard ist eingeschaltet
+  if (eingestellt && letzterWert == sparen) return;
+  WiFi.setSleep(sparen);
+  eingestellt = true;
+  letzterWert = sparen;
+  Serial.printf("[wifi] Stromsparen %s\n", sparen ? "an" : "aus");
 }
 
 static void wakeDisplay() {
@@ -1518,6 +1593,18 @@ static String buildDebugJson() {
   out += ",\"idleScreenId\":\"" + idleScreenId + "\"";
   out += ",\"idleScreenIndex\":" + String(resolveIdleScreenIndex());
   out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
+  out += ",\"nowMs\":" + String(millis());
+  out += ",\"lat\":[";
+  {
+    uint32_t total = latWriteIndex;
+    uint32_t n = total < (uint32_t)LAT_LOG_SIZE ? total : (uint32_t)LAT_LOG_SIZE;
+    for (uint32_t k = 0; k < n; k++) {
+      const LatEvent &e = latLog[(total - n + k) % LAT_LOG_SIZE];
+      if (k > 0) out += ",";
+      out += "[" + String(e.atMs) + ",\"" + String(e.tag) + "\",\"" + String(e.info) + "\"]";
+    }
+  }
+  out += "]";
   out += ",\"slotScreens\":[" + String(canvasPresenter.slotScreen(0)) + "," +
          String(canvasPresenter.slotScreen(1)) + "]";
   out += ",\"gestureCount\":" + String(gestureLogIndex);
@@ -1620,6 +1707,7 @@ static void pollEncoder() {
   if (wasOff) return;
 
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
+  latMark("knob", buttonId);
   for (int32_t i = 0; i < abs(detents); i++) dispatchInput(buttonId);
 }
 
@@ -1757,6 +1845,57 @@ static void clearDeployTrigger() {
   mqttClient.publish(deviceTopic("deploy"), "", true);
 }
 
+// Zeichnet nur den Teil neu, der sich durch einen neuen Topic-Wert aendert.
+//
+// Gemessen am 2026-08-24: ein Vollbild dieses Ringes kostet 244-265ms, weil
+// pixelBands() jedes Ringpixel 16-fach abtastet - rund 380.000 Sektortests.
+// Netz und Node-RED zusammen brauchen 16ms, die Panel-Uebertragung 15ms. Die
+// Zaehigkeit beim Drehen steckt also vollstaendig im Zeichnen, und der
+// Ausschnitt ist der Hebel: beim Schritt von 40 auf 50 aendert sich ein
+// Zehntel des Bogens plus die Zahl.
+//
+// Liefert false, wenn der Fall nicht sicher eingegrenzt werden kann - dann
+// zeichnet der Aufrufer ein Vollbild. Sicher heisst hier: GENAU EIN Objekt
+// auf diesem Screen haengt an dem Topic, es ist ein Ring, und es gibt einen
+// vorherigen Wert. Alles andere ist die Ausnahme und darf teuer sein.
+static bool renderTopicChangePartial(const String &topic, const String &oldValue) {
+  if (screenRenderer == nullptr || !projectLoader.isLoaded()) return false;
+  if (oldValue.isEmpty()) return false;
+
+  const ProjectConfig &project = projectLoader.getProject();
+  if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
+  const Screen &screen = project.screens[currentScreenIndex];
+
+  const ScreenObject *treffer = nullptr;
+  for (const auto &obj : screen.objects) {
+    if (!obj.children.empty()) return false;  // verschachtelt: nicht eingegrenzt
+    if (obj.properties.topic.isEmpty()) continue;
+    if (stripJsonPath(obj.properties.topic) != topic) continue;
+    if (treffer != nullptr) return false;     // mehr als eins haengt daran
+    treffer = &obj;
+  }
+  if (treffer == nullptr) return false;
+  if (treffer->type != "arc-level") return false;
+
+  const String newValue = projectLoader.getTopicValue(treffer->properties.topic);
+  if (newValue.isEmpty() || newValue == oldValue) return false;
+
+  // Zwei Rechtecke: der geaenderte Bogenabschnitt und die Zahl in der Mitte.
+  // Ihre gemeinsame Huelle waere fast das ganze Bild - der Bogen liegt am
+  // Rand, die Zahl in der Mitte.
+  int16_t rx = 0, ry = 0, rw = 0, rh = 0;
+  if (!screenRenderer->arcLevelDirtyRect(*treffer, oldValue, newValue, &rx, &ry, &rw, &rh)) return false;
+  if (!screenRenderer->renderScreenRegion(currentScreenIndex, rx, ry, rw, rh)) return false;
+
+  int16_t tx = 0, ty = 0, tw = 0, th = 0;
+  if (screenRenderer->arcLevelTextRect(*treffer, oldValue, newValue, &tx, &ty, &tw, &th)) {
+    if (!screenRenderer->renderScreenRegion(currentScreenIndex, tx, ty, tw, th)) return false;
+  }
+
+  latMark("prt", (String(rw) + "x" + String(rh) + "+" + String(tw)).c_str());
+  return true;
+}
+
 static void onMqttMessage(const String &topic, const String &payload) {
   // Device-level control topic - routed to DeployManager rather than falling
   // through to setTopicValue(), which would try to display the deploy JSON.
@@ -1773,6 +1912,10 @@ static void onMqttMessage(const String &topic, const String &payload) {
   }
 
   if (!projectLoader.isLoaded()) return;
+  latMark("rx", payload.c_str());
+  // Vor dem Ueberschreiben merken - der Ausschnitt ergibt sich aus der
+  // Differenz zwischen altem und neuem Wert.
+  const String oldValue = projectLoader.getTopicValue(topic);
   projectLoader.setTopicValue(topic, payload);
   // Any screen may show this value, so every pre-rendered neighbour is now
   // a picture of how that screen used to look - including the menu's
@@ -1783,6 +1926,14 @@ static void onMqttMessage(const String &topic, const String &payload) {
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
   if (!screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
+  if (renderTopicChangePartial(topic, oldValue)) {
+    // Der Bildschirmpuffer ist jetzt teilweise neu; das Bild muss trotzdem
+    // aufs Panel. present() schiebt den Puffer, closeOpenFrame() haelt die
+    // Bildzaehlung im Debug-JSON stimmig.
+    canvasPresenter.present();
+    closeOpenFrame();
+    return;
+  }
   renderScreenIndex(currentScreenIndex);
 }
 
@@ -1822,6 +1973,8 @@ static void setupWiFi() {
 
     if (WiFi.status() == WL_CONNECTED) {
       creds.lastIP = WiFi.localIP().toString();
+      // Das Display ist beim Start an, also gilt hier dieselbe Regel.
+      setWiFiPowerSave(false);
       creds.lastRSSI = WiFi.RSSI();
       configStorage.saveWiFiCredentials(creds);
       Serial.printf("[wifi] connected: %s (%d dBm)\n", creds.lastIP.c_str(), creds.lastRSSI);

@@ -95,6 +95,24 @@ public:
   // the plain idle look and the thicker-bordered pending look that
   // replaces it the moment the finger lifts (2026-08-14 addition, agreed
   // in this session's follow-up design discussion).
+  // Zeichnet nur ein Rechteck des Bildschirms neu - Hintergrund und alle
+  // Objekte, aber auf den Ausschnitt begrenzt. Innerhalb des Rechtecks ist
+  // das Ergebnis bitgleich zu renderScreen(), weil dieselbe Reihenfolge auf
+  // denselben Hintergrund gezeichnet wird; ausserhalb bleibt das vorige Bild
+  // stehen. Die Pixel-Gleichheit mit dem Designer bleibt damit erhalten.
+  bool renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh);
+
+  // Welches Rechteck sich aendert, wenn dieser Ring von oldValue auf newValue
+  // geht - Bogenenden plus die Zahl in der Mitte. Liefert false, wenn sich
+  // nichts aendert oder der Fall nicht sicher eingegrenzt werden kann; dann
+  // muss der Aufrufer ein Vollbild zeichnen.
+  // Das Rechteck der Zahl in der Mitte, getrennt vom Bogenabschnitt.
+  bool arcLevelTextRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
+                        int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
+
+  bool arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
+                         int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
+
   bool renderScreen(int screenIndex, const String& pressedButtonId = "", const String& pendingSwitchId = "",
                      int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
                      int pressedSwitchStateIndex = -1);

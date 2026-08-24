@@ -1,5 +1,6 @@
 #include "ColorScreenRenderer.h"
 #include "ArcRaster.h"
+#include "ArcSinTable.h"  // ARC_SIN_SCALE - Skala von ArcRaster::direction()
 #include <algorithm>
 
 // Matches JavaScript's Math.round() exactly, including its tie-breaking
@@ -881,8 +882,25 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   const ArcRaster::Rgb565 fillColour = ArcRaster::toRgb565(parseHexColor(obj.properties.fillColor));
   const ArcRaster::Rgb565 markerColour = ArcRaster::toRgb565(parseHexColor(obj.properties.markerColor));
 
-  for (int32_t py = 0; py < size; py++) {
-    for (int32_t px = 0; px < size; px++) {
+  // Nur den geclippten Ausschnitt durchrechnen. pixelBands() tastet jedes
+  // Pixel 16-fach ab; auf einem 360er Ring sind das rund 380.000 Sektortests
+  // pro Vollbild und damit gemessene 250ms. Beim Neuzeichnen eines
+  // Ausschnitts faellt davon nur der Bruchteil an, der wirklich anders wird.
+  // Ohne Clip unveraendert das ganze Quadrat.
+  int32_t pxFrom = 0, pxTo = size, pyFrom = 0, pyTo = size;
+  if (canvas_->clipActive()) {
+    const int32_t cx0 = (int32_t)canvas_->clipX() - obj.x;
+    const int32_t cy0 = (int32_t)canvas_->clipY() - obj.y;
+    const int32_t cx1 = cx0 + (int32_t)canvas_->clipW();
+    const int32_t cy1 = cy0 + (int32_t)canvas_->clipH();
+    if (cx0 > pxFrom) pxFrom = cx0;
+    if (cy0 > pyFrom) pyFrom = cy0;
+    if (cx1 < pxTo) pxTo = cx1;
+    if (cy1 < pyTo) pyTo = cy1;
+  }
+
+  for (int32_t py = pyFrom; py < pyTo; py++) {
+    for (int32_t px = pxFrom; px < pxTo; px++) {
       const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
       const int32_t covered = bands.fill + bands.track + bands.marker;
 
@@ -1265,3 +1283,153 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
 
   return true;
 }
+
+// Ausschnittfassung. Teilt sich mit renderScreen() bewusst NICHT nur die
+// Objektliste, sondern auch deren Sortierung und den Hintergrund - jede
+// Abweichung waere ein Pixelunterschied, und genau darauf pruefen die
+// HIL-Suiten.
+bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh) {
+  if (!projectLoader_.isLoaded()) return false;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+  if (rw <= 0 || rh <= 0) return false;
+
+  const Screen& screen = project.screens[screenIndex];
+
+  bool bgTransparent = false;
+  uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
+  currentScreenBg_ = bgTransparent ? 0xFFFF : screenBg;
+
+  canvas_->setRegion(rx, ry, rw, rh);
+  canvas_->fillRect(rx, ry, rw, rh, currentScreenBg_);
+
+  std::vector<ScreenObject> sortedObjects = screen.objects;
+  std::sort(sortedObjects.begin(), sortedObjects.end(),
+            [](const ScreenObject& a, const ScreenObject& b) { return a.zIndex < b.zIndex; });
+  for (const auto& obj : sortedObjects) {
+    renderObject(obj, "", "", -1, "", -1);
+  }
+
+  canvas_->clearRegion();
+  return true;
+}
+
+// Das Rechteck, das sich beim Schritt von oldValue auf newValue aendert.
+//
+// Statt die Sektorgeometrie nachzubauen wird der geaenderte Winkelbereich
+// abgetastet: fuer eine Reihe von Winkeln zwischen altem und neuem Bogenende
+// die Punkte auf Aussen- und Innenradius nehmen und die Huelle bilden. Ein
+// Rand von ein paar Pixeln deckt die Kantenglaettung und die Schrittweite der
+// Abtastung ab - lieber ein paar Pixel zu viel neu zeichnen als einen zu
+// wenig, denn ein fehlender waere ein Rest des alten Bildes.
+// Das Rechteck der Zahl in der Mitte. Die Schriftmasse werden hier genauso
+// berechnet wie beim Zeichnen, und die Huelle beider Texte genommen - "100"
+// ist breiter als "40", also muss der breitere Stand mit weg.
+bool ColorScreenRenderer::arcLevelTextRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
+                                           int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
+  if (obj.properties.displayValue == "none") return false;
+
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  if (font == nullptr) return false;
+  const int16_t fontAscent = getFontAscentById(obj.properties.fontId);
+  const int16_t fontDescent = getFontDescentById(obj.properties.fontId);
+  const int16_t fontHeight = fontAscent + fontDescent;
+
+  int16_t breiteste = 0;
+  for (int pass = 0; pass < 2; pass++) {
+    const String& roh = pass == 0 ? oldValue : newValue;
+    String text;
+    if (obj.properties.displayValue == "percentage") {
+      text = String((int)(interpolateCalibration(roh.toFloat(), obj.properties.calibrationPoints) + 0.5f)) + "%";
+    } else {
+      text = roh;
+    }
+    const int16_t w = measureTrueTextWidth(text, font);
+    if (w > breiteste) breiteste = w;
+  }
+  if (breiteste <= 0) return false;
+
+  // Mittig wie beim Zeichnen; ein Rand deckt Rundung und Ueberhang ab.
+  const int32_t PAD = 4;
+  const int32_t x = obj.x + jsRound((obj.width - breiteste) / 2.0f) - PAD;
+  const int32_t y = obj.y + jsRound((obj.height - fontHeight) / 2.0f) - PAD;
+  *outX = (int16_t)(x < obj.x ? obj.x : x);
+  *outY = (int16_t)(y < obj.y ? obj.y : y);
+  *outW = (int16_t)(breiteste + 2 * PAD);
+  *outH = (int16_t)(fontHeight + 2 * PAD);
+  return true;
+}
+
+bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
+                                            int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
+  if (obj.type != "arc-level") return false;
+  if (oldValue.isEmpty() || newValue.isEmpty()) return false;
+
+  const int32_t size = obj.width < obj.height ? obj.width : obj.height;
+  if (size <= 0) return false;
+
+  const float pctOld = interpolateCalibration(oldValue.toFloat(), obj.properties.calibrationPoints);
+  const float pctNew = interpolateCalibration(newValue.toFloat(), obj.properties.calibrationPoints);
+  const float lo = pctOld < pctNew ? pctOld : pctNew;
+  const float hi = pctOld < pctNew ? pctNew : pctOld;
+
+  // Wortgleich zu renderArcLevel hergeleitet - eine eigene Fassung waere
+  // genau die Copy-paste-Falle, die diesen Flow schon einmal erwischt hat.
+  const int32_t minA = ((obj.properties.minAngle % 360) + 360) % 360;
+  const int32_t maxA = ((obj.properties.maxAngle % 360) + 360) % 360;
+  const bool counterClockwise = obj.properties.arcDirection == "ccw";
+  const int32_t startDeg = counterClockwise ? maxA : minA;
+  int32_t spanDeg = counterClockwise ? ((minA - maxA + 360) % 360) : ((maxA - minA + 360) % 360);
+  if (spanDeg == 0) spanDeg = 360;
+  const int32_t start64 = startDeg * ArcRaster::ANGLE_SCALE;
+  const int32_t sweep64 = spanDeg * ArcRaster::ANGLE_SCALE;
+
+  const int32_t centre = size / 2;
+  const int32_t rOuter = size / 2;
+  int32_t thickness = obj.properties.arcThickness;
+  if (thickness < 1) thickness = 1;
+  const int32_t rInner = rOuter - thickness > 0 ? rOuter - thickness : 0;
+
+  int32_t minX = size, minY = size, maxX = -1, maxY = -1;
+  const int STEPS = 24;
+  for (int i = 0; i <= STEPS; i++) {
+    const float pct = lo + (hi - lo) * (float)i / (float)STEPS;
+    const int32_t at = ArcRaster::sweepForPercent(sweep64, pct);
+    const int32_t angle64 = start64 + at;
+    int32_t dx = 0, dy = 0;
+    // ACHTUNG: direction() liefert die Richtung in der Skala der Sinustabelle
+    // (ARC_SIN_SCALE = 16384), NICHT in ANGLE_SCALE (64). Mit der falschen
+    // Konstante kollabierte die Huelle auf wenige Pixel, der Bogen wurde also
+    // gar nicht neu gezeichnet - schnell, aber falsch.
+    ArcRaster::direction(angle64, &dx, &dy);
+    for (int pass = 0; pass < 2; pass++) {
+      const int32_t r = pass == 0 ? rOuter : rInner;
+      const int32_t x = centre + (dx * r) / ARC_SIN_SCALE;
+      const int32_t y = centre + (dy * r) / ARC_SIN_SCALE;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < minX || maxY < minY) return false;
+
+  // Die Zahl in der Mitte bekommt ihr EIGENES Rechteck (arcLevelTextRect).
+  // Sie hier mitzunehmen hiess, die Huelle aus Bogenabschnitt und Bildmitte
+  // zu bilden - und die ist fast so gross wie das ganze Bild. Zwei kleine
+  // Rechtecke sind billiger als ein grosses, das beide umschliesst.
+
+  const int32_t PAD = 4;
+  minX -= PAD; minY -= PAD; maxX += PAD; maxY += PAD;
+  if (minX < 0) minX = 0;
+  if (minY < 0) minY = 0;
+  if (maxX > size - 1) maxX = size - 1;
+  if (maxY > size - 1) maxY = size - 1;
+
+  *outX = (int16_t)(obj.x + minX);
+  *outY = (int16_t)(obj.y + minY);
+  *outW = (int16_t)(maxX - minX + 1);
+  *outH = (int16_t)(maxY - minY + 1);
+  return true;
+}
+
