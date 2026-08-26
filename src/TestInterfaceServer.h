@@ -115,6 +115,21 @@ public:
   using ScreenListHandler = std::function<String()>;
   void setScreenListHandler(ScreenListHandler handler) { screenListHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
+
+  // Signalmodus: das Panel zeigt seinen eigenen Empfangspegel gross auf dem
+  // Display, statt ihn nur ueber /api/debug zu melden.
+  //
+  // Warum auf dem Geraet und nicht am Rechner (2026-08-26): der Pegel wird
+  // gesucht, indem man das Panel in die Hand nimmt, das Gehaeuse oeffnet und
+  // durchs Fahrzeug laeuft. Wer dabei auf einen Laptop schauen muss, misst
+  // nicht das, was er gerade tut. Und ein Wert, der ueber MQTT oder HTTP
+  // kaeme, friert genau dann ein, wenn es interessant wird - bei schlechtem
+  // Signal. Lokal gerendert bleibt er ablesbar, auch wenn das Netz weg ist.
+  //
+  // Der Parameter ist -1 = umschalten, 0 = aus, 1 = an. Zurueck kommt der
+  // Zustand danach.
+  using SignalModeHandler = std::function<bool(int wunsch)>;
+  void setSignalModeHandler(SignalModeHandler handler) { signalModeHandler_ = handler; }
   void stop();
 
   // Pump from loop(). Cheap when idle; safe to call before begin().
@@ -126,6 +141,7 @@ private:
   void handleSnapshot();
   void handleDdfZip();
   void handleScreenSwitch();
+  void handleSignalMode();
   void handleMqttConfigure();
   void handleForgetWiFi();
   void handleGetTopicValues();
@@ -153,6 +169,7 @@ private:
   ClippedCanvas16* canvas_ = nullptr;
   bool serverRunning_ = false;
   ScreenSwitchHandler screenSwitchHandler_;
+  SignalModeHandler signalModeHandler_;
   TopicValueHandler topicValueHandler_;
   InputHandler inputHandler_;
   TouchHandler touchHandler_;

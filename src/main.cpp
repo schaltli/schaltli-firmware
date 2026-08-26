@@ -911,6 +911,43 @@ static void latMark(const char *tag, const char *info) {
   snprintf(e.info, sizeof(e.info), "%s", info ? info : "");
   latWriteIndex++;
 }
+
+// Fremdtext, der in das Debug-JSON eingesetzt wird, muss escaped werden -
+// und "fremd" heisst hier: eine MQTT-Nutzlast. Bis 2026-08-26 fiel das nicht
+// auf, weil dieses Geraet nur Werte wie "0", "1" oder "+10" trug. Der erste
+// JSON-Payload (pkw/tele/doorman, Lock-Screen) brachte Anfuehrungszeichen
+// mit, und die 14 Zeichen, die latMark speichert, schnitten mitten hinein:
+//
+//   [1114801,"rx","{"locked":tru"]
+//
+// Danach war GET /api/debug fuer jeden Parser kaputt - ausgerechnet die
+// Flaeche, ueber die dieses Board diagnostiziert wird, weil sein serieller
+// Monitor es beim Anstecken zurücksetzt. Bewusst nur die sechs Zeichen, die
+// RFC 8259 zwingend verlangt: mehr braucht es fuer diese Quellen nicht, und
+// weniger ist kaputt.
+static String jsonEscape(const String &roh) {
+  String out;
+  out.reserve(roh.length() + 8);
+  for (size_t i = 0; i < roh.length(); i++) {
+    const char c = roh[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\r': out += "\\r"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char u[7];
+          snprintf(u, sizeof(u), "\\u%04x", (unsigned)(uint8_t)c);
+          out += u;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
 #else
 static inline void latMark(const char *, const char *) {}
 #endif
@@ -1619,6 +1656,30 @@ static void beginWaveformRecorder() {
 // verified over HTTP by turning the knob and polling GET /api/debug.
 static uint32_t dispatchedRight = 0, dispatchedLeft = 0;
 
+// WLAN-Zustand fuer die Aufsicht und fuer das Debug-JSON. Hier oben, weil
+// buildDebugJson() ihn ausgibt; die Logik dazu steht unter "wifi" weiter
+// unten (onWiFiEvent/superviseWiFi), samt der Begruendung, warum es sie gibt.
+static WiFiCredentials wifiCreds;
+static bool wifiHaveCreds = false;
+static uint8_t wifiLastDisconnectReason = 0;
+static uint32_t wifiLastDisconnectAtMs = 0;
+static uint32_t wifiDisconnectCount = 0;
+static uint32_t wifiGotIpCount = 0;
+static uint32_t wifiOwnRetryCount = 0;
+static uint32_t wifiDownSinceMs = 0;
+static uint32_t wifiLastRetryMs = 0;
+static volatile bool wifiPowerSaveNeedsReassert = false;
+
+// Signalmodus - Zustand hier oben, Logik unter "signalmodus" weiter unten.
+// Hier, weil onMqttMessage() und buildDebugJson() ihn brauchen und beide
+// frueher im File stehen.
+static bool signalModeActive = false;
+static uint32_t signalModeUntilMs = 0;
+static uint32_t signalModeLastDrawMs = 0;
+static int8_t signalModeBest = 0;
+static int8_t signalModeWorst = 0;
+static bool signalModeHaveSample = false;
+
 // Dumps uptime (a reboot detector - if this goes backwards between polls,
 // the device reset), the edge counters, and the most recent events with
 // microsecond deltas.
@@ -1715,13 +1776,38 @@ static String buildDebugJson() {
   // Both the stored id and what it resolves to right now: a setting that
   // saved fine but names a screen this project does not have looks exactly
   // like one that was never set, unless the two are reported apart.
-  out += ",\"idleScreenId\":\"" + idleScreenId + "\"";
+  out += ",\"idleScreenId\":\"" + jsonEscape(idleScreenId) + "\"";
   out += ",\"idleScreenIndex\":" + String(resolveIdleScreenIndex());
   out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
   out += ",\"nowMs\":" + String(millis());
   out += ",\"worstLoopMs\":" + String(worstLoopMs);
   out += ",\"mqttReconnects\":" + String(mqttClient.reconnectCount());
+  out += ",\"mqttConnects\":" + String(mqttClient.connectCount());
   out += ",\"mqttLastState\":" + String(mqttClient.lastDisconnectState());
+  // WLAN. Der Abbruchgrund ist der Wert, um den es geht: der Core wiederholt
+  // nur eine feste Liste davon, und WIFI_REASON_ASSOC_LEAVE (8) gehoert nicht
+  // dazu. Bis 2026-08-26 war er von hier aus ueberhaupt nicht zu sehen - der
+  // Core loggt ihn per log_w, aber CORE_DEBUG_LEVEL ist nicht gesetzt, also
+  // wird die Zeile wegkompiliert, und der serielle Monitor scheidet auf
+  // diesem Board ohnehin aus. Ein Ausfall im Feld liess sich damit nur
+  // nachstellen, nicht ablesen.
+  out += ",\"wifiStatus\":" + String((int)WiFi.status());
+  out += ",\"wifiRssi\":" + String(WiFi.isConnected() ? WiFi.RSSI() : 0);
+  out += ",\"wifiLastDisconnectReason\":" + String((unsigned)wifiLastDisconnectReason);
+  out += ",\"wifiLastDisconnectReasonName\":\"" +
+         jsonEscape(String(wifiLastDisconnectReason
+                               ? WiFi.STA.disconnectReasonName((wifi_err_reason_t)wifiLastDisconnectReason)
+                               : "none yet")) +
+         "\"";
+  out += ",\"wifiLastDisconnectAtMs\":" + String(wifiLastDisconnectAtMs);
+  out += ",\"wifiDisconnects\":" + String(wifiDisconnectCount);
+  out += ",\"wifiGotIps\":" + String(wifiGotIpCount);
+  // Wie oft die Aufsicht selbst eingegriffen hat. Groesser 0 heisst: der
+  // Core hatte aufgegeben, und ohne diesen Code waere das Panel bis zum
+  // naechsten Neustart weg gewesen.
+  out += ",\"wifiOwnRetries\":" + String(wifiOwnRetryCount);
+  out += ",\"wifiDownMs\":" + String(wifiDownSinceMs ? (millis() - wifiDownSinceMs) : 0);
+  out += ",\"signalMode\":" + String(signalModeActive ? "true" : "false");
   out += ",\"worstLoopAtMs\":" + String(worstLoopAtMs);
   out += ",\"phases\":[";
   for (int i = 0; i < phaseCount; i++) {
@@ -1737,7 +1823,9 @@ static String buildDebugJson() {
     for (uint32_t k = 0; k < n; k++) {
       const LatEvent &e = latLog[(total - n + k) % LAT_LOG_SIZE];
       if (k > 0) out += ",";
-      out += "[" + String(e.atMs) + ",\"" + String(e.tag) + "\",\"" + String(e.info) + "\"]";
+      // info traegt MQTT-Nutzlasten, also Fremdtext - siehe jsonEscape().
+      out += "[" + String(e.atMs) + ",\"" + jsonEscape(String(e.tag)) + "\",\"" +
+             jsonEscape(String(e.info)) + "\"]";
     }
   }
   out += "]";
@@ -2081,6 +2169,12 @@ static void onMqttMessage(const String &topic, const String &payload) {
   canvasPresenter.invalidateSlots();
   menuBackdropReady = false;
 
+  // Im Signalmodus gehoert die Anzeige dem Pegel. Der Wert wird oben
+  // trotzdem uebernommen, damit nach dem Ausschalten sofort der richtige
+  // Stand dasteht - nur gezeichnet wird nicht, sonst blinkt bei jedem
+  // eintreffenden Topic die Messung weg.
+  if (signalModeActive) return;
+
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
   if (!screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
@@ -2115,11 +2209,192 @@ static void setupMqtt(const WiFiCredentials &creds) {
 
 // ------------------------------------------------------------------- wifi
 
+// Warum es diesen ganzen Abschnitt gibt (2026-08-26):
+//
+// setupWiFi() lief einmal aus setup() und danach schaute niemand mehr hin -
+// in loop() stand kein einziges WiFi.status(). Der Arduino-Core faengt zwar
+// selbst wieder ab, aber nur fuer Gruende aus einer festen Liste
+// (_is_staReconnectableReason in STA.cpp). WIFI_REASON_ASSOC_LEAVE (8) steht
+// NICHT drin - "Voluntarily disconnected. Don't reconnect!" - und genau den
+// schickt ein Access Point, wenn er einen Client abmeldet: Router-Neustart,
+// Kanalwechsel, Deauth.
+//
+// Ergebnis am echten Fahrzeug: das Panel fiel zweimal an einem Tag komplett
+// vom Netz (kein Ping, kein ARP, LWT gefeuert) und kam erst nach einem
+// Neustart zurueck. Aus der Reichweite laufen loeste es NICHT aus - das gibt
+// BEACON_TIMEOUT (200), und der steht in der Liste, weshalb der naheliegende
+// Test sich immer brav wieder einrenkte.
+//
+// Diese Aufsicht laesst dem Core seinen Vorlauf und greift erst danach ein.
+// Sie startet bewusst NICHT neu: ein Fahrzeug, das ausserhalb jeder
+// Funkreichweite steht, wuerde sonst im Zehnminutentakt booten.
+// Der Zustand dazu steht weiter oben, direkt vor buildDebugJson() - er muss
+// dort deklariert sein, weil das Debug-JSON ihn ausgibt.
+//
+// Dem Core zuerst - er kommt fuer die meisten Gruende von allein zurueck und
+// tut das schneller, als wir es koennten. Erst wenn er nach dieser Frist
+// nichts erreicht hat, ist er entweder an einem Grund gescheitert, den er
+// nicht wiederholt, oder er kommt ohnehin nicht weiter.
+static const uint32_t WIFI_GRACE_MS = 12000;
+static const uint32_t WIFI_RETRY_INTERVAL_MS = 15000;
+
+// Laeuft auf dem WiFi-Event-Task, nicht in loop(). Deshalb hier nur Zahlen
+// schreiben: kein Rendern, kein NVS, kein Serial-Gewitter, und
+// WiFi.setSleep() erst recht nicht - das erledigt superviseWiFi() im
+// Schleifen-Task ueber das Flag.
+static void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switch (event) {
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      wifiLastDisconnectReason = info.wifi_sta_disconnected.reason;
+      wifiLastDisconnectAtMs = millis();
+      wifiDisconnectCount++;
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      wifiGotIpCount++;
+      // Nach einer Neuverbindung darf das Stromsparen nicht zurueckkommen.
+      // Gemessen am 2026-08-26: die erste Anfrage nach Leerlauf brauchte
+      // 8,3s, danach 0,8-1,1s - die Zahlen von VOR dem setSleep(false) vom
+      // 2026-08-24 (0,053-0,108s). Ob der Core es wirklich verliert, ist
+      // nicht bewiesen; es hier erneut zu setzen kostet nichts und macht die
+      // Frage gegenstandslos.
+      wifiPowerSaveNeedsReassert = true;
+      break;
+    default:
+      break;
+  }
+}
+
+// ---------------------------------------------------------- signalmodus
+//
+// Das Panel zeigt seinen eigenen Empfangspegel gross auf dem eigenen
+// Display. Gebaut am 2026-08-26, weil die Suche nach den fehlenden ~32 dB
+// (Chipantenne CA-C03 plus CNC-Aluminiumgehaeuse) darin besteht, das Geraet
+// in die Hand zu nehmen, das Gehaeuse zu oeffnen und damit durchs Fahrzeug
+// zu laufen. Wer dabei auf einen Laptop schauen muss, misst nicht das, was
+// er gerade tut - und ein Wert, der ueber Netz kaeme, faellt genau dann aus,
+// wenn es spannend wird.
+//
+// Min und Max seit dem Einschalten sind der eigentliche Nutzen: man dreht,
+// oeffnet, geht ein paar Schritte - und liest hinterher ab, was das Beste
+// und das Schlechteste war, ohne die ganze Zeit hinsehen zu muessen.
+// Von selbst aus, damit ein vergessener Signalmodus nicht dauerhaft das
+// Panel belegt. Grosszuegig bemessen: eine Messrunde durchs Fahrzeug soll
+// nicht mittendrin abbrechen.
+static const uint32_t SIGNAL_MODE_TIMEOUT_MS = 30UL * 60UL * 1000UL;
+static const uint32_t SIGNAL_MODE_DRAW_INTERVAL_MS = 500;
+
+static void setSignalMode(bool an) {
+  if (an == signalModeActive) {
+    if (an) signalModeUntilMs = millis() + SIGNAL_MODE_TIMEOUT_MS;
+    return;
+  }
+  signalModeActive = an;
+  if (an) {
+    signalModeUntilMs = millis() + SIGNAL_MODE_TIMEOUT_MS;
+    signalModeHaveSample = false;
+    signalModeLastDrawMs = 0;  // sofort zeichnen, nicht erst nach 500ms
+    Serial.println("[signal] Signalmodus an");
+  } else {
+    Serial.println("[signal] Signalmodus aus");
+    // Zurueck auf das, was vorher zu sehen war.
+    renderScreenIndex(currentScreenIndex);
+  }
+}
+
+static void updateSignalMode() {
+  if (!signalModeActive) return;
+
+  const uint32_t now = millis();
+  if ((int32_t)(now - signalModeUntilMs) >= 0) {
+    setSignalMode(false);
+    return;
+  }
+
+  // Die Anzeige waehrend einer Messrunde ausgehen zu lassen waere genau
+  // falsch herum - man haelt das Geraet in der Hand und schaut drauf, ohne
+  // es zu beruehren.
+  lastHumanInputMs = now;
+
+  if (now - signalModeLastDrawMs < SIGNAL_MODE_DRAW_INTERVAL_MS) return;
+  signalModeLastDrawMs = now;
+
+  if (!WiFi.isConnected()) {
+    displayAdapter.showLines({"Signal", "kein WLAN", String("Grund ") + String((unsigned)wifiLastDisconnectReason)});
+    return;
+  }
+
+  const int8_t rssi = (int8_t)WiFi.RSSI();
+  if (!signalModeHaveSample) {
+    signalModeBest = rssi;
+    signalModeWorst = rssi;
+    signalModeHaveSample = true;
+  } else {
+    if (rssi > signalModeBest) signalModeBest = rssi;
+    if (rssi < signalModeWorst) signalModeWorst = rssi;
+  }
+
+  // Ein Balken aus Blockzeichen, weil showLines() mit der eingebauten
+  // Adafruit-Schrift zeichnet und keine Grafik anbietet - und weil eine
+  // Zahl allein aus zwei Metern Entfernung schlechter zu erfassen ist als
+  // eine Laenge. Skala -100 bis -40 dBm auf 12 Stellen.
+  int stufen = ((int)rssi + 100) / 5;
+  if (stufen < 0) stufen = 0;
+  if (stufen > 12) stufen = 12;
+  String balken;
+  for (int i = 0; i < 12; i++) balken += (i < stufen) ? '#' : '.';
+
+  displayAdapter.showLines({
+      String(rssi) + " dBm",
+      balken,
+      String("max ") + String(signalModeBest),
+      String("min ") + String(signalModeWorst),
+  });
+}
+
+static void superviseWiFi() {
+  if (setupModeActive) return;  // im AP-Modus gehoert das Funkmodul dem Portal
+  if (!wifiHaveCreds) return;
+
+  const uint32_t now = millis();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiDownSinceMs = 0;
+    if (wifiPowerSaveNeedsReassert) {
+      wifiPowerSaveNeedsReassert = false;
+      setWiFiPowerSave(false);
+    }
+    return;
+  }
+
+  if (wifiDownSinceMs == 0) {
+    wifiDownSinceMs = now;
+    wifiLastRetryMs = now;  // die Frist zaehlt ab jetzt, nicht ab dem Urknall
+    return;
+  }
+  if (now - wifiDownSinceMs < WIFI_GRACE_MS) return;
+  if (now - wifiLastRetryMs < WIFI_RETRY_INTERVAL_MS) return;
+
+  wifiLastRetryMs = now;
+  wifiOwnRetryCount++;
+  // WiFi.begin() kehrt sofort zurueck, der Verbindungsaufbau laeuft im
+  // Hintergrund - die einfaedige Schleife darf hier nicht stehenbleiben,
+  // sonst tauscht man ein totes Panel gegen ein ruckelndes.
+  WiFi.begin(wifiCreds.ssid.c_str(), wifiCreds.password.c_str());
+  Serial.printf("[wifi] Aufsicht: Neuversuch %u (%us ohne Verbindung, letzter Grund %u)\n",
+                (unsigned)wifiOwnRetryCount, (unsigned)((now - wifiDownSinceMs) / 1000),
+                (unsigned)wifiLastDisconnectReason);
+}
+
 static void setupWiFi() {
   WiFiCredentials creds;
   bool haveCreds = configStorage.loadWiFiCredentials(creds) && !creds.ssid.isEmpty();
 
   if (haveCreds) {
+    // Vor WiFi.begin() registrieren, damit auch ein Fehlschlag beim ersten
+    // Verbindungsaufbau seinen Grund hinterlaesst.
+    WiFi.onEvent(onWiFiEvent);
+    wifiCreds = creds;
+    wifiHaveCreds = true;
     displayAdapter.showLines({"Connecting", "to WiFi...", creds.ssid});
     WiFi.mode(WIFI_STA);
     WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
@@ -2164,6 +2439,10 @@ static void setupWiFi() {
       // NVS and the running firmware keeps the one it read at boot -
       // someone changes the timeout, watches nothing happen, and concludes
       // it did not save.
+      testInterface.setSignalModeHandler([](int wunsch) -> bool {
+        setSignalMode(wunsch < 0 ? !signalModeActive : (wunsch != 0));
+        return signalModeActive;
+      });
       testInterface.setSettingsChangedHandler(applyDeviceSettings);
       testInterface.setScreenListHandler(buildScreenListJson);
       testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
@@ -2431,6 +2710,13 @@ void loop() {
   }
 
   PHASE("http", testInterface.handleClient());
+  // Vor dem MQTT-Abschnitt: ohne WLAN bricht mqttClient.loop() ohnehin sofort
+  // ab, und eine gerade wiederhergestellte Verbindung soll im selben
+  // Durchlauf genutzt werden koennen.
+  PHASE("wifi", superviseWiFi());
+  // Nach superviseWiFi(), damit ein gerade wiederhergestelltes WLAN im
+  // selben Durchlauf schon einen Pegel liefert statt "kein WLAN".
+  PHASE("signal", updateSignalMode());
   PHASE("mqtt", mqttClient.loop());
   PHASE("subscribe", subscribeToAllTopics());
 

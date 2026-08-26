@@ -37,6 +37,11 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/settings", HTTP_GET, [this]() { this->handleSettingsPage(); });
   webServer_->on("/api/device-settings", HTTP_GET, [this]() { this->handleSettingsGet(); });
   webServer_->on("/api/device-settings", HTTP_POST, [this]() { this->handleSettingsSave(); });
+  // Signalmodus an/aus. Absichtlich auch per GET: umgeschaltet wird das vom
+  // Handy im selben Netz, waehrend man das Panel in der Hand haelt - und
+  // dort tippt man eine URL in den Browser, keinen POST.
+  webServer_->on("/api/signal", HTTP_GET, [this]() { this->handleSignalMode(); });
+  webServer_->on("/api/signal", HTTP_POST, [this]() { this->handleSignalMode(); });
   webServer_->on("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
                      debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
@@ -58,6 +63,30 @@ void TestInterfaceServer::sendJSONResponse(bool success, const String& message) 
   String output;
   serializeJson(doc, output);
   webServer_->send(success ? 200 : 400, "application/json", output);
+}
+
+void TestInterfaceServer::handleSignalMode() {
+  if (!signalModeHandler_) {
+    sendJSONResponse(false, "Signal mode is not available on this device");
+    return;
+  }
+
+  // Ohne Parameter umschalten - das ist der Aufruf, den man vom Handy aus
+  // macht, und zweimal dieselbe URL soll an und wieder aus bedeuten.
+  int wunsch = -1;
+  if (webServer_->hasArg("on")) {
+    const String v = webServer_->arg("on");
+    wunsch = (v == "1" || v == "true" || v == "on") ? 1 : 0;
+  }
+
+  const bool aktiv = signalModeHandler_(wunsch);
+
+  JsonDocument doc;
+  doc["success"] = true;
+  doc["signalMode"] = aktiv;
+  String output;
+  serializeJson(doc, output);
+  webServer_->send(200, "application/json", output);
 }
 
 void TestInterfaceServer::handleScreenSwitch() {

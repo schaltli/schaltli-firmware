@@ -91,7 +91,16 @@ public:
   // -3 = Socket-Lesefehler). Ueber GET /api/debug lesbar - der serielle
   // Monitor setzt dieses Board beim Anstecken zurueck und taugt nicht als
   // Zeuge fuer ein Problem, das nur im Betrieb auftritt.
+  //
+  // Bis 2026-08-26 zaehlte reconnectCount_ auch die Versuche, die am
+  // WLAN-Test in reconnect() scheiterten - bei totem WLAN also alle 5s
+  // einen. "45 Reconnects" waren dann in Wahrheit vier echte Verbindungen
+  // und viel Warten; die Zahl trug eine Diagnose, die sie nicht tragen
+  // konnte. Jetzt zaehlt sie nur noch Versuche, die das Haus verlassen
+  // haben, und connectCount_ davon die erfolgreichen. Die Differenz ist die
+  // Zeit in der Luecke, in der nichts zugestellt werden kann.
   uint32_t reconnectCount() const { return reconnectCount_; }
+  uint32_t connectCount() const { return connectCount_; }
   int lastDisconnectState() const { return lastDisconnectState_; }
 
   /**
@@ -142,6 +151,7 @@ private:
   // Auto-reconnect
   void reconnect();
   uint32_t reconnectCount_ = 0;
+  uint32_t connectCount_ = 0;
   int lastDisconnectState_ = 0;
   unsigned long lastReconnectAttempt_;
   static const unsigned long RECONNECT_INTERVAL_MS = 5000;

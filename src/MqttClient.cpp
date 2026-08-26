@@ -96,6 +96,7 @@ bool MqttClient::connect() {
   );
 
   if (connected) {
+    connectCount_++;
     mqttClient_.publish(statusTopic.c_str(), "online", true);
 
     // Re-subscribe to keys after connection
@@ -226,7 +227,6 @@ void MqttClient::loop() {
         // Ein Verbindungsversuch blockiert die einfaedige Schleife rund eine
         // Sekunde - flattert die Verbindung, fuehlt sich das Panel genau so
         // an, wie es der Nutzer beschreibt: meistens fluessig, dann haengt es.
-        reconnectCount_++;
         lastDisconnectState_ = mqttClient_.state();
         reconnect();
       }
@@ -238,9 +238,13 @@ void MqttClient::loop() {
 }
 
 void MqttClient::reconnect() {
-  if (WiFi.isConnected()) {
-    connect();
-  }
+  // Ohne WLAN gar nicht erst antreten - und vor allem nicht mitzaehlen. Der
+  // Zaehler soll "so oft hat das Geraet wirklich beim Broker angeklopft"
+  // heissen, nicht "so oft ist die 5-Sekunden-Uhr abgelaufen"; siehe
+  // MqttClient.h zu dem Tag, an dem die Zahl in die Irre fuehrte.
+  if (!WiFi.isConnected()) return;
+  reconnectCount_++;
+  connect();
 }
 
 void MqttClient::staticCallback(char* topic, byte* payload, unsigned int length) {
