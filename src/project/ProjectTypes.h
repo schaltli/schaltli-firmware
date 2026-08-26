@@ -39,7 +39,20 @@ struct SwitchState {
   String readValue;
   String writeValue;
   String iconPath;
+  // A genuinely different picture while this state is the active one
+  // (2026-08-25). It used to be the same picture baked against
+  // activeBackgroundColor, back when the active segment was filled; the
+  // marker bar replaced that fill, so nothing behind the icon changes any
+  // more and the exporter only ships this file when the author really did
+  // pick a second icon. Empty means "same picture either way" - the
+  // fallback below in renderSwitch already handled that case, because
+  // exports predating the second variant looked exactly like this.
   String iconPathActive;
+  // "single" mode only: does this state show the marker bar? Ignored in
+  // "segmented", where the bar always marks whichever segment is active.
+  bool showMarker;
+
+  SwitchState() : showMarker(false) {}
 };
 
 // One vertex of a (possibly multi-segment) line - mirrors the designer's
@@ -180,18 +193,27 @@ struct ObjectProperties {
   // (components/property-panel/switch-properties.tsx): `topic` (already
   // declared above, shared with every other topic-bound type) is the read
   // topic (retained); `writeTopic` is the command destination a tapped
-  // segment's writeValue gets published to (not retained). Segment
-  // background/text colors while active default to the same values the
-  // designer's Switch creation default does (canvas.tsx's Switch case).
+  // segment's writeValue gets published to (not retained).
+  //
+  // `mode` is "segmented" (default, n segments side by side) or "single"
+  // (one surface showing the active state, a tap advancing to the next).
+  //
+  // `activeBackgroundColor` is the marker bar's colour, solid and hollow
+  // alike. It kept its name through the 2026-08-25 change from a filled
+  // active segment to a bar: the value saved in every existing project was
+  // already the right colour for the new job, and renaming the key would
+  // have needed a migration to say nothing new. There is no
+  // activeTextColor any more - with no fill, a label never sits on a
+  // different background than its neighbours.
   String writeTopic;
+  String mode;
   String activeBackgroundColor;
-  String activeTextColor;
   std::vector<SwitchState> states;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
       arrowStart(false), arrowEnd(false),
-      activeBackgroundColor("#2563eb"), activeTextColor("#ffffff") {}
+      mode("segmented"), activeBackgroundColor("#2563eb") {}
 };
 
 // Screen object (can be MQTTIconField, MqttDataField, tab-control, panel, etc.)

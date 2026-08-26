@@ -1009,27 +1009,180 @@ int ColorScreenRenderer::getActiveSwitchStateIndex(const ScreenObject& obj) cons
 
 // Segmented control, one segment per obj.properties.states entry - mirrors
 // the designer's renderSwitch() (render-switch.ts) as closely as this
-// firmware's text/color primitives allow: same draw order (outer border,
-// then each segment's fill/divider/icon/label left-to-right), same active-
-// segment resolution (getActiveSwitchStateIndex), same per-segment
-// clipping so an oversized font can't bleed into a neighboring segment
-// (2026-08-13 designer-side finding, ported here too). No tap/MQTT-write
-// logic here - that's main.cpp's job (findSwitchSegmentAt + the pending/
-// timeout state machine); this function only ever draws whatever
-// pendingStateIndex/pressedStateIndex it's told, same "renderer just draws,
-// main.cpp owns the state machine" split as renderSoftwareButton's isPressed.
+// firmware's text/color primitives allow: same draw order, same active-
+// state resolution (getActiveSwitchStateIndex), same per-segment clipping
+// so an oversized font can't bleed into a neighboring segment (2026-08-13
+// designer-side finding, ported here too). No tap/MQTT-write logic here -
+// that's main.cpp's job (findSwitchSegmentAt + the pending/timeout state
+// machine); this function only ever draws whatever pendingStateIndex/
+// pressedStateIndex it's told, same "renderer just draws, main.cpp owns the
+// state machine" split as renderSoftwareButton's isPressed.
+//
+// 2026-08-25: the active state is a marker bar along the top edge, not a
+// filled segment. The fill carried three meanings at once through
+// activeBackgroundColor - solid fill = active, 3px ring = pending, 1px ring
+// = pressed - and none of them survived being put next to a screen of
+// bar-marked tiles. There is now one shape with three appearances, and the
+// rings are gone entirely:
+//
+//   absent  - a confirmed state carrying no marker
+//   hollow  - unconfirmed: finger down, or written and waiting for the
+//             retained value (the designer never draws this - nobody is
+//             touching the canvas, which is also why a HIL comparison
+//             against it stays valid)
+//   solid   - a confirmed state carrying a marker
+//
+// Hollow is drawn regardless of showMarker. Requesting a state that carries
+// no marker would otherwise produce no feedback at all for the up-to-3s the
+// write is in flight.
+
+// Marker geometry. Every value is a whole number with no division behind
+// it, and every one of them also appears in render-switch.ts under the same
+// name. Stated values cannot drift; computed ones get to disagree about
+// rounding, which is how a shared shape turns into a HIL pixel diff on
+// every Switch on the screen at once.
+static const int kSwitchBarHeight = 10;
+static const int kSwitchBarTopInset = 4;
+static const int kSwitchBarSideInset = 6;
+static const int kSwitchBarRadius = 3;
+// Reserved whether or not a bar is currently drawn, so a Switch does not
+// reflow its icon and label the moment it is switched on.
+static const int kSwitchBarBand = kSwitchBarTopInset + kSwitchBarHeight;
+
+// One marker bar, centered horizontally in [x, x + width).
+//
+// The width clamp guards objects saved before the designer's resize
+// minimums existed: a five-state Switch 60px wide gives each segment 12px,
+// and 12 - 2*6 is zero - a control that silently says nothing about its own
+// state. One integer max() is cheaper than any amount of warning UI, and
+// render-switch.ts's drawBar() does exactly the same thing.
+void ColorScreenRenderer::drawSwitchBar(int x, int y, int width, uint16_t color, bool hollow) {
+  int barWidth = width - 2 * kSwitchBarSideInset;
+  if (barWidth < 4) barWidth = 4;
+  int barX = x + kSwitchBarSideInset;
+  int barY = y + kSwitchBarTopInset;
+
+  if (hollow) {
+    canvas_->drawRoundRect(barX, barY, barWidth, kSwitchBarHeight, kSwitchBarRadius, color);
+  } else {
+    canvas_->fillRoundRect(barX, barY, barWidth, kSwitchBarHeight, kSwitchBarRadius, color);
+  }
+}
+
+// One state's icon + label inside the content band. Shared by both modes so
+// a state cannot look different depending on which mode drew it - the same
+// reason render-switch.ts factors this out.
+void ColorScreenRenderer::drawSwitchStateContent(const SwitchState& state, const String& iconPath,
+                                                 int x, int width, int bandTop, int bandHeight,
+                                                 uint16_t textColor, const BdfFont* font,
+                                                 int16_t fontAscent, int16_t fontDescent) {
+  float centerX = x + width / 2.0f;
+  bool hasIcon = !iconPath.isEmpty();
+
+  int iconBottom = bandTop;
+  if (hasIcon) {
+    // Same expression, same rounding, as render-switch.ts and
+    // lib/asset-export.ts's exportSwitchStateIcon (which is what baked this
+    // bitmap at this exact size). 0.62 of a 32px band is 19.84 - truncating
+    // where the others round would be a one-pixel offset on every icon.
+    int iconSize = jsRound(fminf((float)(width - 8), bandHeight * 0.62f));
+    if (iconSize < 1) iconSize = 1;
+    int iconX = jsRound(centerX - iconSize / 2.0f);
+    int iconY = bandTop + 2;
+    iconBottom = iconY + iconSize + 2;
+    ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, iconX, iconY);
+  }
+
+  if (state.label.isEmpty() || font == nullptr) return;
+
+  int16_t fontHeight = fontAscent + fontDescent;
+  int16_t textWidth = measureTrueTextWidth(state.label, font);
+  int16_t maxWidth = width - 4;
+  if (maxWidth > 0 && textWidth > maxWidth) textWidth = maxWidth;
+  int16_t textX = x + jsRound((width - textWidth) / 2.0f);
+  int16_t textY;
+  if (hasIcon) {
+    // Below the icon, top-anchored - matches render-switch.ts's anchorTop
+    // path.
+    textY = iconBottom + fontAscent;
+  } else {
+    // Centered in the content band, not in the whole object: the band
+    // starts below the bar's reserved strip, so a label cannot land on top
+    // of a marker.
+    textY = bandTop + jsRound((bandHeight - fontHeight) / 2.0f) + fontAscent;
+  }
+  font->drawText(*canvas_, state.label, textX, textY, textColor);
+}
+
 bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex) {
+  bool bgTransparent = false;
+  uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
   bool borderTransparent = false;
   uint16_t borderColor = parseHexColor(obj.properties.borderColor, &borderTransparent);
-  if (!borderTransparent) {
-    canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, borderColor);
+  uint16_t markerColor = parseHexColor(obj.properties.activeBackgroundColor);
+  uint16_t textColor = parseHexColor(obj.properties.textColor);
+
+  // Draw order, and why it is this one:
+  //
+  //   1 background, once over the whole object
+  //   2 outer border
+  //   3 dividers
+  //   4 marker bars
+  //   5 icons and labels
+  //
+  // Until 2026-08-25 the border was drawn first and then overpainted by the
+  // per-segment fills - every one of its pixels; only the dividers survived,
+  // because those came after their own segment's fill. Nobody noticed while
+  // a large coloured block made the control obvious anyway. With the fill
+  // gone the border is the only thing left that says where the object is.
+  //
+  // Filling once instead of per segment is what makes that free: no segment
+  // has a fill of its own any more, so there is nothing left to overpaint
+  // with. Content still comes last, matching ScreenRenderer's own order and
+  // the reason recorded on the designer side on 2026-07-20 - a border drawn
+  // after text erases glyph ink wherever a descender reaches the box edge.
+  // Rounded body, drawn the way renderBox draws one: the border is not a
+  // stroke but a slightly larger filled shape with the background filled on
+  // top of it. That is the only way to get a rounded border out of
+  // Adafruit's integer primitive, and it is what the designer's
+  // render-switch.ts does with the same port of the same algorithm - hard
+  // pixels, no anti-aliasing. Deliberately so: an anti-aliased edge is the
+  // one thing that provably cannot survive the trip into this 16-bit panel
+  // unchanged (2026-08-25, the SoftwareButton's baked corners).
+  //
+  // cornerRadius defaults to 0, so every project built before this looks
+  // exactly as it did.
+  int cornerRadius = obj.properties.cornerRadius;
+  if (cornerRadius < 0) cornerRadius = 0;
+
+  if (cornerRadius > 0) {
+    if (!borderTransparent) {
+      canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, cornerRadius, borderColor);
+      if (!bgTransparent && obj.width > 2 && obj.height > 2) {
+        int innerRadius = cornerRadius - 1;
+        if (innerRadius < 0) innerRadius = 0;
+        canvas_->fillRoundRect(obj.x + 1, obj.y + 1, obj.width - 2, obj.height - 2, innerRadius, bgColor);
+      }
+    } else if (!bgTransparent) {
+      canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, cornerRadius, bgColor);
+    }
+  } else {
+    if (!bgTransparent) {
+      canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, bgColor);
+    }
+    if (!borderTransparent) {
+      canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, borderColor);
+    }
   }
 
   size_t stateCount = obj.properties.states.size();
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
+  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
+
   if (stateCount == 0) {
     // Mirrors render-switch.ts's own "No states defined" placeholder - an
-    // empty/misconfigured Switch is still visible (and selectable, once
-    // touch hit-testing exists for it) instead of a blank box.
+    // empty/misconfigured Switch is still visible instead of a blank box.
     // The DDF's own first font, not a hardcoded u8g2 array - this device
     // may not publish helvR08 at all, and a placeholder is no reason to
     // reach for a font the DDF does not declare.
@@ -1047,17 +1200,48 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   }
 
   int activeIndex = getActiveSwitchStateIndex(obj);
+  int bandTop = obj.y + kSwitchBarBand;
+  int bandHeight = obj.height - kSwitchBarBand;
 
-  bool bgTransparent = false;
-  uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
-  uint16_t activeBgColor = parseHexColor(obj.properties.activeBackgroundColor);
-  uint16_t textColor = parseHexColor(obj.properties.textColor);
-  uint16_t activeTextColor = parseHexColor(obj.properties.activeTextColor);
+  if (obj.properties.mode == "single") {
+    // One surface showing whichever state is active; main.cpp's tap handler
+    // advances to the next one.
+    bool unconfirmed = (pendingStateIndex >= 0 || pressedStateIndex >= 0);
 
-  const BdfFont* font = fontFor(obj.properties.fontId);
-  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
-  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
-  int16_t fontHeight = fontAscent + fontDescent;
+    if (activeIndex < 0) {
+      // Nothing matched, so there is no state - and every label belongs to
+      // a state, so showing one would be claiming a state nobody reported.
+      // "?" alone, which after a boot is what every tile shows until its
+      // retained value arrives. A tap still gets its hollow bar: the write
+      // went out even though the current value is unknown.
+      if (unconfirmed) drawSwitchBar(obj.x, obj.y, obj.width, markerColor, true);
+      if (font != nullptr) {
+        int16_t textWidth = measureTrueTextWidth("?", font);
+        int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
+        int16_t textY = bandTop + jsRound((bandHeight - (fontAscent + fontDescent)) / 2.0f) + fontAscent;
+        canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
+        font->drawText(*canvas_, "?", textX, textY, textColor);
+        canvas_->clearClip();
+      }
+      return true;
+    }
+
+    const SwitchState& state = obj.properties.states[activeIndex];
+    if (unconfirmed) {
+      drawSwitchBar(obj.x, obj.y, obj.width, markerColor, true);
+    } else if (state.showMarker) {
+      drawSwitchBar(obj.x, obj.y, obj.width, markerColor, false);
+    }
+
+    canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
+    // No iconPathActive here: a state is only ever drawn in this mode while
+    // it is the active one, so its own icon already is its active picture.
+    // Reaching for the active variant would leave iconPath unreachable.
+    drawSwitchStateContent(state, state.iconPath, obj.x, obj.width, bandTop, bandHeight,
+                           textColor, font, fontAscent, fontDescent);
+    canvas_->clearClip();
+    return true;
+  }
 
   int baseSegmentWidth = obj.width / (int)stateCount;
 
@@ -1073,39 +1257,7 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
 
     bool isPending = (int)i == pendingStateIndex;
     bool isPressed = (int)i == pressedStateIndex && !isPending;
-    bool isActive = (int)i == activeIndex && !isPending;
-
-    if (!bgTransparent) {
-      canvas_->fillRect(segX, obj.y, segW, obj.height, isActive ? activeBgColor : bgColor);
-    }
-
-    // Pending: a thicker (3px) border in the active color instead of a
-    // solid fill - visibly distinct from both "confirmed active" (solid
-    // fill) and "plain inactive" (thin border only) without needing an
-    // animation loop this single render call has no timer to drive.
-    // Mirrors the "loading indicator" decision from this session's Switch
-    // design discussion (2026-08-12) - main.cpp owns the actual 3s
-    // pending/timeout state machine that decides pendingStateIndex; this
-    // only draws whatever it's told.
-    if (isPending) {
-      for (int t = 0; t < 3; t++) {
-        int ringW = segW - 2 * t;
-        int ringH = obj.height - 2 * t;
-        if (ringW <= 0 || ringH <= 0) break;
-        canvas_->drawRect(segX + t, obj.y + t, ringW, ringH, activeBgColor);
-      }
-    }
-
-    // Pressed: a single thin (1px) border in the active color while the
-    // finger is still down, before release - immediate touch feedback,
-    // deliberately thinner than pending's 3px ring so the two remain
-    // visually distinct even though they're the same color (2026-08-14
-    // addition, follow-up to this session's original pending-indicator
-    // discussion once "does a press register at all" turned out to have no
-    // feedback whatsoever until release).
-    if (isPressed) {
-      canvas_->drawRect(segX, obj.y, segW, obj.height, activeBgColor);
-    }
+    bool isActive = (int)i == activeIndex;
 
     // Divider between segments (not before the first one - the outer
     // border already covers that edge), same skip-if-transparent as the
@@ -1114,47 +1266,24 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
       canvas_->drawLine(segX, obj.y, segX, obj.y + obj.height - 1, borderColor);
     }
 
+    // showMarker is a "single" mode concept: here the bar's whole job is to
+    // say which of the n segments is active, which is not a question the
+    // author gets to answer per state. An unconfirmed segment draws hollow
+    // and the confirmed one stays solid, so during a write you see both -
+    // "it is this, you asked for that" - and nothing has to lie.
+    if (isPending || isPressed) {
+      drawSwitchBar(segX, obj.y, segW, markerColor, true);
+    } else if (isActive) {
+      drawSwitchBar(segX, obj.y, segW, markerColor, false);
+    }
+
     const SwitchState& state = obj.properties.states[i];
-
-    // Icon - same iconSize/iconX/iconY formula as render-switch.ts and
-    // lib/asset-export.ts's exportSwitchStateIcon() (which is what actually
-    // baked this bitmap at this exact size/position), so the designer
-    // preview, the export bake, and this draw all agree. Picks
-    // iconPathActive over iconPath while the segment is showing its active
-    // fill - the two are baked against different backgrounds
-    // (backgroundColor vs. activeBackgroundColor) specifically so the
-    // icon's own backdrop always matches what's actually behind it
-    // (2026-08-14 fix: a single bake looked wrong the moment its segment
-    // went active). Falls back to iconPath if no active variant exists
-    // (an older export, before this fix). No placeholder-on-missing-asset
-    // here (unlike renderIcon/renderMQTTIconField) - an empty path just
-    // means this state has no icon configured, not a load failure to flag.
-    int16_t iconBottom = obj.y;
+    // A genuinely different picture while this segment is active, falling
+    // back to the normal one when the state declares none - which is now
+    // the common case, since the exporter only ships a second file when the
+    // author really picked a second icon (2026-08-25). Older exports, which
+    // always carried one, keep working through the same branch.
     const String& iconPath = (isActive && !state.iconPathActive.isEmpty()) ? state.iconPathActive : state.iconPath;
-    bool hasIcon = !iconPath.isEmpty();
-    if (hasIcon) {
-      int iconSize = (int)fminf((float)(segW - 8), obj.height * 0.5f);
-      int iconX = segX + segW / 2 - iconSize / 2;
-      int iconY = obj.y + 4;
-      iconBottom = iconY + iconSize + 2;
-      ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, iconX, iconY);
-    }
-
-    if (state.label.isEmpty()) continue;
-
-    int16_t textWidth = measureTrueTextWidth(state.label, font);
-    int16_t maxWidth = segW - 4;
-    if (maxWidth > 0 && textWidth > maxWidth) textWidth = maxWidth;
-    int16_t textX = segX + jsRound((segW - textWidth) / 2.0f);
-    int16_t textY;
-    if (hasIcon) {
-      // Below the icon, top-anchored (not vertically centered in the whole
-      // segment) - matches render-switch.ts's anchorTop path.
-      textY = iconBottom + fontAscent;
-    } else {
-      int16_t verticalCenterOffset = jsRound((obj.height - fontHeight) / 2.0f);
-      textY = obj.y + verticalCenterOffset + fontAscent;
-    }
 
     // Clips to this segment's own rect, not the whole control - matches
     // the designer's per-segment clip fix (2026-08-13): an oversized font
@@ -1163,13 +1292,33 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     // the segment, which is taller than the text, so nothing is being
     // shaved off in the first place.
     canvas_->setClip(segX, obj.y, segW, obj.height);
-    if (font != nullptr) {
-      font->drawText(*canvas_, state.label, textX, textY, isActive ? activeTextColor : textColor);
-    }
+    drawSwitchStateContent(state, iconPath, segX, segW, bandTop, bandHeight,
+                           textColor, font, fontAscent, fontDescent);
     canvas_->clearClip();
   }
 
   return true;
+}
+
+// Draw order for objects that share a zIndex.
+//
+// The designer breaks that tie by object id (lib/object-order.ts's
+// sortChildrenByZIndex: `a.zIndex - b.zIndex || a.id.localeCompare(b.id)`),
+// which is a total order - two objects can never come out in a different
+// sequence twice. std::sort is not stable and was given only `zIndex <`, so
+// a tie here resolved however the sort felt like it, and the two sides were
+// free to disagree about which of two overlapping objects covers the other.
+//
+// Found 2026-08-25 by the first HIL run that ever had two equal-zIndex
+// objects overlapping: a label and a Switch, 1533 pixels, with the designer
+// drawing the Switch on top and the device drawing the label on top. Both
+// were "correct" by their own rule; only one of them had a rule.
+//
+// Byte comparison against localeCompare is close enough for object ids,
+// which this app only ever generates out of ASCII.
+static bool zOrderLess(const ScreenObject& a, const ScreenObject& b) {
+  if (a.zIndex != b.zIndex) return a.zIndex < b.zIndex;
+  return strcmp(a.id.c_str(), b.id.c_str()) < 0;
 }
 
 const ScreenObject* ColorScreenRenderer::getActivePanel(const ScreenObject& tabControl) const {
@@ -1182,9 +1331,7 @@ const ScreenObject* ColorScreenRenderer::getActivePanel(const ScreenObject& tabC
     sortedPanels.push_back(&panel);
   }
   std::sort(sortedPanels.begin(), sortedPanels.end(),
-    [](const ScreenObject* a, const ScreenObject* b) {
-      return a->zIndex < b->zIndex;
-    });
+    [](const ScreenObject* a, const ScreenObject* b) { return zOrderLess(*a, *b); });
 
   for (const ScreenObject* panel : sortedPanels) {
     if (evaluateVisibilityCondition(topicValue, panel->properties.comparisonOperator, panel->properties.comparisonValue)) {
@@ -1203,10 +1350,7 @@ bool ColorScreenRenderer::renderTabControl(const ScreenObject& obj, const String
   // zIndex order among the panel's own children, same as renderScreen()'s
   // top-level sort.
   std::vector<ScreenObject> sortedChildren = activePanel->children;
-  std::sort(sortedChildren.begin(), sortedChildren.end(),
-    [](const ScreenObject& a, const ScreenObject& b) {
-      return a.zIndex < b.zIndex;
-    });
+  std::sort(sortedChildren.begin(), sortedChildren.end(), zOrderLess);
 
   for (const auto& child : sortedChildren) {
     // Child coordinates are relative to the tab-control's own origin, not
@@ -1274,8 +1418,7 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   currentScreenBg_ = bgTransparent ? 0xFFFF : screenBg;
 
   std::vector<ScreenObject> sortedObjects = screen.objects;
-  std::sort(sortedObjects.begin(), sortedObjects.end(),
-            [](const ScreenObject& a, const ScreenObject& b) { return a.zIndex < b.zIndex; });
+  std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
 
   for (const auto& obj : sortedObjects) {
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
@@ -1304,8 +1447,7 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
   canvas_->fillRect(rx, ry, rw, rh, currentScreenBg_);
 
   std::vector<ScreenObject> sortedObjects = screen.objects;
-  std::sort(sortedObjects.begin(), sortedObjects.end(),
-            [](const ScreenObject& a, const ScreenObject& b) { return a.zIndex < b.zIndex; });
+  std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
   // Was den Ausschnitt nicht beruehrt, wird gar nicht erst gezeichnet.
   //
   // Nur zu clippen genuegt hier nicht: renderObject() laedt fuer Icons und

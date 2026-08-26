@@ -84,6 +84,7 @@ bool WiFiSetupServer::start() {
       return false;
     }
     Serial.println("[WiFiSetupServer] WiFi.softAP() succeeded");
+    startCaptivePortalDns();
     s_apClientConnected = false;
     apEnteredAtMs_ = millis();
     lastRenderedCountdownState_ = -1;
@@ -112,6 +113,27 @@ bool WiFiSetupServer::start() {
   return true;
 }
 
+// Die zweite Haelfte des Captive Portals: "*" faengt jeden Namen, also
+// landet die Verbindungspruefung des Telefons bei handleNotFound() und das
+// Portal oeffnet sich von selbst.
+//
+// Bis 2026-08-25 stand das nur in startAP(). start() - der Weg, den das
+// Geraet beim Booten nimmt, wenn es sein WLAN nicht findet - brachte einen
+// Access Point ohne Portal hervor: verbinden ging, es kam nur nie eine Seite.
+// Ausgerechnet der Fall, den man unvorbereitet trifft, war der unbequeme;
+// der geplante Weg ueber die Halte-Geste hatte sein Portal. Jetzt ein
+// Aufruf an beiden Stellen statt zweier Kopien, die auseinanderlaufen
+// koennen.
+void WiFiSetupServer::startCaptivePortalDns() {
+  dnsServer_ = new DNSServer();
+  dnsServer_->setErrorReplyCode(DNSReplyCode::NoError);
+  if (!dnsServer_->start(53, "*", AP_IP)) {
+    Serial.println("[WiFiSetupServer] DNS server would not start - the portal will not open by itself");
+    delete dnsServer_;
+    dnsServer_ = nullptr;
+  }
+}
+
 bool WiFiSetupServer::startAP() {
   if (running_) stop();
   if (!LittleFS.begin(false)) return false;
@@ -124,16 +146,7 @@ bool WiFiSetupServer::startAP() {
   s_apClientConnected = false;
   apEnteredAtMs_ = millis();
 
-  // The captive portal's other half - see dnsServer_'s comment. "*" catches
-  // every name, so whatever the phone looks up resolves here and its
-  // connectivity check reaches handleNotFound below.
-  dnsServer_ = new DNSServer();
-  dnsServer_->setErrorReplyCode(DNSReplyCode::NoError);
-  if (!dnsServer_->start(53, "*", AP_IP)) {
-    Serial.println("[WiFiSetupServer] DNS server would not start - the portal will not open by itself");
-    delete dnsServer_;
-    dnsServer_ = nullptr;
-  }
+  startCaptivePortalDns();
 
   webServer_ = new WebServer(80);
   registerRoutes();

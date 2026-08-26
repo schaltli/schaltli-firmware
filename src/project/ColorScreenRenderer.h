@@ -143,6 +143,16 @@ private:
   bool renderIcon(const ScreenObject& obj);
   bool renderSoftwareButton(const ScreenObject& obj, bool isPressed);
   bool renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex);
+  // Switch marker bar - solid for a confirmed marked state, hollow while a
+  // write is unconfirmed. Geometry constants live next to the definition in
+  // ColorScreenRenderer.cpp, mirroring render-switch.ts.
+  void drawSwitchBar(int x, int y, int width, uint16_t color, bool hollow);
+  // One Switch state's icon + label inside the content band, shared by both
+  // modes so a state cannot look different depending on which drew it.
+  void drawSwitchStateContent(const SwitchState& state, const String& iconPath,
+                              int x, int width, int bandTop, int bandHeight,
+                              uint16_t textColor, const BdfFont* font,
+                              int16_t fontAscent, int16_t fontDescent);
   bool renderMqttDataLine(const ScreenObject& obj);
 
   // Recurses into the active panel's children (offset-copies with
@@ -186,7 +196,16 @@ private:
   // operators (a state's readValue is arbitrary text, e.g. "high", not
   // necessarily a number). -1 if no topic is set, no state matches, or no
   // retained value has arrived yet.
+  //
+  // Public since 2026-08-25: main.cpp's tap handler needs it to work out
+  // which state a single-area Switch should advance to. Recomputing "which
+  // state is active" over there would be a second copy of the rule, and the
+  // segment-width comment in dispatchTapAt already records what happens
+  // when the drawing and the hit-testing disagree about the same geometry.
+ public:
   int getActiveSwitchStateIndex(const ScreenObject& obj) const;
+
+ private:
 
   void drawTextBox(const ScreenObject& obj, const String& displayText, bool drawBorder = true);
 

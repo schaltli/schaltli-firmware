@@ -393,8 +393,11 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
 
   // Switch properties - see ProjectTypes.h's ObjectProperties comment.
   props.writeTopic = propsJson["writeTopic"] | "";
+  // Anything that is not "single" is segmented, including the key being
+  // absent entirely - which is what every project exported before
+  // 2026-08-25 looks like.
+  props.mode = propsJson["mode"] | "segmented";
   props.activeBackgroundColor = propsJson["activeBackgroundColor"] | "#2563eb";
-  props.activeTextColor = propsJson["activeTextColor"] | "#ffffff";
   if (propsJson["states"].is<JsonArray>()) {
     props.states = parseSwitchStates(propsJson["states"]);
   }
@@ -413,6 +416,7 @@ std::vector<SwitchState> ProjectLoader::parseSwitchStates(JsonArray statesArray)
     state.writeValue = stateJson["writeValue"] | "";
     state.iconPath = resolveAssetPath(stateJson["path"] | "");
     state.iconPathActive = resolveAssetPath(stateJson["pathActive"] | "");
+    state.showMarker = stateJson["showMarker"] | false;
     states.push_back(state);
   }
 

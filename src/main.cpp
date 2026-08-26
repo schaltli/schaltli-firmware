@@ -1258,9 +1258,27 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   // trifft der Finger ein anderes Segment als das, auf das er zeigt.
   const int anzahl = (int)treffer->properties.states.size();
   if (anzahl <= 0 || treffer->properties.writeTopic.isEmpty()) return false;
-  int index = ((int)(x - treffer->x) * anzahl) / treffer->width;
-  if (index < 0) index = 0;
-  if (index >= anzahl) index = anzahl - 1;
+
+  int index;
+  if (treffer->properties.mode == "single") {
+    // Einzelflaeche (2026-08-25): die ganze Flaeche ist ein Ziel, und ein
+    // Tipp geht zum naechsten Zustand in der Liste, am Ende zurueck auf
+    // Null. Bei zwei Zustaenden ist das ein Umschalter, bei dreien ein
+    // Zyklus - deshalb gibt es keinen "genau zwei"-Sonderfall zu behandeln.
+    //
+    // Der aktive Index kommt aus dem Renderer, nicht aus einer zweiten
+    // Kopie derselben Regel hier: was gezeichnet wird und was getippt wird,
+    // muessen sich ueber denselben Zustand einig sein.
+    if (screenRenderer == nullptr) return false;
+    const int aktiv = screenRenderer->getActiveSwitchStateIndex(*treffer);
+    // Noch kein Retained-Wert: die Kachel zeigt "?", und ein Tipp faengt
+    // vorne an, statt gar nichts zu tun.
+    index = (aktiv < 0) ? 0 : (aktiv + 1) % anzahl;
+  } else {
+    index = ((int)(x - treffer->x) * anzahl) / treffer->width;
+    if (index < 0) index = 0;
+    if (index >= anzahl) index = anzahl - 1;
+  }
 
   const String &wert = treffer->properties.states[index].writeValue;
   if (wert.isEmpty()) return false;

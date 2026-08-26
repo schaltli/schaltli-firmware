@@ -91,6 +91,11 @@ private:
   unsigned long apEnteredAtMs_ = 0;
   int lastRenderedCountdownState_ = -1;  // -1 = nothing rendered yet, -2 = "connected" already rendered, else seconds left last shown
 
+  // Beide Wege in den AP-Modus brauchen dasselbe Portal - siehe die
+  // Definition. Frueher startete nur startAP() den DNS, und ausgerechnet
+  // der Weg, den ein Nutzer unvorbereitet trifft, hatte keins.
+  void startCaptivePortalDns();
+
   static const char* AP_SSID;
   static const char* AP_PASSWORD;
   static const IPAddress AP_IP;
