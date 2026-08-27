@@ -20,6 +20,49 @@ String resolveAssetPath(const String& path) {
   if (path.isEmpty() || path.charAt(0) == '/') return path;
   return "/PROJECT/" + path;
 }
+
+// Das Projektdokument aus dem PSRAM statt aus dem internen Heap.
+//
+// Warum (2026-08-26): der dritte Screen liess das Panel mit "no project yet"
+// stehen. project.json war von 20.863 auf 37.922 Bytes gewachsen, der alte
+// Code forderte dafuer das 1,5-fache AM STUECK aus dem internen Heap -
+// 56.883 Bytes gegen gemessene 43.036 frei. Kein Fehler im Projekt: es
+// passte schlicht nicht mehr.
+//
+// Der interne Heap ist auf diesem Board die knappe Ressource (LVGL-Puffer,
+// WiFi, TLS), waehrend 8 MB PSRAM danebenliegen und fuer Panel-Schatten und
+// Schriften laengst genutzt werden. Ein Projektdokument gehoert dorthin: es
+// wird einmal beim Laden aufgebaut, nicht in einem Interrupt angefasst, und
+// die etwas langsameren Zugriffe fallen gegen einen Dateiparse nicht ins
+// Gewicht.
+//
+// ArduinoJson 7 laesst das Dokument ausserdem von selbst wachsen. Damit
+// entfaellt die ganze Schaetzerei - das feste Vorabmass, der 4096er Boden
+// und die ESP.getMaxAllocHeap()-Pruefung, die dieses Board schon einmal
+// komplett blockiert hatte (siehe die Notiz vom 2026-08-10 weiter unten in
+// der Versionsgeschichte).
+//
+// Faellt PSRAM aus irgendeinem Grund aus, wird auf den normalen Heap
+// zurueckgegriffen - dann gilt wieder die alte Grenze, aber das Geraet
+// laedt, statt gar nichts zu tun.
+struct PsramAllocator : ArduinoJson::Allocator {
+  void* allocate(size_t size) override {
+    void* p = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    return p ? p : malloc(size);
+  }
+  void deallocate(void* ptr) override {
+    heap_caps_free(ptr);  // kennt beide Herkuenfte
+  }
+  void* reallocate(void* ptr, size_t new_size) override {
+    void* p = heap_caps_realloc(ptr, new_size, MALLOC_CAP_SPIRAM);
+    return p ? p : realloc(ptr, new_size);
+  }
+};
+
+PsramAllocator& psramAllocator() {
+  static PsramAllocator allocator;
+  return allocator;
+}
 }  // namespace
 
 ProjectLoader::ProjectLoader() : loaded_(false) {}
@@ -47,53 +90,37 @@ bool ProjectLoader::loadProject(const String& projectPath) {
 }
 
 bool ProjectLoader::parseJSONFromFile(File& file) {
-  // Parse directly from file stream to avoid loading entire JSON into memory
-  size_t fileSize = file.size();
-  size_t bufferSize = fileSize * 3 / 2;  // 1.5x file size
-  // Floor was 32768 - an arbitrary "reasonable minimum" that had nothing to
-  // do with what ArduinoJson actually needs for a small project, and on
-  // this specific hardware, ESP.getMaxAllocHeap() at this point in boot
-  // (right after WiFi connects, before this call) is a *deterministic*
-  // 31732 bytes - not fragmentation noise, the same exact number across
-  // every boot measured (2026-08-10, building the M5 Dial HIL fixture).
-  // A 32768 floor is unconditionally 1036 bytes above that ceiling, so it
-  // failed EVERY project load on this device, regardless of actual project
-  // size - even a 598-byte fixture with a single box object. 4096 is still
-  // generous slack over the 1.5x-of-actual-file-size estimate for anything
-  // this floor could plausibly matter for (a tiny-but-deeply-nested
-  // project), while leaving ~27KB of margin under the real ceiling instead
-  // of exceeding it.
-  if (bufferSize < 4096) bufferSize = 4096;
+  // Aus dem Dateistrom, damit die Datei nicht zusaetzlich als String im
+  // Speicher liegt - und in ein Dokument, das aus dem PSRAM waechst.
+  //
+  // Was hier bis 2026-08-26 stand und warum es weg ist: eine Schaetzung
+  // (Dateigroesse x 1,5), ein Mindestmass und eine Pruefung gegen
+  // ESP.getMaxAllocHeap(). Diese Kette hatte das Board schon zweimal
+  // blockiert. Beim ersten Mal (2026-08-10) war das Mindestmass von 32768
+  // unconditional groesser als der hier verfuegbare Block, was JEDEN
+  // Projektladevorgang scheitern liess - auch den einer 598-Byte-Vorlage.
+  // Beim zweiten Mal (2026-08-26) sprengte der dritte Screen die Grenze:
+  // 56.883 Bytes gefordert, 43.036 frei, das Panel blieb auf "no project
+  // yet" stehen. Beide Male war nicht das Projekt zu gross, sondern die
+  // Annahme falsch.
+  //
+  // ArduinoJson 7 laesst das Dokument bedarfsgerecht wachsen. Es gibt also
+  // nichts mehr zu schaetzen, und mit PsramAllocator kommt der Speicher aus
+  // den 8 MB PSRAM statt aus dem knappen internen Heap.
+  JsonDocument doc(&psramAllocator());
 
-  // Check if we have enough memory
-  if (ESP.getMaxAllocHeap() < bufferSize) {
-    Serial.printf("[ProjectLoader] Not enough contiguous heap to load %s (need %u, have %u)\n",
-                  file.name(), (unsigned)bufferSize, (unsigned)ESP.getMaxAllocHeap());
-    return false;
-  }
-  
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-  DynamicJsonDocument doc(bufferSize);
-  #pragma GCC diagnostic pop
-  
-  // Parse directly from file stream
-  DeserializationError error = deserializeJson(doc, file, 
+  DeserializationError error = deserializeJson(doc, file,
                                                 DeserializationOption::NestingLimit(30));
-  
+
   if (error) {
+    Serial.printf("[ProjectLoader] %s laesst sich nicht parsen: %s (%u Bytes)\n",
+                  file.name(), error.c_str(), (unsigned)file.size());
     return false;
   }
 
-  // Safety net, not the fix itself - parseScreens()'s reserve() calls are
-  // what actually prevent the allocation spike this guards against. Kept
-  // regardless: reserve() can itself still throw std::bad_alloc if even a
-  // single correctly-sized allocation doesn't fit (a project so large the
-  // ESP.getMaxAllocHeap() check above, measured before this document's own
-  // large buffer existed, no longer reflects reality) - same "fail this
-  // one load, don't take the device down" outcome the check above already
-  // establishes as this function's contract, just covering the case that
-  // check can't predict.
+  // Bleibt: parseScreens()' reserve() kann weiterhin std::bad_alloc werfen,
+  // wenn selbst eine einzelne richtig bemessene Zuteilung nicht passt. Dann
+  // soll dieser eine Ladevorgang scheitern und nicht das Geraet.
   try {
     return parseJSONDocument(doc);
   } catch (const std::exception& e) {
@@ -103,24 +130,16 @@ bool ProjectLoader::parseJSONFromFile(File& file) {
 }
 
 bool ProjectLoader::parseJSON(const String& jsonContent) {
-  // Allocate sufficient memory for large project files with many objects
-  // For 66KB JSON file, we need ~100KB buffer (1.5x rule of thumb)
-  size_t bufferSize = jsonContent.length() * 3 / 2;
-  // See parseJSONFromFile()'s identical fix (2026-08-10) for why this floor
-  // was lowered from 32768 - it broke every project load on this hardware.
-  if (bufferSize < 4096) bufferSize = 4096;
-  
-  // Suppress deprecation warning - DynamicJsonDocument is still the correct choice
-  // for large, variable-sized JSON in ArduinoJson 7
-  #pragma GCC diagnostic push
-  #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-  DynamicJsonDocument doc(bufferSize);
-  #pragma GCC diagnostic pop
-  
-  DeserializationError error = deserializeJson(doc, jsonContent, 
+  // Gleiche Begruendung wie in parseJSONFromFile(): aus dem PSRAM, ohne
+  // Vorabmass, weil ArduinoJson 7 selbst waechst.
+  JsonDocument doc(&psramAllocator());
+
+  DeserializationError error = deserializeJson(doc, jsonContent,
                                                 DeserializationOption::NestingLimit(30));
-  
+
   if (error) {
+    Serial.printf("[ProjectLoader] Projekt-JSON laesst sich nicht parsen: %s (%u Bytes)\n",
+                  error.c_str(), (unsigned)jsonContent.length());
     return false;
   }
 
