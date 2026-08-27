@@ -1399,6 +1399,54 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
   return false;
 }
 
+void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, int16_t dx, int16_t dy,
+                                       int16_t x, int16_t y, const ScreenObject*& treffer,
+                                       int16_t& objX, int16_t& objY) const {
+  // Dieselbe Sortierung wie renderScreen() und renderTabControl(), damit
+  // "zuletzt gezeichnet" hier und dort dasselbe heisst.
+  std::vector<const ScreenObject*> sorted;
+  sorted.reserve(objects.size());
+  for (const auto& o : objects) sorted.push_back(&o);
+  std::sort(sorted.begin(), sorted.end(),
+            [](const ScreenObject* a, const ScreenObject* b) { return zOrderLess(*a, *b); });
+
+  for (const ScreenObject* o : sorted) {
+    if (o->type == "tab-control") {
+      // Nur das sichtbare Panel. Wuerde hier ueber alle Panels gesucht,
+      // traefe der Finger Schalter, die gar nicht auf dem Glas stehen.
+      const ScreenObject* activePanel = getActivePanel(*o);
+      if (activePanel != nullptr) {
+        hitTestWalk(activePanel->children, dx + o->x, dy + o->y, x, y, treffer, objX, objY);
+      }
+      continue;
+    }
+    // Ein Panel ausserhalb eines tab-control zeichnet nichts (siehe
+    // renderObject), also faengt es auch nichts.
+    if (o->type != "Switch" && o->type != "SoftwareButton") continue;
+
+    const int16_t ox = dx + o->x;
+    const int16_t oy = dy + o->y;
+    if (x < ox || x >= ox + o->width) continue;
+    if (y < oy || y >= oy + o->height) continue;
+    treffer = o;
+    objX = ox;
+    objY = oy;
+  }
+}
+
+const ScreenObject* ColorScreenRenderer::hitTestTappable(int screenIndex, int16_t x, int16_t y,
+                                                          int16_t& objX, int16_t& objY) const {
+  if (!projectLoader_.isLoaded()) return nullptr;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return nullptr;
+
+  const ScreenObject* treffer = nullptr;
+  objX = 0;
+  objY = 0;
+  hitTestWalk(project.screens[screenIndex].objects, 0, 0, x, y, treffer, objX, objY);
+  return treffer;
+}
+
 bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedButtonId, const String& pendingSwitchId,
                                         int pendingSwitchStateIndex, const String& pressedSwitchId,
                                         int pressedSwitchStateIndex) {

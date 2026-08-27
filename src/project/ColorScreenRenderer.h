@@ -117,7 +117,30 @@ public:
                      int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
                      int pressedSwitchStateIndex = -1);
 
+  // Was an dieser Stelle obenauf liegt und einen Tipp annehmen kann, oder
+  // nullptr. `objX`/`objY` bekommen die ABSOLUTE linke obere Ecke des
+  // Treffers - der Aufrufer braucht sie fuer die Segmentrechnung, und bei
+  // einem Objekt in einem Panel ist sie nicht obj.x/obj.y.
+  //
+  // Hier statt in main.cpp, weil die Antwort an zwei Dingen haengt, die
+  // bereits hier leben: welches Panel eines tab-control gerade sichtbar ist
+  // (getActivePanel), und um wieviel dessen Kinder verschoben gezeichnet
+  // werden. Eine zweite Kopie hiesse, dass Finger und Bild ueber
+  // verschiedene Geometrien reden - dieselbe Begruendung, aus der
+  // getActiveSwitchStateIndex() am 2026-08-25 oeffentlich wurde.
+  const ScreenObject* hitTestTappable(int screenIndex, int16_t x, int16_t y,
+                                      int16_t& objX, int16_t& objY) const;
+
 private:
+  // Laeuft in Zeichenreihenfolge; der LETZTE Treffer gewinnt, weil zuletzt
+  // gezeichnet heisst obenauf. Ueber Ebenen hinweg ist das richtig, ein
+  // Vergleich roher zIndex-Werte waere es nicht: der zIndex eines
+  // Panel-Kindes gilt unter seinen Geschwistern, nicht gegen die oberste
+  // Ebene.
+  void hitTestWalk(const std::vector<ScreenObject>& objects, int16_t dx, int16_t dy,
+                   int16_t x, int16_t y, const ScreenObject*& treffer,
+                   int16_t& objX, int16_t& objY) const;
+
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
   DdfFontStore fontStore_;

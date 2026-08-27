@@ -1263,25 +1263,28 @@ static void updateDragAnimation() {
 // Switch und SoftwareButton wurden also gezeichnet und zeigten sogar ihren
 // Zustand richtig an - der kommt ueber MQTT - aber ein Tipp darauf verpuffte.
 //
-// Von oben nach unten gesucht, also in fallender zIndex-Reihenfolge: was
-// sichtbar obenauf liegt, faengt den Tipp. Verschachtelte Objekte
-// (tab-control/panel) werden bewusst NICHT durchsucht - die Kindkoordinaten
-// sind relativ zum Elternobjekt, und das ungetestet zu bauen hiesse, einen
-// Fehler einzubauen, den heute niemand bemerkt. Ein Switch in einem Panel
-// reagiert also noch nicht; das ist eine bekannte Luecke, keine stille.
+// Gesucht wird in Zeichenreihenfolge, und zwar durch den ganzen Baum -
+// ColorScreenRenderer::hitTestTappable() macht das, weil dort schon steht,
+// welches Panel eines tab-control sichtbar ist und um wieviel dessen Kinder
+// verschoben gezeichnet werden.
+//
+// Bis 2026-08-27 lief hier eine eigene Schleife nur ueber screen.objects.
+// Das war als bekannte Luecke stehengelassen worden ("ungetestet zu bauen
+// hiesse, einen Fehler einzubauen, den heute niemand bemerkt"), weil kein
+// Projekt einen Switch in einem Panel hatte. Die Luefterseite im Fahrzeug
+// hat vier davon: Ein-/Auszug und Deckel liegen in den Panels, der
+// Modusschalter darueber auf der obersten Ebene. Genau das war das
+// Krankheitsbild - der obere Schalter ging, die vier darunter nicht, und
+// nichts deutete darauf hin, dass die Verschachtelung der Unterschied war.
 static bool dispatchTapAt(int16_t x, int16_t y) {
   if (!projectLoader.isLoaded()) return false;
-  const ProjectConfig &project = projectLoader.getProject();
-  if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
-  const Screen &screen = project.screens[currentScreenIndex];
+  if (screenRenderer == nullptr) return false;
 
-  const ScreenObject *treffer = nullptr;
-  for (const auto &obj : screen.objects) {
-    if (obj.type != "Switch" && obj.type != "SoftwareButton") continue;
-    if (x < obj.x || x >= obj.x + obj.width) continue;
-    if (y < obj.y || y >= obj.y + obj.height) continue;
-    if (treffer == nullptr || obj.zIndex >= treffer->zIndex) treffer = &obj;
-  }
+  // Absolute Ecke des Treffers: bei einem Objekt in einem Panel ist das
+  // NICHT treffer->x/y, und die Segmentrechnung weiter unten haengt daran.
+  int16_t objX = 0;
+  int16_t objY = 0;
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
   if (treffer == nullptr) return false;
 
   if (treffer->type == "SoftwareButton") {
@@ -1312,7 +1315,7 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
     // vorne an, statt gar nichts zu tun.
     index = (aktiv < 0) ? 0 : (aktiv + 1) % anzahl;
   } else {
-    index = ((int)(x - treffer->x) * anzahl) / treffer->width;
+    index = ((int)(x - objX) * anzahl) / treffer->width;
     if (index < 0) index = 0;
     if (index >= anzahl) index = anzahl - 1;
   }
