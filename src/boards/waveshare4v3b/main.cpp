@@ -51,6 +51,7 @@ static void setupRenderStack();
 static void renderAndPresent(const char *reason);
 static void benchmarkFill();
 static void setupNetworking();
+static void enterSetupMode();
 
 // --- networking ----------------------------------------------------------
 // All six of these classes compiled for this board without a single change,
@@ -65,6 +66,27 @@ static DeployManager deployManager;
 static TestInterfaceServer testInterface;
 static DeviceProtocol protocol(mqttClient);
 static bool topicsSubscribed = false;
+static bool setupModeActive = false;
+
+// The reserved setup gesture, same numbers as the knob: hold a finger still
+// for five seconds, with a countdown from one second in so it is
+// discoverable rather than secret. It has to exist, and its absence was a
+// real hole - once a board has WiFi credentials it never starts its AP
+// again, so without this there is no way back into setup to add a broker
+// short of erasing NVS.
+//
+// Identical to the knob's on purpose: entering setup is one of the
+// cross-device building blocks that were agreed to be the same everywhere
+// rather than per board. The gesture logic below is a candidate to share
+// once a second board has needed it in the same shape - which is now.
+static const unsigned long SETUP_HOLD_MS = 5000;
+static const unsigned long SETUP_HOLD_FEEDBACK_MS = 1000;
+static const int SETUP_HOLD_MAX_DRIFT = 40;
+static bool holdActive = false;
+static int16_t holdStartX = 0, holdStartY = 0;
+static unsigned long holdStartMs = 0;
+static int holdLastSecondShown = -1;
+static bool holdConsumed = false;
 
 // --- shared I2C bus -------------------------------------------------------
 // Touch, the CH422G expander and the RTC all sit on the same two lines.
@@ -386,6 +408,19 @@ static void subscribeToProjectTopics()
   Serial.printf("[4v3b] subscribed to %d project topic(s)\n", (int)topics.size());
 }
 
+static void enterSetupMode()
+{
+  if (setupModeActive || !wifiSetupServer) return;
+  Serial.println("[4v3b] entering setup mode - starting AP");
+  setupModeActive = true;
+  // The test interface owns port 80 in normal operation and the setup server
+  // wants the same port, so it has to be stopped first rather than left to
+  // fail a bind that nothing checks. In setup mode the device is serving no
+  // snapshots and accepting no deploys anyway.
+  testInterface.stop();
+  wifiSetupServer->startAP();
+}
+
 static void setupNetworking()
 {
   if (!canvas) return;
@@ -572,7 +607,34 @@ static void blankOnTap()
 
 void loop()
 {
-  if (wifiSetupServer) wifiSetupServer->handleClient();
+  // Setup mode owns the device completely: it draws its own screen, it is
+  // the only thing on port 80, and nothing else may run.
+  //
+  // Both of the first version's faults came from not doing that. Rendering
+  // continued underneath, so letting go of the finger painted the project
+  // back over the setup screen and it looked as though the AP had gone. And
+  // tick() was never called at all - which is what draws that screen and
+  // reports the idle timeout, so the AP sat there with nothing on the glass
+  // explaining it.
+  if (setupModeActive)
+  {
+    wifiSetupServer->handleClient();
+    // Leaving restarts rather than tearing the AP down and resuming in
+    // place, the same choice the knob makes and for the same reason: a
+    // restart has one well-tested path back into normal operation, while
+    // unwinding AP mode by hand has none. It also means setupModeActive
+    // never has to be cleared - which is the second fault, where a first
+    // entry latched the flag and every later hold did nothing.
+    if (wifiSetupServer->tick() || wifiSetupServer->exitRequested())
+    {
+      Serial.println("[4v3b] leaving setup mode - restarting");
+      delay(200);
+      ESP.restart();
+    }
+    delay(5);
+    return;
+  }
+
   testInterface.handleClient();
   mqttClient.loop();
   subscribeToProjectTopics();
@@ -605,6 +667,65 @@ void loop()
   // than the panel's native orientation.
   Gt911::Point points[Gt911::MAX_POINTS];
   uint8_t n = touch.read(points, Gt911::MAX_POINTS);
+
+  // --- reserved setup hold, checked before anything else claims the touch
+  if (!setupModeActive && n > 0)
+  {
+    if (!holdActive)
+    {
+      holdActive = true;
+      holdStartX = (int16_t)points[0].x;
+      holdStartY = (int16_t)points[0].y;
+      holdStartMs = millis();
+      holdLastSecondShown = -1;
+      holdConsumed = false;
+    }
+    const int dx = (int)points[0].x - holdStartX;
+    const int dy = (int)points[0].y - holdStartY;
+    if (abs(dx) <= SETUP_HOLD_MAX_DRIFT && abs(dy) <= SETUP_HOLD_MAX_DRIFT)
+    {
+      const unsigned long held = millis() - holdStartMs;
+      if (held >= SETUP_HOLD_MS)
+      {
+        holdConsumed = true;
+        enterSetupMode();
+        return;
+      }
+      if (held >= SETUP_HOLD_FEEDBACK_MS)
+      {
+        holdConsumed = true;
+        const int secondsLeft = (int)((SETUP_HOLD_MS - held + 999) / 1000);
+        if (secondsLeft != holdLastSecondShown)
+        {
+          holdLastSecondShown = secondsLeft;
+          if (displayAdapter)
+            displayAdapter->showLines({"Setup in " + String(secondsLeft) + "s", "loslassen zum Abbrechen"});
+        }
+      }
+    }
+    else
+    {
+      // Moved too far - this is a drag, not a hold. Restart from here so a
+      // finger that settles after wandering can still reach five seconds.
+      holdStartX = (int16_t)points[0].x;
+      holdStartY = (int16_t)points[0].y;
+      holdStartMs = millis();
+      holdLastSecondShown = -1;
+    }
+  }
+  else if (n == 0 && holdActive)
+  {
+    holdActive = false;
+    // A hold that showed a countdown and was then released must not also
+    // count as a tap, or letting go to cancel would trigger whatever the
+    // tap does.
+    if (holdConsumed)
+    {
+      holdConsumed = false;
+      renderAndPresent("hold cancelled");
+      return;
+    }
+  }
 
   // Edge, not level. A held finger reports the same coordinates about a
   // hundred times a second - measured on this board, identical to the last
