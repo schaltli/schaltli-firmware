@@ -3,7 +3,11 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 
-#include "../ddf_zip.h"
+// By name, not by relative path: this file is shared by every board, and
+// the header it wants is the one the current build's include path
+// provides. "../ddf_zip.h" pointed at whichever board happened to keep
+// its copy in src/, which is how the 4.3B came to serve the knob's DDF.
+#include "ddf_zip.h"
 #include "ProjectInstaller.h"
 
 namespace {

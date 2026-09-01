@@ -48,13 +48,14 @@ const sourceDir = process.argv.slice(2).find((a) => !a.startsWith("--")) || DEFA
 // next to its own board's code.
 function outputsFor(dir) {
   const name = path.basename(path.resolve(dir))
-  if (name === "ddf-source") {
-    return {
-      header: path.join(REPO, "src", "ddf_zip.h"),
-      deviceInfo: path.join(REPO, "src", "DeviceInfo.h"),
-    }
-  }
-  const boardDir = path.join(REPO, "src", "boards", "waveshare" + name.replace(/^ddf-source-/, ""))
+  // The knob's own source directory is still called "ddf-source" for
+  // continuity, but its outputs moved into src/boards/waveshareknob1v8/
+  // along with everything else board-specific: while DeviceInfo.h and
+  // ddf_zip.h sat in src/, every shared .cpp that included them by name got
+  // them by proximity, and the second board shipped the first one's
+  // identity and DDF.
+  const boardName = name === "ddf-source" ? "knob1v8" : name.replace(/^ddf-source-/, "")
+  const boardDir = path.join(REPO, "src", "boards", "waveshare" + boardName)
   if (!fs.existsSync(boardDir)) {
     console.error(`no board directory for DDF source "${name}": expected ${boardDir}`)
     process.exit(1)
