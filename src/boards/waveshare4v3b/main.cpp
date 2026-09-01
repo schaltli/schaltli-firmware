@@ -8,6 +8,18 @@
 // still reachable by tapping. They are in the history if a measurement needs
 // repeating.
 //
+// NO SWIPING ON THIS BOARD, and that is a decision rather than an omission.
+// Rendering during a drag is impossible here - a real project takes 782ms to
+// draw - so the only way is the knob's: pre-render the neighbour and move
+// finished pixels. That was built and measured on the panel. One frame costs
+// 72ms composing straight into the framebuffer, 13.8 fps, against a measured
+// 43ms floor for merely writing that much memory. It is bandwidth, not
+// inefficiency, and following a finger needs about twice that rate. Half-row
+// compositing during motion reached ~28 fps and was judged on the glass:
+// "sieht nicht so toll aus". Both were built, both were looked at, and the
+// answer was no. Screen changes belong on a tab-control or a button here,
+// where nobody expects anything to track a finger.
+//
 // Pin map and RGB timings are Waveshare's own, taken from
 // waveshareteam/ESP32-S3-Touch-LCD-4.3B (Apache-2.0),
 // examples/Arduino/examples/08_DrawColorBar/waveshare_lcd_port.h, and
@@ -391,8 +403,9 @@ void loop()
     }
     else
     {
-      // Moved too far - a drag, not a hold. Restart from here so a finger
-      // that settles after wandering can still reach five seconds.
+      // Moved too far for a hold. Nothing else claims a horizontal drag
+      // on this board, so the reference simply restarts from here - a
+      // finger that wandered and then settled can still reach five seconds.
       holdStartX = (int16_t)points[0].x;
       holdStartY = (int16_t)points[0].y;
       holdStartMs = millis();
@@ -402,9 +415,9 @@ void loop()
   else if (holdActive)
   {
     holdActive = false;
-    // A hold that showed a countdown and was then released must not also
-    // count as anything else, and the panel has to be put back because the
-    // countdown drew over it.
+    // A hold that showed a countdown and was then released must not count as
+    // anything else, and the panel has to be put back because the countdown
+    // drew over it.
     if (holdConsumed)
     {
       holdConsumed = false;
