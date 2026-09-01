@@ -55,6 +55,33 @@ static const char TEST_PROJECT_JSON[] = R"JSON({
           "zIndex": 3,
           "properties": { "color": "#00d0d0", "strokeWidth": 2 } }
       ]
+    },
+    {
+      "id": "screen-2",
+      "name": "Real line geometry",
+      "backgroundColor": "#101820",
+      "objects": [
+        { "id": "l01", "type": "line", "x": 20, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l02", "type": "line", "x": 55, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l03", "type": "line", "x": 90, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l04", "type": "line", "x": 125, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l05", "type": "line", "x": 160, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l06", "type": "line", "x": 195, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l07", "type": "line", "x": 230, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l08", "type": "line", "x": 265, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l09", "type": "line", "x": 300, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l10", "type": "line", "x": 335, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#ffd000", "strokeWidth": 1 } },
+        { "id": "l11", "type": "line", "x": 370, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l12", "type": "line", "x": 405, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l13", "type": "line", "x": 440, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l14", "type": "line", "x": 475, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l15", "type": "line", "x": 510, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l16", "type": "line", "x": 545, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l17", "type": "line", "x": 580, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l18", "type": "line", "x": 615, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l19", "type": "line", "x": 650, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } },
+        { "id": "l20", "type": "line", "x": 685, "y": 100, "width": 20, "height": 260, "zIndex": 1, "properties": { "color": "#00d0d0", "strokeWidth": 1 } }
+      ]
     }
   ]
 })JSON";

@@ -251,18 +251,30 @@ void setup()
 // streaming from continuously. Which of the two dominates decides whether
 // the knob's transition machinery can be ported at all, and that is a
 // question for measurement rather than for my earlier guess.
+// Which screen is showing. A tap swaps them, so both the box-heavy screen
+// and the line-heavy one get timed repeatedly from a warm system instead of
+// once at boot.
+//
+// Screen 1 carries line geometry lifted straight out of a real project:
+// twenty lines of 20x260 at stroke 1, which is what one screen of
+// test-projects/combined-test-project.zip actually contains. It exists to
+// keep an honest number next to the synthetic one - a 720x140 diagonal at
+// stroke 4 costs 530ms, twenty real lines cost 61ms together, and only the
+// second figure says anything about this board in use.
+static int currentScreen = 0;
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
 
   uint32_t t0 = micros();
-  bool ok = renderer->renderScreen(0);
+  bool ok = renderer->renderScreen(currentScreen);
   uint32_t t1 = micros();
   gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
   uint32_t t2 = micros();
 
-  Serial.printf("[4v3b] render(%s): %s | draw %lums, blit %lums, total %lums\n",
-                reason, ok ? "ok" : "FAILED",
+  Serial.printf("[4v3b] render(screen %d, %s): %s | draw %lums, blit %lums, total %lums\n",
+                currentScreen, reason, ok ? "ok" : "FAILED",
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000),
                 (unsigned long)((t2 - t0) / 1000));
 }
@@ -317,6 +329,7 @@ static void setupRenderStack()
   renderer = new ColorScreenRenderer(projectLoader, canvas);
   renderAndPresent("first");
   benchmarkFill();
+
 }
 
 // Three numbers that between them say where a slow redraw actually goes.
@@ -483,8 +496,11 @@ void loop()
     prefs.putUInt("taps", tapCount);
     Serial.printf("[4v3b] press edge #%lu\n", (unsigned long)tapCount);
 
-    // Re-render on every tap: repeated timings from a warm system are worth
-    // more than the single cold one at boot.
+    // Swap screens on every tap: repeated timings from a warm system are
+    // worth more than a single cold one at boot, and alternating between the
+    // box-heavy and the line-heavy screen keeps both numbers current.
+    const int screenCount = (int)projectLoader.getProject().screens.size();
+    if (screenCount > 1) currentScreen = (currentScreen + 1) % screenCount;
     renderAndPresent("tap");
   }
 
