@@ -119,6 +119,54 @@ public:
     GFXcanvas16::drawFastVLine(x, y, h, color);
   }
 
+  // Adafruit_GFX::fillRect is a loop of drawFastVLine - one call per
+  // *column*. GFXcanvas16::drawFastVLine then walks the buffer with a
+  // stride of a whole row (1600 bytes at 800px wide), so every single
+  // 16-bit write lands in a different cache line. Against PSRAM that is the
+  // worst possible access pattern, and it dominates a redraw: measured on
+  // the 4.3B, filling 768000 bytes cost 510ms through fillRect against 43ms
+  // for a plain memset of the same memory - a factor of twelve. The knob
+  // tolerates it only because a quarter of the area is a quarter of the
+  // cost (~170ms, which is its entire measured render time).
+  //
+  // Filling by *row* makes each row one contiguous run. Semantics are
+  // deliberately unchanged: the same clip rectangle applies, and the fast
+  // path is taken only at rotation 0, where the buffer layout is known to
+  // be row-major - any rotation falls back to the base implementation
+  // rather than reasoning about it. Pixel output has to stay identical, or
+  // the HIL comparisons this whole rendering stack rests on are worthless.
+  void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+    if (getRotation() != 0 || w <= 0 || h <= 0) {
+      Adafruit_GFX::fillRect(x, y, w, h, color);
+      return;
+    }
+
+    int16_t x0 = x, y0 = y, x1 = (int16_t)(x + w), y1 = (int16_t)(y + h);
+    if (clipActive_) {
+      if (x0 < clipX_) x0 = clipX_;
+      if (y0 < clipY_) y0 = clipY_;
+      if (x1 > (int16_t)(clipX_ + clipW_)) x1 = (int16_t)(clipX_ + clipW_);
+      if (y1 > (int16_t)(clipY_ + clipH_)) y1 = (int16_t)(clipY_ + clipH_);
+    }
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > WIDTH) x1 = WIDTH;
+    if (y1 > HEIGHT) y1 = HEIGHT;
+    if (x1 <= x0 || y1 <= y0) return;
+
+    uint16_t *buffer = getBuffer();
+    if (buffer == nullptr) {
+      Adafruit_GFX::fillRect(x, y, w, h, color);
+      return;
+    }
+
+    const int16_t runLength = (int16_t)(x1 - x0);
+    for (int16_t row = y0; row < y1; row++) {
+      uint16_t *p = buffer + (int32_t)row * WIDTH + x0;
+      for (int16_t i = 0; i < runLength; i++) p[i] = color;
+    }
+  }
+
   void drawFastHLine(int16_t x, int16_t y, int16_t w, uint16_t color) override {
     if (clipActive_) {
       if (w < 0) {

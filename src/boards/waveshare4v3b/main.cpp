@@ -19,8 +19,28 @@
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
 #include <Wire.h>
+#include <LittleFS.h>
 #include "Ch422g.h"
 #include "Gt911.h"
+#include "TestProjectJson.h"
+#include "../../ClippedCanvas16.h"
+#include "../../project/ProjectLoader.h"
+#include "../../project/ColorScreenRenderer.h"
+
+// --- shared rendering stack ----------------------------------------------
+// The same ColorScreenRenderer the knob and the M5 Dial run, unchanged. Its
+// output goes into an RGB565 canvas; the only board-specific part is where
+// that canvas then goes - here a straight blit to the RGB panel, with no
+// LVGL in the path. The knob composites through LVGL because it wants
+// transitions; that costs a second and third 768KB buffer on this panel and
+// is a decision to take with measurements, not before them.
+static ProjectLoader projectLoader;
+static ClippedCanvas16 *canvas = nullptr;
+static ColorScreenRenderer *renderer = nullptr;
+
+static void setupRenderStack();
+static void renderAndPresent(const char *reason);
+static void benchmarkFill();
 
 // --- shared I2C bus -------------------------------------------------------
 // Touch, the CH422G expander and the RTC all sit on the same two lines.
@@ -220,7 +240,126 @@ void setup()
 
   gfx->setTextSize(2);
   gfx->setCursor(20, PANEL_H / 2 + 120);
-  gfx->print("Touch: dots follow your finger. Tap = 1s dark.");
+  gfx->print("Touch: dots follow your finger. Tap = re-render.");
+
+  setupRenderStack();
+}
+
+// Renders screen 0 into the canvas and pushes it to the panel, reporting
+// both halves separately. The split is the point: rendering is CPU against
+// PSRAM, the blit is 768KB across the same bus the panel is already
+// streaming from continuously. Which of the two dominates decides whether
+// the knob's transition machinery can be ported at all, and that is a
+// question for measurement rather than for my earlier guess.
+static void renderAndPresent(const char *reason)
+{
+  if (!renderer || !canvas) return;
+
+  uint32_t t0 = micros();
+  bool ok = renderer->renderScreen(0);
+  uint32_t t1 = micros();
+  gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
+  uint32_t t2 = micros();
+
+  Serial.printf("[4v3b] render(%s): %s | draw %lums, blit %lums, total %lums\n",
+                reason, ok ? "ok" : "FAILED",
+                (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000),
+                (unsigned long)((t2 - t0) / 1000));
+}
+
+static void setupRenderStack()
+{
+  if (!LittleFS.begin(true))
+  {
+    Serial.println("[4v3b] LittleFS mount FAILED");
+    return;
+  }
+
+  // Written out and read back through the real loader rather than parsed
+  // from the string directly: that exercises the filesystem path and the
+  // public API the deploy flow will use, instead of a shortcut that only
+  // this test would ever take.
+  File f = LittleFS.open("/render-smoke.json", "w");
+  if (!f)
+  {
+    Serial.println("[4v3b] could not open test project for writing");
+    return;
+  }
+  f.print(TEST_PROJECT_JSON);
+  f.close();
+
+  if (!projectLoader.loadProject("/render-smoke.json"))
+  {
+    Serial.println("[4v3b] loadProject FAILED");
+    return;
+  }
+  Serial.printf("[4v3b] project loaded: \"%s\", %ux%u\n",
+                projectLoader.getProject().name.c_str(),
+                projectLoader.getProject().screenWidth,
+                projectLoader.getProject().screenHeight);
+
+  // 800*480*2 = 768000 bytes. Internal SRAM has nothing like that free, so
+  // a non-null buffer here is itself the proof that it landed in PSRAM -
+  // but report where, because "it worked" and "it worked for the reason I
+  // assumed" are different claims.
+  canvas = new ClippedCanvas16(PANEL_W, PANEL_H);
+  if (!canvas || !canvas->getBuffer())
+  {
+    Serial.printf("[4v3b] FATAL: %u-byte canvas allocation failed\n",
+                  (unsigned)(PANEL_W * PANEL_H * 2));
+    return;
+  }
+  Serial.printf("[4v3b] canvas at %p (%s), psram free now %u\n",
+                canvas->getBuffer(),
+                esp_ptr_external_ram(canvas->getBuffer()) ? "PSRAM" : "internal SRAM",
+                (unsigned)ESP.getFreePsram());
+
+  renderer = new ColorScreenRenderer(projectLoader, canvas);
+  renderAndPresent("first");
+  benchmarkFill();
+}
+
+// Three numbers that between them say where a slow redraw actually goes.
+//
+// Rendering six objects costs over a second on this panel, while pushing the
+// finished 768KB to the display costs 64ms - so it is not the bus, which is
+// what I had predicted. The remaining candidates are the canvas fill path
+// and the renderer's own per-object work, and they separate cleanly:
+//
+//   memset      the floor - what the PSRAM will take, no drawing logic
+//   fillRect    the same area through GFXcanvas16's public API
+//   blit        for scale
+//
+// If fillRect is near memset, the canvas is fine and the cost is in the
+// renderer. If it is far above, the fill path is the problem and a faster
+// one is worth writing - which is a much smaller job than reworking a
+// renderer whose pixel output is HIL-verified against the designer.
+static void benchmarkFill()
+{
+  if (!canvas || !canvas->getBuffer()) return;
+
+  const size_t bytes = (size_t)PANEL_W * PANEL_H * 2;
+  uint16_t *buf = canvas->getBuffer();
+
+  uint32_t t0 = micros();
+  memset(buf, 0x00, bytes);
+  uint32_t t1 = micros();
+
+  canvas->fillRect(0, 0, PANEL_W, PANEL_H, RGB565_BLUE);
+  uint32_t t2 = micros();
+
+  gfx->draw16bitRGBBitmap(0, 0, buf, PANEL_W, PANEL_H);
+  uint32_t t3 = micros();
+
+  Serial.printf("[4v3b] fill benchmark over %u bytes: memset %lums, "
+                "canvas fillRect %lums, blit %lums\n",
+                (unsigned)bytes,
+                (unsigned long)((t1 - t0) / 1000),
+                (unsigned long)((t2 - t1) / 1000),
+                (unsigned long)((t3 - t2) / 1000));
+
+  // Put the real picture back - the benchmark just painted over it.
+  renderAndPresent("after benchmark");
 }
 
 // A tap blanks the backlight for a full second, then restores it. Self-paced
@@ -344,8 +483,9 @@ void loop()
     prefs.putUInt("taps", tapCount);
     Serial.printf("[4v3b] press edge #%lu\n", (unsigned long)tapCount);
 
-    blankOnTap();
-    wasTouched = false; // the finger is long gone after three seconds
+    // Re-render on every tap: repeated timings from a warm system are worth
+    // more than the single cold one at boot.
+    renderAndPresent("tap");
   }
 
   delay(n ? 10 : 30);
