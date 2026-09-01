@@ -24,6 +24,14 @@
 #include "Gt911.h"
 #include "TestProjectJson.h"
 #include "FontSample.h"
+#include "PanelDisplayAdapter.h"
+#include <WiFi.h>
+#include "../../NvsConfigStorage.h"
+#include "../../WiFiSetupServer.h"
+#include "../../MqttClient.h"
+#include "../../DeployManager.h"
+#include "../../TestInterfaceServer.h"
+#include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
 #include "../../project/ColorScreenRenderer.h"
@@ -42,6 +50,21 @@ static ColorScreenRenderer *renderer = nullptr;
 static void setupRenderStack();
 static void renderAndPresent(const char *reason);
 static void benchmarkFill();
+static void setupNetworking();
+
+// --- networking ----------------------------------------------------------
+// All six of these classes compiled for this board without a single change,
+// which is the second time the shared layer has proved to be what it claims.
+// What was missing was only the wiring, and that lived in the knob's
+// main.cpp rather than anywhere shareable.
+static NvsConfigStorage configStorage;
+static PanelDisplayAdapter *displayAdapter = nullptr;
+static WiFiSetupServer *wifiSetupServer = nullptr;
+static MqttClient mqttClient;
+static DeployManager deployManager;
+static TestInterfaceServer testInterface;
+static DeviceProtocol protocol(mqttClient);
+static bool topicsSubscribed = false;
 
 // --- shared I2C bus -------------------------------------------------------
 // Touch, the CH422G expander and the RTC all sit on the same two lines.
@@ -347,6 +370,95 @@ static void setupRenderStack()
   renderer = new ColorScreenRenderer(projectLoader, canvas);
   renderAndPresent("first");
   benchmarkFill();
+  setupNetworking();
+}
+
+// Subscribes to every topic the loaded project names. Done once the project
+// and the connection both exist; connect() replays its own subscription list
+// on reconnect, so this does not have to run again.
+static void subscribeToProjectTopics()
+{
+  if (topicsSubscribed || !projectLoader.isLoaded() || !mqttClient.isConnected()) return;
+  std::vector<String> topics;
+  for (const auto &t : projectLoader.getProject().topics) topics.push_back(t.topic);
+  if (!topics.empty()) mqttClient.subscribeToKeys(topics);
+  topicsSubscribed = true;
+  Serial.printf("[4v3b] subscribed to %d project topic(s)\n", (int)topics.size());
+}
+
+static void setupNetworking()
+{
+  if (!canvas) return;
+
+  displayAdapter = new PanelDisplayAdapter(*canvas, *gfx, PANEL_W, PANEL_H);
+  configStorage.begin();
+  wifiSetupServer = new WiFiSetupServer(*displayAdapter, configStorage);
+
+  WiFiCredentials creds;
+  if (!configStorage.loadWiFiCredentials(creds) || creds.ssid.isEmpty())
+  {
+    // No credentials: the setup AP is the whole user interface at this
+    // point, so the panel says so rather than sitting on a test pattern
+    // that looks like it is working.
+    Serial.println("[4v3b] no WiFi credentials - starting setup AP");
+    wifiSetupServer->startAP();
+    return;
+  }
+
+  Serial.printf("[4v3b] connecting to \"%s\"\n", creds.ssid.c_str());
+  displayAdapter->showLines({"WLAN", creds.ssid});
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
+  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
+
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("[4v3b] WiFi connect FAILED");
+    displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
+    return;
+  }
+  Serial.printf("[4v3b] WiFi ok, ip %s\n", WiFi.localIP().toString().c_str());
+
+  // The snapshot endpoint reads this canvas directly, which is what gives
+  // this board a HIL comparison at all - everything verified so far has been
+  // by eye.
+  if (testInterface.begin(*canvas)) Serial.println("[4v3b] test interface on :80");
+
+  if (creds.mqttHost.isEmpty())
+  {
+    Serial.println("[4v3b] no broker configured - skipping MQTT");
+    renderAndPresent("after wifi");
+    return;
+  }
+
+  mqttClient.configure(creds.mqttHost, (uint16_t)creds.mqttPort, creds.mqttUsername, creds.mqttPassword);
+  deployManager.setPublishStatusHandler(
+      [](const String &id, const String &state, const String &error, int percent) {
+        protocol.publishDeployStatus(id, state, error, percent);
+      });
+  deployManager.setClearTriggerHandler([]() { protocol.clearDeployTrigger(); });
+
+  // Subscribed up front rather than from the connected callback: connect()
+  // replays its subscription list on every reconnect, so queueing it once
+  // covers every later connection too.
+  mqttClient.subscribe(protocol.deviceTopic("deploy"));
+  mqttClient.setConnectedCallback([]() {
+    protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
+    Serial.println("[4v3b] published hello");
+  });
+  mqttClient.setCallback([](const String &topic, const String &payload) {
+    if (topic == protocol.deviceTopic("deploy"))
+    {
+      deployManager.handleDeployMessage(payload);
+      return;
+    }
+    projectLoader.setTopicValue(topic, payload);
+    renderAndPresent("topic");
+  });
+  mqttClient.connect();
+  Serial.printf("[4v3b] mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
+                mqttClient.getClientId().c_str());
+  renderAndPresent("after mqtt");
 
 }
 
@@ -460,6 +572,11 @@ static void blankOnTap()
 
 void loop()
 {
+  if (wifiSetupServer) wifiSetupServer->handleClient();
+  testInterface.handleClient();
+  mqttClient.loop();
+  subscribeToProjectTopics();
+
   static uint32_t last = 0;
   if (millis() - last >= 5000)
   {

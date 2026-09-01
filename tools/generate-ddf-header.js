@@ -225,6 +225,11 @@ ${lines.join("\n")}
 };
 `
 
+const zipArg = (() => {
+  const i = process.argv.indexOf("--zip")
+  return i !== -1 ? process.argv[i + 1] : null
+})()
+
 const existingHeader = fs.existsSync(HEADER) ? fs.readFileSync(HEADER, "utf8") : ""
 const deviceInfo = fs.readFileSync(DEVICE_INFO, "utf8")
 const hashPattern = /#define DDF_HASH "([^"]*)"/
@@ -233,10 +238,16 @@ const currentHash = (deviceInfo.match(hashPattern) || [])[1]
 if (checkOnly) {
   const headerStale = existingHeader !== header
   const hashStale = currentHash !== ddfHash
-  if (headerStale || hashStale) {
-    if (headerStale) console.error(`src/ddf_zip.h is stale (DDF is ${zip.length} bytes, version ${version})`)
+  // A named --zip is checked as well. The compiled header and the copy a
+  // designer reads are two artefacts of the same bytes, and the whole reason
+  // this generator exists is that two copies of one truth drift silently
+  // unless something compares them.
+  const zipStale = zipArg ? !fs.existsSync(zipArg) || !fs.readFileSync(zipArg).equals(zip) : false
+  if (headerStale || hashStale || zipStale) {
+    if (headerStale) console.error(`${path.relative(REPO, HEADER)} is stale (DDF is ${zip.length} bytes, version ${version})`)
     if (hashStale) console.error(`DeviceInfo.h DDF_HASH is "${currentHash}", the DDF bytes hash to "${ddfHash}"`)
-    console.error("Run: node tools/generate-ddf-header.js")
+    if (zipStale) console.error(`${zipArg} is missing or differs from the DDF these sources build`)
+    console.error(`Run: node tools/generate-ddf-header.js ${path.relative(REPO, sourceDir)}${zipArg ? ` --zip ${zipArg}` : ""}`)
     process.exit(1)
   }
   console.log(`Up to date (DDF ${ddfHash}, version ${version}, ${zip.length} bytes)`)
@@ -257,9 +268,7 @@ console.log(`Wrote ${path.relative(REPO, HEADER)} (${zip.length} bytes, ${ddfHas
 // repo and whose zip is checked into the designer with a test asserting the
 // two match. Deliberately the same bytes rather than a second build, so the
 // checked-in copy cannot drift from the compiled one.
-const zipArgIndex = process.argv.indexOf("--zip")
-if (zipArgIndex !== -1 && process.argv[zipArgIndex + 1]) {
-  const zipPath = process.argv[zipArgIndex + 1]
-  fs.writeFileSync(zipPath, zip)
-  console.log(`Wrote ${zipPath} (${zip.length} bytes, ${ddfHash})`)
+if (zipArg) {
+  fs.writeFileSync(zipArg, zip)
+  console.log(`Wrote ${zipArg} (${zip.length} bytes, ${ddfHash})`)
 }
