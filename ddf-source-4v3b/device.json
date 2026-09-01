@@ -1,0 +1,134 @@
+{
+  "ddfVersion": "1.1",
+  "systemGeneration": "1.0",
+  "device": {
+    "id": "waveshare-touch-lcd-4v3b",
+    "name": "Waveshare ESP32-S3-Touch-LCD-4.3B",
+    "firmwareRepo": "screenbee-waveshare-1v8"
+  },
+  "screen": {
+    "width": 800,
+    "height": 480,
+    "colorDepth": "24bit"
+  },
+  "adornment": {
+    "svgPath": "adornment.svg"
+  },
+  "fonts": [
+    {
+      "id": "font-helvR08",
+      "displayName": "Helvetica 8px",
+      "internalName": "u8g2_font_helvR08_tf",
+      "file": "fonts/helvR08.bdf",
+      "size": 12,
+      "ascent": 10,
+      "descent": 2
+    },
+    {
+      "id": "font-helvR12",
+      "displayName": "Helvetica 12px",
+      "internalName": "u8g2_font_helvR12_tf",
+      "file": "fonts/helvR12.bdf",
+      "size": 18,
+      "ascent": 14,
+      "descent": 4
+    },
+    {
+      "id": "font-helvR18",
+      "displayName": "Helvetica 18px",
+      "internalName": "u8g2_font_helvR18_tf",
+      "file": "fonts/helvR18.bdf",
+      "size": 27,
+      "ascent": 22,
+      "descent": 5
+    },
+    {
+      "id": "font-helvR24",
+      "displayName": "Helvetica 24px",
+      "internalName": "u8g2_font_helvR24_tf",
+      "file": "fonts/helvR24.bdf",
+      "size": 35,
+      "ascent": 28,
+      "descent": 7
+    },
+    {
+      "id": "font-helvB08",
+      "displayName": "Helvetica Bold 8px",
+      "internalName": "u8g2_font_helvB08_tf",
+      "file": "fonts/helvB08.bdf",
+      "size": 12,
+      "ascent": 10,
+      "descent": 2
+    },
+    {
+      "id": "font-helvB12",
+      "displayName": "Helvetica Bold 12px",
+      "internalName": "u8g2_font_helvB12_tf",
+      "file": "fonts/helvB12.bdf",
+      "size": 18,
+      "ascent": 14,
+      "descent": 4
+    },
+    {
+      "id": "font-helvB18",
+      "displayName": "Helvetica Bold 18px",
+      "internalName": "u8g2_font_helvB18_tf",
+      "file": "fonts/helvB18.bdf",
+      "size": 27,
+      "ascent": 22,
+      "descent": 5
+    },
+    {
+      "id": "font-helvB24",
+      "displayName": "Helvetica Bold 24px",
+      "internalName": "u8g2_font_helvB24_tf",
+      "file": "fonts/helvB24.bdf",
+      "size": 35,
+      "ascent": 28,
+      "descent": 7
+    },
+    {
+      "id": "font-fur35",
+      "displayName": "FreeUniversal 35px (4.3 mm)",
+      "internalName": "u8g2_font_fur35_tf",
+      "file": "fonts/fur35.bdf",
+      "size": 43,
+      "ascent": 37,
+      "descent": 6
+    },
+    {
+      "id": "font-fub35",
+      "displayName": "FreeUniversal Bold 35px (4.2 mm)",
+      "internalName": "u8g2_font_fub35_tf",
+      "file": "fonts/fub35.bdf",
+      "size": 42,
+      "ascent": 36,
+      "descent": 6
+    },
+    {
+      "id": "font-logisoso62n",
+      "displayName": "LogiSoSo 62px, digits only (7.3 mm)",
+      "internalName": "u8g2_font_logisoso62_tn",
+      "file": "fonts/logisoso62n.bdf",
+      "size": 63,
+      "ascent": 62,
+      "descent": 1
+    }
+  ],
+  "supportedObjectTypes": [
+    "MqttDataField",
+    "MQTTIconField",
+    "label",
+    "level-indicator",
+    "arc-level",
+    "icon",
+    "line",
+    "box",
+    "SoftwareButton",
+    "Switch",
+    "MqttDataLine",
+    "tab-control",
+    "panel"
+  ],
+  "supportsSoftwareButtons": true
+}

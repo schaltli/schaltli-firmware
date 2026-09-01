@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Adornment for the Waveshare ESP32-S3-Touch-LCD-4.3B.
+
+  Hand-authored, and geometrically to scale rather than decorative: the case
+  version of this board measures 116.3 x 79 mm and its active area 93.6 x
+  56.2 mm, so at 800px across the screen one millimetre is 8.547px. That puts
+  the case at 994 x 675 and leaves a bezel of 97px on every side, which is
+  where the numbers below come from. Drawing it to scale matters because the
+  designer shows this behind the canvas: a bezel invented by eye would make
+  every layout look better or worse placed than it really is.
+
+  Conventions this file has to satisfy (designer repo, DEVICE_GUIDE.md,
+  "Building the adornment SVG"): one rect with id="screen", any covers with
+  ids starting "offscreen", and elements with ids starting "button" carrying
+  an inkscape:label. This board has no user-facing hardware buttons - RESET
+  and BOOT are recessed and not something a screen design can bind to - so
+  there are no button elements, and correspondingly no hardwareButtons entry
+  in device.json.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="994" height="675" viewBox="0 0 994 675">
+
+  <!-- Case. The 4.3B ships in a black plastic shell; the rounded corners are
+       roughly 6mm, i.e. ~51px at this scale. -->
+  <rect id="case" x="0" y="0" width="994" height="675" rx="51" ry="51"
+        fill="#1b1b1e" stroke="#3a3a40" stroke-width="4"/>
+
+  <!-- A slightly lighter inner lip, so the screen does not sit on a flat
+       field and the eye can see where the glass begins. -->
+  <rect id="bezel" x="79" y="79" width="836" height="517" rx="14" ry="14"
+        fill="#232329"/>
+
+  <!-- The one element the designer keys on. Position and size are the active
+       area, to scale, centred: (994-800)/2 = 97, (675-480)/2 = 97.5. -->
+  <rect id="screen" x="97" y="97.5" width="800" height="480"
+        fill="#000000"/>
+</svg>

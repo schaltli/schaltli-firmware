@@ -23,6 +23,7 @@
 #include "Ch422g.h"
 #include "Gt911.h"
 #include "TestProjectJson.h"
+#include "FontSample.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
 #include "../../project/ColorScreenRenderer.h"
@@ -263,9 +264,26 @@ void setup()
 // second figure says anything about this board in use.
 static int currentScreen = 0;
 
+static U8G2_FOR_ADAFRUIT_GFX sampleU8g2;
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
+
+  // The font sample sits one past the project's own screens in the tap
+  // cycle, so it can be reached and left without a reflash while someone
+  // walks back and forth judging it from the reading distance.
+  const int screenCount = (int)projectLoader.getProject().screens.size();
+  if (currentScreen >= screenCount)
+  {
+    uint32_t s0 = micros();
+    drawFontSample(*canvas, sampleU8g2, PANEL_W, PANEL_H);
+    uint32_t s1 = micros();
+    gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
+    Serial.printf("[4v3b] font sample (%s): draw %lums\n", reason,
+                  (unsigned long)((s1 - s0) / 1000));
+    return;
+  }
 
   uint32_t t0 = micros();
   bool ok = renderer->renderScreen(currentScreen);
@@ -499,8 +517,10 @@ void loop()
     // Swap screens on every tap: repeated timings from a warm system are
     // worth more than a single cold one at boot, and alternating between the
     // box-heavy and the line-heavy screen keeps both numbers current.
+    // One past the project's screens is the font sample, so the cycle is
+    // screens 0..n-1 then the sample, then back to 0.
     const int screenCount = (int)projectLoader.getProject().screens.size();
-    if (screenCount > 1) currentScreen = (currentScreen + 1) % screenCount;
+    currentScreen = (currentScreen + 1) % (screenCount + 1);
     renderAndPresent("tap");
   }
 

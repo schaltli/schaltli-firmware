@@ -32,11 +32,37 @@ const crypto = require("crypto")
 
 const REPO = path.join(__dirname, "..")
 const DEFAULT_SOURCE = path.join(REPO, "ddf-source")
-const HEADER = path.join(REPO, "src", "ddf_zip.h")
-const DEVICE_INFO = path.join(REPO, "src", "DeviceInfo.h")
-
 const checkOnly = process.argv.includes("--check")
 const sourceDir = process.argv.slice(2).find((a) => !a.startsWith("--")) || DEFAULT_SOURCE
+
+// Output paths follow the source directory instead of being fixed, because
+// this repo now builds two boards out of one src/ and they cannot share a
+// generated header. Running the generator on the 4.3B's source with the old
+// hardcoded paths silently overwrote the knob's ddf_zip.h and DeviceInfo.h.
+// A firmware would then have served another board's DDF - with a correct
+// hash for it, so nothing downstream could tell - which is precisely the
+// class of silent staleness the pre-build hook exists to prevent.
+//
+// "ddf-source" still writes to src/, so the knob is untouched and every
+// existing invocation keeps its meaning. Any other source directory writes
+// next to its own board's code.
+function outputsFor(dir) {
+  const name = path.basename(path.resolve(dir))
+  if (name === "ddf-source") {
+    return {
+      header: path.join(REPO, "src", "ddf_zip.h"),
+      deviceInfo: path.join(REPO, "src", "DeviceInfo.h"),
+    }
+  }
+  const boardDir = path.join(REPO, "src", "boards", "waveshare" + name.replace(/^ddf-source-/, ""))
+  if (!fs.existsSync(boardDir)) {
+    console.error(`no board directory for DDF source "${name}": expected ${boardDir}`)
+    process.exit(1)
+  }
+  return { header: path.join(boardDir, "ddf_zip.h"), deviceInfo: path.join(boardDir, "DeviceInfo.h") }
+}
+
+const { header: HEADER, deviceInfo: DEVICE_INFO } = outputsFor(sourceDir)
 
 if (!fs.existsSync(sourceDir) || !fs.existsSync(path.join(sourceDir, "device.json"))) {
   console.error(`DDF source not found: ${sourceDir} (expected a device.json in it)`)
@@ -222,4 +248,18 @@ if (currentHash !== ddfHash) {
   fs.writeFileSync(DEVICE_INFO, deviceInfo.replace(hashPattern, `#define DDF_HASH "${ddfHash}"`))
   console.log(`DDF_HASH ${currentHash} -> ${ddfHash}`)
 }
-console.log(`Wrote src/ddf_zip.h (${zip.length} bytes, ${ddfHash}) from ${sourceDir}`)
+console.log(`Wrote ${path.relative(REPO, HEADER)} (${zip.length} bytes, ${ddfHash}) from ${path.relative(REPO, sourceDir)}`)
+
+// --zip <path> also drops the raw .ddf.zip somewhere, which is how a board
+// that cannot yet serve its own DDF over HTTP still gets one into the
+// designer: the same bytes that are compiled in, written out as a file for
+// public/ddf/. Precedent is the Android target, whose DDF lives in its own
+// repo and whose zip is checked into the designer with a test asserting the
+// two match. Deliberately the same bytes rather than a second build, so the
+// checked-in copy cannot drift from the compiled one.
+const zipArgIndex = process.argv.indexOf("--zip")
+if (zipArgIndex !== -1 && process.argv[zipArgIndex + 1]) {
+  const zipPath = process.argv[zipArgIndex + 1]
+  fs.writeFileSync(zipPath, zip)
+  console.log(`Wrote ${zipPath} (${zip.length} bytes, ${ddfHash})`)
+}
