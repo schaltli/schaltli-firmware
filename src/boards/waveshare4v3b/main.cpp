@@ -18,6 +18,44 @@
 // which is the mistake that produced four hardware bugs on the last port.
 #include <Arduino.h>
 #include <Arduino_GFX_Library.h>
+#include <Wire.h>
+#include "Ch422g.h"
+#include "Gt911.h"
+
+// --- shared I2C bus -------------------------------------------------------
+// Touch, the CH422G expander and the RTC all sit on the same two lines.
+static const int I2C_SDA = 8;
+static const int I2C_SCL = 9;
+static const int TP_INT = 4;
+
+static Ch422g expander;
+static Gt911 touch;
+
+// Result of the most recent backlight-blanking probe, kept so it can be
+// reported again later. Catching a transient live meant the observer and
+// the reader had to be present in the same few seconds, which failed three
+// times running; a result that persists removes the timing from the problem
+// altogether.
+// In NVS, because everything weaker has already failed here.
+//
+// Plain RAM was destroyed by the act of reading it - opening the serial port
+// resets this board, the trap the knob port documents ("serial monitor
+// resets the board, diagnose via GET /api/debug"). RTC memory then also came
+// back empty, which is consistent with the RTC watchdog reset that esptool
+// and the CDC open both end on: that resets the RTC domain too. Flash
+// survives all of it.
+//
+// Two counters, not one, and that is the point: tapCount rises on every
+// press edge whether or not the probe finishes, so "no evidence" can be told
+// apart from "the touch never produced an edge". Without that split, four
+// attempts in a row said nothing at all.
+#include <Preferences.h>
+static Preferences prefs;
+static uint32_t tapCount = 0;
+static uint32_t probeCount = 0;
+static uint32_t probeSamples = 0;
+static uint32_t probeChanges = 0;
+static uint32_t probeFirstHighMs = 0; // 0 = BL never read back high
 
 // --- panel geometry -------------------------------------------------------
 static const int16_t PANEL_W = 800;
@@ -115,6 +153,139 @@ void setup()
   gfx->fillScreen(RGB565_BLACK);
   drawTestPattern();
   Serial.println("[4v3b] test pattern drawn");
+
+  // --- milestone 2: expander and touch ------------------------------------
+  prefs.begin("4v3b", false);
+  tapCount = prefs.getUInt("taps", 0);
+  probeCount = prefs.getUInt("probes", 0);
+  probeSamples = prefs.getUInt("samples", 0);
+  probeChanges = prefs.getUInt("changes", 0);
+  probeFirstHighMs = prefs.getUInt("firstHigh", 0);
+  Serial.printf("[4v3b] restored from NVS: %lu taps, %lu probes\n",
+                (unsigned long)tapCount, (unsigned long)probeCount);
+
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
+
+  // Scan before assuming. The expander answers on four addresses (it has no
+  // register pointer - each "register" is its own address), so the scan is
+  // also the proof that it is alive, and it shows which address the touch
+  // controller picked without having to trust the reset sequence.
+  Serial.print("[4v3b] i2c scan:");
+  for (uint8_t addr = 0x08; addr < 0x78; addr++)
+  {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) Serial.printf(" 0x%02X", addr);
+  }
+  Serial.println();
+
+  if (!expander.begin())
+  {
+    Serial.println("[4v3b] CH422G init FAILED");
+  }
+  else
+  {
+    Serial.printf("[4v3b] CH422G ok, IO state 0x%02X\n", expander.state());
+    // Blink the backlight. This is the only visible proof that the expander
+    // really drives EXIO2 - "the backlight is on" was already true in
+    // milestone 1 and says nothing about the CH422G.
+    //
+    // Deliberately slow: the first version used 150ms and the answer that
+    // came back was "twice, I think, but I'm not sure". An observation the
+    // observer cannot be certain of is not a verification, and the fix is
+    // to make the signal unmistakable rather than to argue about it.
+    for (int i = 0; i < 3; i++)
+    {
+      Serial.printf("[4v3b] backlight off (%d/3)\n", i + 1);
+      expander.write(Ch422g::EXIO_LCD_BL, false);
+      delay(600);
+      expander.write(Ch422g::EXIO_LCD_BL, true);
+      Serial.printf("[4v3b] backlight on  (%d/3)\n", i + 1);
+      delay(400);
+    }
+    Serial.println("[4v3b] backlight blinked three times, 600ms dark each");
+  }
+
+  if (!touch.begin(expander, TP_INT))
+  {
+    Serial.println("[4v3b] GT911 not found on 0x5D or 0x14");
+  }
+  else
+  {
+    char id[5] = {0};
+    bool gotId = touch.readProductId(id);
+    Serial.printf("[4v3b] GT911 at 0x%02X, product id \"%s\"%s\n",
+                  touch.address(), gotId ? id : "?", gotId ? "" : " (read failed)");
+  }
+
+  gfx->setTextSize(2);
+  gfx->setCursor(20, PANEL_H / 2 + 120);
+  gfx->print("Touch: dots follow your finger. Tap = 1s dark.");
+}
+
+// A tap blanks the backlight for a full second, then restores it. Self-paced
+// and impossible to misread: the observer chooses the moment, and a whole
+// second of darkness cannot be confused with a redraw. It also proves touch
+// and expander together, in one gesture.
+static void blankOnTap()
+{
+  // Three seconds, and the expander is read back throughout.
+  //
+  // Reported on real hardware: during the dark phase a single brief flash
+  // of light. That is either us letting the line go high for a moment, or
+  // it is electrical and nothing to do with the IO state. Reading EXIO back
+  // separates the two - a probe that only reported what we *wrote* would
+  // confirm any such bug as fine, which is the whole trap.
+  Serial.println("[4v3b] tap - backlight off for 3s, sampling EXIO");
+  uint32_t t0 = millis();
+  expander.write(Ch422g::EXIO_LCD_BL, false);
+
+  // Seeded from the first reading, not from a constant. Seeding with 0xFF
+  // guaranteed the first sample counted as a change - the BL bit has just
+  // been cleared, so it cannot match - and a counter that always starts at
+  // one cannot tell "something happened" from "nothing happened".
+  bool haveLast = false;
+  uint8_t last = 0;
+  uint32_t samples = 0;
+  uint32_t changes = 0;
+  uint32_t firstHigh = 0;
+  while (millis() - t0 < 3000)
+  {
+    uint8_t state = 0;
+    if (expander.read(state))
+    {
+      samples++;
+      bool blHigh = (state & (1u << Ch422g::EXIO_LCD_BL)) != 0;
+      if (blHigh && firstHigh == 0) firstHigh = millis() - t0;
+      if (!haveLast)
+      {
+        haveLast = true;
+        last = state;
+      }
+      else if (state != last)
+      {
+        changes++;
+        Serial.printf("[4v3b]   t+%4lums EXIO=0x%02X  (BL bit %s)\n",
+                      (unsigned long)(millis() - t0), state, blHigh ? "HIGH" : "low");
+        last = state;
+      }
+    }
+    delay(10);
+  }
+
+  expander.write(Ch422g::EXIO_LCD_BL, true);
+
+  probeCount++;
+  probeSamples = samples;
+  probeChanges = changes;
+  probeFirstHighMs = firstHigh;
+  prefs.putUInt("probes", probeCount);
+  prefs.putUInt("samples", probeSamples);
+  prefs.putUInt("changes", probeChanges);
+  prefs.putUInt("firstHigh", probeFirstHighMs);
+
+  Serial.printf("[4v3b] backlight back on - %lu samples, %lu state changes\n",
+                (unsigned long)samples, (unsigned long)changes);
 }
 
 void loop()
@@ -123,8 +294,59 @@ void loop()
   if (millis() - last >= 5000)
   {
     last = millis();
-    Serial.printf("[4v3b] alive, uptime %lus, psram free %u\n",
-                  (unsigned long)(millis() / 1000), (unsigned)ESP.getFreePsram());
+    Serial.printf("[4v3b] alive, uptime %lus | taps %lu, probes %lu",
+                  (unsigned long)(millis() / 1000),
+                  (unsigned long)tapCount, (unsigned long)probeCount);
+    if (probeCount == 0)
+    {
+      Serial.println(" - no probe recorded yet");
+    }
+    else
+    {
+      Serial.printf(" | last probe: %lu samples, %lu changes, BL read back HIGH %s\n",
+                    (unsigned long)probeSamples, (unsigned long)probeChanges,
+                    probeFirstHighMs
+                        ? (String("at t+") + probeFirstHighMs + "ms").c_str()
+                        : "never");
+    }
   }
-  delay(50);
+
+  // Draw a dot per contact and print the coordinates. Both matter: the dot
+  // shows whether the touch axes line up with the display axes (a mirrored
+  // or swapped axis is obvious under a finger and invisible in a log), and
+  // the numbers show whether the range really is 0..799 / 0..479 rather
+  // than the panel's native orientation.
+  Gt911::Point points[Gt911::MAX_POINTS];
+  uint8_t n = touch.read(points, Gt911::MAX_POINTS);
+
+  // Edge, not level. A held finger reports the same coordinates about a
+  // hundred times a second - measured on this board, identical to the last
+  // digit including strength, which is the controller's own filtering and
+  // not a stale buffer. Acting on the level would fire this once per poll.
+  static bool wasTouched = false;
+  bool isTouched = n > 0;
+  bool pressEdge = isTouched && !wasTouched;
+  wasTouched = isTouched;
+
+  for (uint8_t i = 0; i < n; i++)
+  {
+    const uint16_t colours[] = {RGB565_WHITE, RGB565_CYAN, RGB565_MAGENTA, RGB565_YELLOW, RGB565_GREEN};
+    gfx->fillCircle(points[i].x, points[i].y, 6, colours[i % 5]);
+    Serial.printf("[4v3b] touch %u/%u id=%u x=%u y=%u strength=%u\n",
+                  i + 1, n, points[i].trackId, points[i].x, points[i].y, points[i].strength);
+  }
+
+  if (pressEdge)
+  {
+    // Counted and persisted *before* the probe runs, so a tap that reaches
+    // us is recorded even if everything after it goes wrong.
+    tapCount++;
+    prefs.putUInt("taps", tapCount);
+    Serial.printf("[4v3b] press edge #%lu\n", (unsigned long)tapCount);
+
+    blankOnTap();
+    wasTouched = false; // the finger is long gone after three seconds
+  }
+
+  delay(n ? 10 : 30);
 }
