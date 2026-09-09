@@ -27,6 +27,11 @@ struct Bucket {
   String name;
   uint32_t us = 0;
   uint32_t count = 0;
+  // A note carries a count that belongs next to the timings but is not
+  // one - how many pixels a loop saw, say. It prints its text and no
+  // number, because a bucket with us = 0 used to print "0.0 ms" and,
+  // being wider than the label column, printed it glued to the text.
+  bool note = false;
 };
 
 // Definition lives here rather than in a .cpp so no board's build_src_filter
@@ -68,6 +73,16 @@ inline void add(const String &name, uint32_t us)
   buckets().push_back(fresh);
 }
 
+// Counts and labels that belong in the report but are not durations.
+inline void note(const String &text)
+{
+  if (!enabledFlag()) return;
+  Bucket fresh;
+  fresh.name = text;
+  fresh.note = true;
+  buckets().push_back(fresh);
+}
+
 // Scoped timer. Deliberately reads micros() even when disabled is false only
 // at construction - the branch in add() does the rest - so enabling it mid
 // render cannot produce a half-measured bucket.
@@ -99,8 +114,16 @@ inline String report()
     // by their caller and must not be added into the percentage twice - the
     // total above therefore over-counts, so percentages are against the
     // caller-supplied total instead. Left to the caller to print.
+    if (b.note)
+    {
+      out += "    " + b.name + "\n";
+      continue;
+    }
     String label = b.name;
     while (label.length() < 26) label += " ";
+    // A name wider than the column would otherwise run straight into its
+    // own number.
+    if (label.length() > 26) label += "  ";
     out += "    " + label + String(b.us / 1000.0f, 1) + " ms";
     if (b.count > 1) out += "  x" + String(b.count);
     out += "\n";

@@ -949,7 +949,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     const uint32_t mhz = (uint32_t)(esp_cpu_get_cycle_count() ? 240 : 240);
     RenderProfile::add("  arc: pixelBands", bandsCycles / mhz);
     RenderProfile::add("  arc: drawPixel", drawCycles / mhz);
-    RenderProfile::add("  arc: px seen/drawn " + String(pixelsSeen) + "/" + String(pixelsDrawn), 0);
+    RenderProfile::note("  arc: " + String(pixelsSeen) + " px seen, " + String(pixelsDrawn) + " drawn");
     ArcRaster::probeEnabled() = false;
     const ArcRaster::Probe& pr = ArcRaster::probe();
     RenderProfile::add("  arc: early x" + String(pr.earlyCalls), pr.earlyCycles / 240);
