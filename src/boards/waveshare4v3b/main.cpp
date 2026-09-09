@@ -74,6 +74,8 @@
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
 #include "PanelBenchmark.h"
+#include "../../project/RenderProfile.h"
+#include "ArcSelfTest.h"
 #include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
@@ -317,9 +319,61 @@ static void setupNetworking()
       out += "\n" + PanelBenchmark::run(gfx->getFramebuffer(), canvas->getBuffer(), PANEL_W, PANEL_H);
       renderAndPresent("after benchmark");
     }
+    else if (setArg == "render=1" && canvas && renderer)
+    {
+      // First render and repeat renders are reported separately, and the
+      // difference is the whole point. Icons are read from LittleFS and
+      // decoded on a cache miss, then blitted pixel by pixel from the cache
+      // on every render after that. Those are two different bugs with two
+      // different fixes, and the totals alone cannot tell them apart.
+      out += "\nrender profile (screen " + String(currentScreen) + ")\n";
+
+      RenderProfile::setEnabled(true);
+
+      RenderProfile::reset();
+      uint32_t t0 = micros();
+      renderer->renderScreen(currentScreen);
+      uint32_t firstUs = micros() - t0;
+      String firstReport = RenderProfile::report();
+
+      // Three more, best taken: the asset caches are warm now, so this is
+      // what a screen switch costs in normal use.
+      uint32_t bestUs = UINT32_MAX;
+      String bestReport;
+      for (int i = 0; i < 3; i++)
+      {
+        RenderProfile::reset();
+        uint32_t s0 = micros();
+        renderer->renderScreen(currentScreen);
+        uint32_t d = micros() - s0;
+        if (d < bestUs)
+        {
+          bestUs = d;
+          bestReport = RenderProfile::report();
+        }
+      }
+
+      RenderProfile::setEnabled(false);
+
+      out += "  first render   " + String(firstUs / 1000.0f, 1) + " ms\n";
+      out += firstReport;
+      out += "  repeat render  " + String(bestUs / 1000.0f, 1) + " ms  (best of 3, caches warm)\n";
+      out += bestReport;
+      out += "  floor for touching every pixel once: 25 ms (see PanelBenchmark.h)\n";
+
+      renderAndPresent("after render profile");
+    }
+    else if (setArg == "arcselftest=1")
+    {
+      // Needs no project, no broker and no fixture - it compares the
+      // rasterizer against itself, which is why it can live on the device.
+      bool ok = true;
+      out += "\n" + ArcSelfTest::run(ok);
+    }
     else
     {
-      out += "\nadd ?set=bench=1 to measure the panel's memory bandwidth\n";
+      out += "\nadd ?set=bench=1 for panel bandwidth, ?set=render=1 for the render breakdown, ";
+      out += "?set=arcselftest=1 to prove the arc short cut\n";
     }
     return out;
   });

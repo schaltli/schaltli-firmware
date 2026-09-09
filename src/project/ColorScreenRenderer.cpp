@@ -1,4 +1,6 @@
 #include "ColorScreenRenderer.h"
+#include "RenderProfile.h"
+#include <esp_cpu.h>
 #include "ArcRaster.h"
 #include "ArcSinTable.h"  // ARC_SIN_SCALE - Skala von ArcRaster::direction()
 #include <algorithm>
@@ -899,9 +901,21 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     if (cy1 < pyTo) pyTo = cy1;
   }
 
+  // Cycle counters, live only while a diagnosis run has enabled profiling.
+  // esp_cpu_get_cycle_count() is one register read; wrapping 130,000
+  // iterations with it costs far less than the thing being measured.
+  const bool profiling = RenderProfile::enabled();
+  if (profiling) { ArcRaster::probeEnabled() = true; ArcRaster::probeReset(); }
+  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0, pixelsDrawn = 0;
+
   for (int32_t py = pyFrom; py < pyTo; py++) {
     for (int32_t px = pxFrom; px < pxTo; px++) {
+      uint32_t c0 = profiling ? esp_cpu_get_cycle_count() : 0;
       const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
+      if (profiling) {
+        bandsCycles += esp_cpu_get_cycle_count() - c0;
+        pixelsSeen++;
+      }
       const int32_t covered = bands.fill + bands.track + bands.marker;
 
       if (covered == 0) {
@@ -910,15 +924,37 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         // alone - which is what "transparent" means everywhere in this
         // renderer: skip the draw, never mix.
         if (!backgroundTransparent) {
+          uint32_t d0 = profiling ? esp_cpu_get_cycle_count() : 0;
           canvas_->drawPixel(obj.x + px, obj.y + py, backgroundPacked);
+          if (profiling) {
+            drawCycles += esp_cpu_get_cycle_count() - d0;
+            pixelsDrawn++;
+          }
         }
         continue;
       }
 
       const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, markerColour,
                                                    bands.marker, mix, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+      uint32_t d1 = profiling ? esp_cpu_get_cycle_count() : 0;
       canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
+      if (profiling) {
+        drawCycles += esp_cpu_get_cycle_count() - d1;
+        pixelsDrawn++;
+      }
     }
+  }
+
+  if (profiling) {
+    const uint32_t mhz = (uint32_t)(esp_cpu_get_cycle_count() ? 240 : 240);
+    RenderProfile::add("  arc: pixelBands", bandsCycles / mhz);
+    RenderProfile::add("  arc: drawPixel", drawCycles / mhz);
+    RenderProfile::add("  arc: px seen/drawn " + String(pixelsSeen) + "/" + String(pixelsDrawn), 0);
+    ArcRaster::probeEnabled() = false;
+    const ArcRaster::Probe& pr = ArcRaster::probe();
+    RenderProfile::add("  arc: early x" + String(pr.earlyCalls), pr.earlyCycles / 240);
+    RenderProfile::add("  arc: sampled x" + String(pr.sampledCalls), pr.sampledCycles / 240);
+    RenderProfile::add("  arc: uniform x" + String(pr.uniformCalls), pr.uniformCycles / 240);
   }
 
   if (obj.properties.displayValue == "none") return true;
@@ -1459,7 +1495,10 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
 
   bool bgTransparent = false;
   uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
-  canvas_->fillScreen(bgTransparent ? 0xFFFF : screenBg);
+  {
+    RenderProfile::Scope s("background fill");
+    canvas_->fillScreen(bgTransparent ? 0xFFFF : screenBg);
+  }
   // Kept for the objects that need to know what they are drawn onto - an
   // arc-level mixes its anti-aliased edges into this when its own
   // background is transparent, which is the usual case for a ring.
@@ -1469,6 +1508,7 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
 
   for (const auto& obj : sortedObjects) {
+    RenderProfile::Scope s(obj.type);
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
 

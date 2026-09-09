@@ -76,6 +76,29 @@ struct Rgb565 {
   uint8_t b = 0;
 };
 
+// Cost probe. Diagnostic only: two counters and two cycle totals, so the
+// two paths through pixelBands() can be told apart from outside. Left in
+// because the question "which path is slow" was asked three times in one
+// afternoon and answered wrongly twice.
+struct Probe {
+  uint32_t earlyCalls = 0;
+  uint32_t earlyCycles = 0;
+  uint32_t sampledCalls = 0;
+  uint32_t sampledCycles = 0;
+  uint32_t uniformCalls = 0;
+  uint32_t uniformCycles = 0;
+};
+Probe& probe();
+
+// Off in normal operation: the probe costs two cycle-counter reads on
+// every call, and pixelBands() is called 129,600 times for one ring.
+bool& probeEnabled();
+
+// Lets a test force the exhaustive sampling path, so the exact short cut can
+// be compared against the thing it replaces rather than trusted.
+bool& fastPathEnabled();
+void probeReset();
+
 void direction(int32_t angle64, int32_t* outX, int32_t* outY);
 Sector makeSector(int32_t start64, int32_t sweep64);
 bool inSector(const Sector& s, int32_t x, int32_t y);

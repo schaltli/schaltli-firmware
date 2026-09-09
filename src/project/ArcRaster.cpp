@@ -1,4 +1,5 @@
 #include "ArcRaster.h"
+#include <esp_cpu.h>
 #include "ArcSinTable.h"
 
 namespace ArcRaster {
@@ -49,7 +50,7 @@ Sector makeSector(int32_t start64, int32_t sweep64) {
   return s;
 }
 
-bool inSector(const Sector& s, int32_t x, int32_t y) {
+bool IRAM_ATTR inSector(const Sector& s, int32_t x, int32_t y) {
   if (s.full) return true;
   if (s.empty) return false;
   // cross(u, p) > 0 means p is clockwise of u, with y downwards. Up to a
@@ -60,8 +61,44 @@ bool inSector(const Sector& s, int32_t x, int32_t y) {
   return s.wide ? (crossU >= 0 || crossV < 0) : (crossU >= 0 && crossV < 0);
 }
 
-PixelBands pixelBands(const RingGeometry& geom, int32_t px, int32_t py) {
+// True when inSector() is guaranteed to answer the same for every point of a
+// box of half-extent h about (cx, cy) - i.e. neither of the two cross
+// products it tests can change sign, or reach zero, anywhere in the box.
+//
+// The bound is the exact worst case: cross(u, c+d) = cross(u, c) + ux*dy -
+// uy*dx, and |ux*dy - uy*dx| <= h*(|ux|+|uy|) for |dx|,|dy| <= h. Strict
+// comparison because inSector() treats zero as a side of its own.
+static bool IRAM_ATTR sectorUniform(const Sector& s, int32_t cx, int32_t cy, int32_t h) {
+  if (s.full || s.empty) return true;  // no boundary to cross
+  const int32_t crossU = s.ux * cy - s.uy * cx;
+  const int32_t boundU = h * (abs(s.ux) + abs(s.uy));
+  if (crossU <= boundU && crossU >= -boundU) return false;
+  const int32_t crossV = s.vx * cy - s.vy * cx;
+  const int32_t boundV = h * (abs(s.vx) + abs(s.vy));
+  if (crossV <= boundV && crossV >= -boundV) return false;
+  return true;
+}
+
+bool& fastPathEnabled() {
+  static bool on = true;
+  return on;
+}
+
+Probe& probe() {
+  static Probe p;
+  return p;
+}
+
+bool& probeEnabled() {
+  static bool on = false;
+  return on;
+}
+
+void probeReset() { probe() = Probe(); }
+
+PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py) {
   PixelBands bands;
+  const uint32_t probeStart = probeEnabled() ? esp_cpu_get_cycle_count() : 0;
 
   const int32_t S = SUBPIXEL_SCALE;
   // The ring touches the object's edge, so the outer radius is half the side.
@@ -83,8 +120,44 @@ PixelBands pixelBands(const RingGeometry& geom, int32_t px, int32_t py) {
   const int32_t minAbsY = (yLo <= 0 && yHi >= 0) ? 0 : min(abs(yLo), abs(yHi));
   const int32_t maxAbsX = max(abs(xLo), abs(xHi));
   const int32_t maxAbsY = max(abs(yLo), abs(yHi));
-  if (minAbsX * minAbsX + minAbsY * minAbsY >= rOuter2) return bands;
-  if (maxAbsX * maxAbsX + maxAbsY * maxAbsY < rInner2) return bands;
+  if (minAbsX * minAbsX + minAbsY * minAbsY >= rOuter2) {
+    if (probeEnabled()) { probe().earlyCalls++;
+    probe().earlyCycles += esp_cpu_get_cycle_count() - probeStart; }
+    return bands;
+  }
+  if (maxAbsX * maxAbsX + maxAbsY * maxAbsY < rInner2) {
+    if (probeEnabled()) { probe().earlyCalls++;
+    probe().earlyCycles += esp_cpu_get_cycle_count() - probeStart; }
+    return bands;
+  }
+
+  // Third exact short cut: a pixel no boundary crosses cannot disagree with
+  // itself, so one evaluation stands for all sixteen. See this file's patch
+  // note for the derivation; the two conditions are "the whole sub-sample
+  // box is inside the annulus" and "no sector edge passes through it".
+  //
+  // The box of sub-sample centres spans offsets 1..2*SUBSAMPLES-1, so its
+  // centre is at +SUBSAMPLES and its half-extent is SUBSAMPLES-1.
+  {
+    const int32_t boxCx = px * S + SUBSAMPLES - centre;
+    const int32_t boxCy = py * S + SUBSAMPLES - centre;
+    const int32_t boxH = SUBSAMPLES - 1;
+    if (fastPathEnabled() &&
+        maxAbsX * maxAbsX + maxAbsY * maxAbsY < rOuter2 &&
+        minAbsX * minAbsX + minAbsY * minAbsY >= rInner2 &&
+        sectorUniform(geom.marker, boxCx, boxCy, boxH) &&
+        sectorUniform(geom.fill, boxCx, boxCy, boxH) &&
+        sectorUniform(geom.track, boxCx, boxCy, boxH)) {
+      // Same priority order as the sampling loop below, and it has to stay
+      // that way: a sub-sample is counted into exactly one band.
+      if (inSector(geom.marker, boxCx, boxCy)) bands.marker = COVERAGE_MAX;
+      else if (inSector(geom.fill, boxCx, boxCy)) bands.fill = COVERAGE_MAX;
+      else if (inSector(geom.track, boxCx, boxCy)) bands.track = COVERAGE_MAX;
+      if (probeEnabled()) { probe().uniformCalls++;
+      probe().uniformCycles += esp_cpu_get_cycle_count() - probeStart; }
+      return bands;
+    }
+  }
 
   for (int32_t j = 0; j < SUBSAMPLES; j++) {
     // Sub-sample centres sit at (2k+1)/8 of a pixel: 1/8, 3/8, 5/8, 7/8.
@@ -107,6 +180,8 @@ PixelBands pixelBands(const RingGeometry& geom, int32_t px, int32_t py) {
     }
   }
 
+  if (probeEnabled()) { probe().sampledCalls++;
+  probe().sampledCycles += esp_cpu_get_cycle_count() - probeStart; }
   return bands;
 }
 

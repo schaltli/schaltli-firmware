@@ -1,4 +1,5 @@
 #include "ColorAssetLoader.h"
+#include "RenderProfile.h"
 #include <LittleFS.h>
 #include <vector>
 
@@ -106,6 +107,7 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
 
   for (const auto& hit : bmpCache) {
     if (hit.path != path) continue;
+    RenderProfile::Scope s("  bmp blit (cached)");
     const uint16_t* px = hit.pixels.data();
     for (int32_t row = 0; row < hit.height; row++) {
       for (int32_t col = 0; col < hit.width; col++) {
@@ -115,6 +117,7 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
     return true;
   }
 
+  RenderProfile::Scope s("  bmp load (LittleFS)");
   File bmpFile = LittleFS.open(path, "r");
   if (!bmpFile) {
     Serial.printf("[ColorAssetLoader] Could not open \"%s\"\n", path.c_str());
