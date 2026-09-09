@@ -321,23 +321,52 @@ static void setupNetworking()
     }
     else if (setArg == "render=1" && canvas && renderer)
     {
-      // First render and repeat renders are reported separately, and the
-      // difference is the whole point. Icons are read from LittleFS and
-      // decoded on a cache miss, then blitted pixel by pixel from the cache
-      // on every render after that. Those are two different bugs with two
-      // different fixes, and the totals alone cannot tell them apart.
-      out += "\nrender profile (screen " + String(currentScreen) + ")\n";
+      // What a value change actually costs, measured before anything is
+      // instrumented. The breakdown further down is inflated by its own
+      // probes - two cycle-counter reads on every one of 129,600 arc
+      // pixels - so quoting a profiled total as the render time would
+      // overstate it, and this board has been burnt by a number that
+      // nobody re-checked once already.
+      //
+      // Both halves are here because a value arriving over MQTT pays for
+      // both: renderScreen() draws into the PSRAM canvas, and the whole
+      // canvas is then pushed to the panel.
+      out += "\nrender (screen " + String(currentScreen) + ")\n";
+
+      uint32_t plainBest = UINT32_MAX, plainWorst = 0;
+      for (int i = 0; i < 5; i++)
+      {
+        uint32_t p0 = micros();
+        renderer->renderScreen(currentScreen);
+        uint32_t d = micros() - p0;
+        if (d < plainBest) plainBest = d;
+        if (d > plainWorst) plainWorst = d;
+      }
+
+      // The same call the render path makes, so the number is the real
+      // one and not a benchmark standing in for it.
+      uint32_t blitBest = UINT32_MAX;
+      for (int i = 0; i < 5; i++)
+      {
+        uint32_t b0 = micros();
+        gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
+        uint32_t d = micros() - b0;
+        if (d < blitBest) blitBest = d;
+      }
+
+      out += "  render          " + String(plainBest / 1000.0f, 1) + " ms  (best of 5, worst " + String(plainWorst / 1000.0f, 1) + ")\n";
+      out += "  blit to panel   " + String(blitBest / 1000.0f, 1) + " ms  (best of 5)\n";
+      out += "  a value change costs both: " + String((plainBest + blitBest) / 1000.0f, 1) + " ms\n";
+
+      out += "\nbreakdown (profiled, so inflated - see the overhead line)\n";
 
       RenderProfile::setEnabled(true);
 
-      RenderProfile::reset();
-      uint32_t t0 = micros();
-      renderer->renderScreen(currentScreen);
-      uint32_t firstUs = micros() - t0;
-      String firstReport = RenderProfile::report();
-
-      // Three more, best taken: the asset caches are warm now, so this is
-      // what a screen switch costs in normal use.
+      // No cold-cache run is reported, because there is no way to get one
+      // here: the board renders this screen at boot, so every asset it
+      // uses is already decoded and cached by the time anyone can ask.
+      // An earlier version labelled the first run "first render" as though
+      // it were cold, which was simply wrong.
       uint32_t bestUs = UINT32_MAX;
       String bestReport;
       for (int i = 0; i < 3; i++)
@@ -355,10 +384,9 @@ static void setupNetworking()
 
       RenderProfile::setEnabled(false);
 
-      out += "  first render   " + String(firstUs / 1000.0f, 1) + " ms\n";
-      out += firstReport;
-      out += "  repeat render  " + String(bestUs / 1000.0f, 1) + " ms  (best of 3, caches warm)\n";
+      out += "  profiled render " + String(bestUs / 1000.0f, 1) + " ms  (best of 3)\n";
       out += bestReport;
+      out += "  profiler overhead " + String((bestUs > plainBest ? bestUs - plainBest : 0) / 1000.0f, 1) + " ms - subtract it from every line above\n";
       out += "  floor for touching every pixel once: 25 ms (see PanelBenchmark.h)\n";
 
       renderAndPresent("after render profile");
