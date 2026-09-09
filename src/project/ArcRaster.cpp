@@ -96,6 +96,78 @@ bool& probeEnabled() {
 
 void probeReset() { probe() = Probe(); }
 
+// Largest integer whose square is at most v. A binary search rather than
+// sqrtf(), because this decides a loop bound that has to agree with an
+// integer comparison exactly, and a float one ulp low would drop a covered
+// pixel. Sixteen iterations, run once per row against 360 pixels.
+static int32_t isqrt(int32_t v) {
+  if (v <= 0) return 0;
+  int32_t lo = 0, hi = 46340;  // 46340^2 is the largest square in int32
+  while (lo < hi) {
+    const int32_t mid = lo + (hi - lo + 1) / 2;
+    if ((int64_t)mid * mid <= (int64_t)v) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+// C++ truncates toward zero and these bounds go negative, so the rounding
+// direction has to be said out loud.
+static int32_t floorDiv(int32_t a, int32_t b) {
+  int32_t q = a / b;
+  if ((a % b != 0) && ((a < 0) != (b < 0))) q--;
+  return q;
+}
+
+static int32_t ceilDiv(int32_t a, int32_t b) {
+  int32_t q = a / b;
+  if ((a % b != 0) && ((a < 0) == (b < 0))) q++;
+  return q;
+}
+
+RowSpan rowSpan(const RingGeometry& geom, int32_t py) {
+  RowSpan span;
+
+  const int32_t S = SUBPIXEL_SCALE;
+  const int32_t centre = (geom.size * S) / 2;
+  const int32_t rOuter = centre;
+  const int32_t rInner = rOuter - geom.thickness * S;
+  const int32_t rOuter2 = rOuter * rOuter;
+  const int32_t rInner2 = rInner > 0 ? rInner * rInner : 0;
+
+  // The same box of sub-sample centres pixelBands() builds: offsets 1 and
+  // 2*SUBSAMPLES-1 from the pixel's top-left corner, on the 1/8 lattice.
+  const int32_t far = 2 * SUBSAMPLES - 1;
+  const int32_t yLo = py * S + 1 - centre;
+  const int32_t yHi = py * S + far - centre;
+  const int32_t minAbsY = (yLo <= 0 && yHi >= 0) ? 0 : min(abs(yLo), abs(yHi));
+  const int32_t maxAbsY = max(abs(yLo), abs(yHi));
+
+  // Outside the ring: pixelBands() drops the pixel when
+  // minAbsX^2 + minAbsY^2 >= rOuter2. Keeping it therefore means
+  // minAbsX^2 < rOuter2 - minAbsY^2, and with the square taken off,
+  // minAbsX <= isqrt(that - 1). minAbsX is the distance from the y axis to
+  // the nearer edge of the box, so the condition is that [xLo, xHi] reaches
+  // into [-t, t] at all.
+  const int32_t outerRoom = rOuter2 - minAbsY * minAbsY;
+  if (outerRoom <= 0) return span;  // x1 < x0: no pixel of this row is covered
+  const int32_t t = isqrt(outerRoom - 1);
+  span.x0 = ceilDiv(centre - far - t, S);
+  span.x1 = floorDiv(centre + t - 1, S);
+
+  // Inside the hole: dropped when maxAbsX^2 + maxAbsY^2 < rInner2, and
+  // maxAbsX is the distance to the further edge, so this time the whole box
+  // has to lie within [-u, u].
+  const int32_t innerRoom = rInner2 - maxAbsY * maxAbsY;
+  if (innerRoom > 0) {
+    const int32_t u = isqrt(innerRoom - 1);
+    span.holeX0 = ceilDiv(centre - u - 1, S);
+    span.holeX1 = floorDiv(centre + u - far, S);
+  }
+
+  return span;
+}
+
 PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py) {
   PixelBands bands;
   const uint32_t probeStart = probeEnabled() ? esp_cpu_get_cycle_count() : 0;

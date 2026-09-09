@@ -86,9 +86,10 @@ inline ArcRaster::RingGeometry buildGeometry(const Case &c)
 // boundary it was.
 inline String run(bool &ok)
 {
-  String out = "arc raster self-test (exact short cut vs 16x sampling)\n";
+  String out = "arc raster self-test (short cut and row spans vs 16x sampling)\n";
   ok = true;
   uint32_t totalPixels = 0, totalMismatch = 0;
+  uint32_t totalExcluded = 0, totalLeaked = 0;
   const uint32_t started = millis();
 
   for (const Case &c : CASES)
@@ -121,6 +122,42 @@ inline String run(bool &ok)
       }
     }
 
+    // The row spans claim that a pixel they exclude cannot be covered. There
+    // is one way to check a claim like that and it is to ask about every
+    // excluded pixel, because a bound that is one too tight loses a thin arc
+    // of pixels that no screenshot of a single dial would show.
+    uint32_t leaked = 0;
+    String firstLeaks;
+
+    for (int32_t py = 0; py < c.size; py++)
+    {
+      const ArcRaster::RowSpan span = ArcRaster::rowSpan(geom, py);
+      for (int32_t px = 0; px < c.size; px++)
+      {
+        const bool inHole = span.holeX1 >= span.holeX0 && px >= span.holeX0 && px <= span.holeX1;
+        if (px >= span.x0 && px <= span.x1 && !inHole) continue;
+        totalExcluded++;
+
+        const ArcRaster::PixelBands b = ArcRaster::pixelBands(geom, px, py);
+        if (b.fill || b.track || b.marker)
+        {
+          leaked++;
+          if (leaked <= 3)
+          {
+            firstLeaks += "      (" + String(px) + "," + String(py) + ") excluded but covers " +
+                          String(b.fill) + "/" + String(b.track) + "/" + String(b.marker) + "\n";
+          }
+        }
+      }
+    }
+
+    if (leaked)
+    {
+      ok = false;
+      out += "  FAIL " + String(c.name) + ": " + String(leaked) + " excluded pixels are covered\n" + firstLeaks;
+    }
+
+    totalLeaked += leaked;
     totalMismatch += mismatch;
     if (mismatch)
     {
@@ -131,8 +168,9 @@ inline String run(bool &ok)
 
   out += "  " + String(sizeof(CASES) / sizeof(CASES[0])) + " geometries, " + String(totalPixels) +
          " pixels compared, " + String(totalMismatch) + " mismatches, " + String(millis() - started) + " ms\n";
-  out += ok ? "  PASS - the short cut and the sampling agree everywhere\n"
-            : "  FAIL - the short cut is not exact\n";
+  out += "  row spans excluded " + String(totalExcluded) + " pixels, " + String(totalLeaked) + " of them covered\n";
+  out += ok ? "  PASS - the short cut agrees with the sampling, and nothing lives outside the spans\n"
+            : "  FAIL - the short cut or the spans are not exact\n";
   return out;
 }
 

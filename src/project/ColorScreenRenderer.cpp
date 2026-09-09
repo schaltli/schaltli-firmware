@@ -906,10 +906,50 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // iterations with it costs far less than the thing being measured.
   const bool profiling = RenderProfile::enabled();
   if (profiling) { ArcRaster::probeEnabled() = true; ArcRaster::probeReset(); }
-  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0, pixelsDrawn = 0;
+  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0;
+  // Counted unconditionally: the background runs below add whole spans at a
+  // time, and branching on the profile for one addition per row is noise.
+  uint32_t pixelsDrawn = 0;
 
   for (int32_t py = pyFrom; py < pyTo; py++) {
-    for (int32_t px = pxFrom; px < pxTo; px++) {
+    // Which pixels of this row the ring can reach at all. Everything outside
+    // is empty by the same test pixelBands() makes before anything else, so
+    // walking it one pixel at a time only paid to be told nothing was there:
+    // 105,236 of this ring's 129,600 pixels, and a third of the arc's time.
+    const ArcRaster::RowSpan span = ArcRaster::rowSpan(geom, py);
+    const int32_t from = span.x0 > pxFrom ? span.x0 : pxFrom;
+    const int32_t to = span.x1 + 1 < pxTo ? span.x1 + 1 : pxTo;
+    const int32_t holeFrom = span.holeX0 > from ? span.holeX0 : from;
+    const int32_t holeTo = span.holeX1 < to - 1 ? span.holeX1 : to - 1;
+    const bool hasHole = span.holeX1 >= span.holeX0 && holeTo >= holeFrom;
+
+    if (!backgroundTransparent) {
+      // The object still owns its whole square, so what the ring cannot reach
+      // is drawn as runs. The same pixels in the same colour as the per-pixel
+      // version wrote, one contiguous write per gap instead of one per pixel.
+      const uint32_t g0 = profiling ? esp_cpu_get_cycle_count() : 0;
+      if (from > pxFrom) {
+        canvas_->drawFastHLine(obj.x + pxFrom, obj.y + py, from - pxFrom, backgroundPacked);
+        pixelsDrawn += from - pxFrom;
+      }
+      if (hasHole) {
+        canvas_->drawFastHLine(obj.x + holeFrom, obj.y + py, holeTo + 1 - holeFrom, backgroundPacked);
+        pixelsDrawn += holeTo + 1 - holeFrom;
+      }
+      if (to < pxTo) {
+        canvas_->drawFastHLine(obj.x + to, obj.y + py, pxTo - to, backgroundPacked);
+        pixelsDrawn += pxTo - to;
+      }
+      if (profiling) drawCycles += esp_cpu_get_cycle_count() - g0;
+    }
+
+    for (int32_t px = from; px < to; px++) {
+      // Jumping the hole rather than testing every pixel of it. The for-step
+      // then lands on the first pixel past it.
+      if (hasHole && px >= holeFrom && px <= holeTo) {
+        px = holeTo;
+        continue;
+      }
       uint32_t c0 = profiling ? esp_cpu_get_cycle_count() : 0;
       const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
       if (profiling) {

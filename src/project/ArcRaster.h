@@ -69,6 +69,30 @@ struct RingGeometry {
   Sector marker;
 };
 
+// Which pixels of one row can be covered at all, so a caller can skip the
+// rest instead of asking about them one at a time. On a 360px ring, 105,236
+// of the 129,600 pixels in the object's square lie outside the ring or in
+// the hole, and visiting them cost a third of the arc's render time to be
+// told nothing is there.
+//
+// Exact, and exactly the same two tests pixelBands() makes before it does
+// anything else - the box of a pixel's sub-samples against the outer radius,
+// and against the inner one - only solved for x instead of evaluated. So a
+// pixel this excludes is a pixel pixelBands() would have returned empty for,
+// which is what ArcSelfTest checks over every pixel of every geometry.
+//
+// This one has no TypeScript counterpart, deliberately, and it is the only
+// thing in this file that does not. It decides which pixels the loop walks,
+// never what a pixel becomes, so it cannot move a single sub-pixel of the
+// output; and the designer draws one screen on a laptop, where the walk is
+// free. Anything that touches coverage still belongs in both files.
+struct RowSpan {
+  int32_t x0 = 0;       // first pixel that can be covered, inclusive
+  int32_t x1 = -1;      // last, inclusive - x1 < x0 means the row is empty
+  int32_t holeX0 = 0;   // first pixel of the empty middle, inclusive
+  int32_t holeX1 = -1;  // last - holeX1 < holeX0 means there is no hole
+};
+
 // A colour reduced to the framebuffer's own depth, as separate channels.
 struct Rgb565 {
   uint8_t r = 0;
@@ -103,6 +127,7 @@ void direction(int32_t angle64, int32_t* outX, int32_t* outY);
 Sector makeSector(int32_t start64, int32_t sweep64);
 bool inSector(const Sector& s, int32_t x, int32_t y);
 PixelBands pixelBands(const RingGeometry& geom, int32_t px, int32_t py);
+RowSpan rowSpan(const RingGeometry& geom, int32_t py);
 
 Rgb565 toRgb565(uint16_t packed);
 uint16_t packRgb565(const Rgb565& c);
