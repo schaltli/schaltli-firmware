@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
-#include <esp_async_memcpy.h>
 #include <esp_heap_caps.h>
+#include <esp_async_memcpy.h>
 
 // Where the swipe frame budget actually goes, measured on the glass rather
 // than argued from a datasheet.
@@ -10,6 +10,25 @@
 // removed as "the bus is full" - then the factory LVGL demo was flashed back
 // and slid roughly 80% of the screen smoothly. So the bus is NOT full, and
 // the earlier conclusion generalised from one implementation to the hardware.
+//
+// A second question landed here later (2026-09-09), and the answer was not
+// the one being fished for. A screen render begins by filling the whole
+// canvas, which cost 43ms against the 25ms this file already recorded for
+// the framebuffer, so the fill looked like 18ms of lazy code. It is not:
+//
+//   fb_memset      25.3 ms   30.3 MB/s   the driver's framebuffer
+//   canvas_memset  43.1 ms   17.8 MB/s   our canvas, same call
+//   canvas_write32 43.7 ms   17.6 MB/s   our canvas, 32-bit store loop
+//   aligned_psram  43.4 ms   17.7 MB/s   a fresh 64-byte aligned buffer
+//
+// memset and a hand-written store loop agree to within noise, so nothing is
+// to be won in the loop, and a freshly allocated buffer asked for the way
+// the LCD driver asks for its own is just as slow, so it is not alignment
+// or the allocator either. Every buffer we make writes at 17.7 MB/s and the
+// driver's framebuffer writes at 30.3. Why that one is different is not yet
+// known - the addresses are printed next to the numbers as the next place
+// to start. A rewritten canvas fill was built on the strength of the first
+// number, measured, and reverted.
 //
 // The first run settled the diagnosis:
 //
@@ -125,6 +144,62 @@ inline String run(uint16_t *fb, uint16_t *src, int16_t w, int16_t h)
     if (d < best) best = d;
   }
   out += "  fb_memset      " + String(best / 1000.0f, 1) + " ms  " + String(mbps(bytes, best), 1) + " MB/s\n";
+
+  // 1b. the same write into the canvas rather than the framebuffer, and the
+  //     same write done as a store loop instead of memset. A screen render
+  //     starts by filling the canvas and that cost 43ms where the
+  //     framebuffer takes 25, so one of the two has to be true: either the
+  //     canvas is slower memory than the framebuffer, or our loop is slower
+  //     than memset. Guessing which had already been wrong twice.
+  best = UINT32_MAX;
+  for (int i = 0; i < passes; i++)
+  {
+    uint32_t t0 = micros();
+    memset(src, (i & 1) ? 0x11 : 0x22, bytes);
+    uint32_t d = micros() - t0;
+    if (d < best) best = d;
+  }
+  out += "  canvas_memset  " + String(best / 1000.0f, 1) + " ms  " + String(mbps(bytes, best), 1) + " MB/s\n";
+
+  best = UINT32_MAX;
+  for (int i = 0; i < passes; i++)
+  {
+    const uint32_t pair = (i & 1) ? 0x11111111u : 0x22222222u;
+    uint32_t t0 = micros();
+    uint32_t *q = (uint32_t *)src;
+    for (size_t n = 0; n < px / 2; n++) q[n] = pair;
+    uint32_t d = micros() - t0;
+    if (d < best) best = d;
+  }
+  out += "  canvas_write32 " + String(best / 1000.0f, 1) + " ms  " + String(mbps(bytes, best), 1) + " MB/s\n";
+
+  // 1c. and a third buffer, asked for the way the LCD driver asks for its
+  //     framebuffer: 64-byte aligned out of PSRAM. If this lands with the
+  //     framebuffer rather than the canvas, the canvas is simply allocated
+  //     wrong and the fill is 18ms of nothing.
+  {
+    uint8_t *probe = (uint8_t *)heap_caps_aligned_alloc(64, bytes, MALLOC_CAP_SPIRAM);
+    if (probe == nullptr)
+    {
+      out += "  aligned_psram  - could not allocate\n";
+    }
+    else
+    {
+      best = UINT32_MAX;
+      for (int i = 0; i < passes; i++)
+      {
+        uint32_t t0 = micros();
+        memset(probe, (i & 1) ? 0x11 : 0x22, bytes);
+        uint32_t d = micros() - t0;
+        if (d < best) best = d;
+      }
+      out += "  aligned_psram  " + String(best / 1000.0f, 1) + " ms  " + String(mbps(bytes, best), 1) +
+             " MB/s  (64-byte aligned, fresh)\n";
+      out += "  addresses      fb " + String((uint32_t)fb, HEX) + "  canvas " + String((uint32_t)src, HEX) +
+             "  probe " + String((uint32_t)probe, HEX) + "\n";
+      heap_caps_free(probe);
+    }
+  }
 
   // 2. read only
   best = UINT32_MAX;
