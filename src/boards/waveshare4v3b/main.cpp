@@ -8,17 +8,50 @@
 // still reachable by tapping. They are in the history if a measurement needs
 // repeating.
 //
-// NO SWIPING ON THIS BOARD, and that is a decision rather than an omission.
-// Rendering during a drag is impossible here - a real project takes 782ms to
-// draw - so the only way is the knob's: pre-render the neighbour and move
-// finished pixels. That was built and measured on the panel. One frame costs
-// 72ms composing straight into the framebuffer, 13.8 fps, against a measured
-// 43ms floor for merely writing that much memory. It is bandwidth, not
-// inefficiency, and following a finger needs about twice that rate. Half-row
-// compositing during motion reached ~28 fps and was judged on the glass:
-// "sieht nicht so toll aus". Both were built, both were looked at, and the
-// answer was no. Screen changes belong on a tab-control or a button here,
-// where nobody expects anything to track a finger.
+// NO FINGER-TRACKING SWIPE ON THIS BOARD. That is a decision, and the first
+// version of this note got the reason wrong, so here is the measured one.
+//
+// The claim used to be that the panel's memory bus was full: 72ms per frame
+// against "a measured 43ms floor". Then the factory LVGL demo was flashed
+// back and slid roughly 80% of the screen smoothly - so the bus plainly was
+// not full, and a measurement of one implementation had been generalised into
+// a property of the hardware. PanelBenchmark.h now lives next to this file so
+// the question is settled with numbers instead of a story; run it with
+// GET /api/debug?set=bench=1.
+//
+// What it says (2026-09-01, 800x480, 750KB a frame):
+//
+//   fb_memset      25.3 ms   write the framebuffer, nothing else
+//   psram_read     27.1 ms   read a rendered canvas, nothing else
+//   fb_from_sram   25.3 ms   internal SRAM -> framebuffer = 39 fps
+//   fb_from_psram  66.2 ms   canvas -> framebuffer
+//   compose        65.7 ms   one real swipe frame = 15.2 fps
+//
+// So the hardware does 39 fps full-screen - if the source sits in internal
+// SRAM. That is exactly what LVGL does: it re-renders cheap widgets into a
+// small SRAM buffer every frame and pushes only the result, 750KB in one
+// direction. We cannot, because a real project takes 782ms to draw, so our
+// screens must be pre-rendered and cached in PSRAM - and then every frame
+// both reads 750KB and writes 750KB. Twice the traffic, 2.6x the time. The
+// gap is structural, not a missing optimisation.
+//
+// Three ways out were measured and none worked. Staging the copy through a
+// 16KB SRAM block, on the theory that interleaved read and write bursts were
+// costing bus turnarounds, came out at 66.3ms - identical, so that theory is
+// dead. Handing the copy to GDMA came out at 133.9ms, twice as slow as the
+// CPU, because it arbitrates for the same memory controller the LCD is
+// already streaming through. The third is real but insufficient: our data
+// cache has 32-byte lines where Waveshare's own ESP-IDF demo sets 64
+// (CONFIG_ESP32S3_DATA_CACHE_LINE_64B), which the Arduino framework cannot
+// change without rebuilding it as an ESP-IDF component. It would only help
+// the read half, so the ceiling would still be around 22 fps.
+//
+// Half-row compositing during motion did reach ~28 fps by halving the
+// traffic, and was judged on the glass: "sieht nicht so toll aus" - losing
+// vertical resolution during a horizontal movement is the most visible way to
+// spend that. So screen changes stay on a tab-control or a button here, where
+// nothing is expected to track a finger. A short non-tracking transition at
+// 15 fps has NOT been tried and is the one option still open.
 //
 // Pin map and RGB timings are Waveshare's own, taken from
 // waveshareteam/ESP32-S3-Touch-LCD-4.3B (Apache-2.0),
@@ -40,6 +73,7 @@
 #include "../../MqttClient.h"
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
+#include "PanelBenchmark.h"
 #include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
@@ -269,6 +303,26 @@ static void setupNetworking()
   // The snapshot endpoint reads this canvas directly, which is what gives
   // this board a HIL comparison at all.
   if (testInterface.begin(*canvas)) Serial.println("[4v3b] test interface on :80");
+
+  // GET /api/debug?set=bench=1 measures where a swipe frame goes. Behind a
+  // parameter rather than run at boot because it writes rubbish into the
+  // framebuffer for a few hundred milliseconds before re-rendering, and
+  // nobody wants that on a panel that is showing a project.
+  testInterface.setDebugHandler([](const String &setArg) -> String {
+    String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
+    out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
+    out += "uptime " + String(millis() / 1000) + " s\n";
+    if (setArg == "bench=1" && canvas && gfx)
+    {
+      out += "\n" + PanelBenchmark::run(gfx->getFramebuffer(), canvas->getBuffer(), PANEL_W, PANEL_H);
+      renderAndPresent("after benchmark");
+    }
+    else
+    {
+      out += "\nadd ?set=bench=1 to measure the panel's memory bandwidth\n";
+    }
+    return out;
+  });
 
   if (creds.mqttHost.isEmpty())
   {
