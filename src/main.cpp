@@ -1992,23 +1992,44 @@ static String stripJsonPath(const String &topicOrPath) {
 
 // Recurses into children so nested objects (tab-control -> panel) do not
 // silently miss their subscriptions.
+//
+// Both bindings, not just the first. An arc-level carries a second one -
+// setpointTopic, the marker's own value - and walking only properties.topic
+// meant this board never subscribed to it at all. The marker then sat on
+// whatever the project's first example said and never moved again, for the
+// life of the device, with no error anywhere: the topic exists, the value
+// reads back, it is simply the initial one (ProjectLoader seeds currentValue
+// from examples[0]).
+//
+// Found 2026-09-10 by the generated type-coverage run, which publishes a
+// different setpoint per combination and noticed the device never reported
+// the new one back. The 4.3B does not have this bug because it subscribes to
+// project.topics wholesale rather than walking objects; the designer's own
+// hil/combinations.js had the identical gap and fixed it on 2026-08-23.
+static void addTopic(const String &binding, std::vector<String> &outTopics) {
+  if (binding.isEmpty()) return;
+  String realTopic = stripJsonPath(binding);
+  for (const auto &existing : outTopics) {
+    if (existing == realTopic) return;
+  }
+  outTopics.push_back(realTopic);
+}
+
 static void collectTopics(const std::vector<ScreenObject> &objects, std::vector<String> &outTopics) {
   for (const auto &obj : objects) {
-    if (!obj.properties.topic.isEmpty()) {
-      String realTopic = stripJsonPath(obj.properties.topic);
-      bool exists = false;
-      for (const auto &existing : outTopics) {
-        if (existing == realTopic) { exists = true; break; }
-      }
-      if (!exists) outTopics.push_back(realTopic);
-    }
+    addTopic(obj.properties.topic, outTopics);
+    addTopic(obj.properties.setpointTopic, outTopics);
     if (!obj.children.empty()) collectTopics(obj.children, outTopics);
   }
 }
 
+// Same two bindings, for the same reason: this decides whether an arriving
+// value is worth redrawing the current screen for, so missing setpointTopic
+// here would leave a subscribed value that changes nothing on the glass.
 static bool screenUsesTopic(const std::vector<ScreenObject> &objects, const String &topic) {
   for (const auto &obj : objects) {
     if (!obj.properties.topic.isEmpty() && stripJsonPath(obj.properties.topic) == topic) return true;
+    if (!obj.properties.setpointTopic.isEmpty() && stripJsonPath(obj.properties.setpointTopic) == topic) return true;
     if (!obj.children.empty() && screenUsesTopic(obj.children, topic)) return true;
   }
   return false;
