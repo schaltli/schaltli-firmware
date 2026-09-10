@@ -11,6 +11,7 @@
     "height": 480,
     "colorDepth": "24bit"
   },
+  "deviceActions": ["displayOff"],
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",
     "uploadMethod": "POST",

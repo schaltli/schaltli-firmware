@@ -77,6 +77,7 @@
 #include "../../project/RenderProfile.h"
 #include "ArcSelfTest.h"
 #include "FollowSwipe.h"
+#include "../../DeviceSettings.h"
 #include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
@@ -175,6 +176,32 @@ static bool pendingTopicOverflow = false;
 // What the last value change cost, so "the partial path is running" stays
 // checkable from outside rather than being assumed.
 static String lastValueDraw = "none since boot";
+
+// ------------------------------------------------------ display blanking
+//
+// Ported from the knob, whose rules were argued out there and are not
+// board-specific. The screen turns off, backlight included, after a
+// configured stretch with no HUMAN input - MQTT traffic deliberately does
+// not count, or a panel showing values that change every few seconds would
+// never sleep, which is exactly the case this exists for.
+//
+// The first touch afterwards only wakes. It does not press the button it
+// happens to land on: this panel switches lights and a heater, and reaching
+// for a dark screen to see what it says must not turn something on. Same
+// rule the reserved setup hold follows from the other side - a five-second
+// hold is unambiguous, a stab in the dark is not.
+//
+// The setting has been offered in this board's own settings page since the
+// port and did nothing here until 2026-09-10; the backlight sits on the
+// CH422G rather than a GPIO, which is the only real difference from the
+// knob.
+static bool displayIsOff = false;
+static uint32_t lastHumanInputMs = 0;
+static uint32_t displayOffAfterMs = 0;  // 0 = never, cached from NVS
+static String idleScreenId;             // empty = feature off, cached from NVS
+// A contact that arrived on a dark screen. Held for the whole contact so a
+// wake cannot also become a tap or a swipe when the finger moves.
+static bool contactOnlyWoke = false;
 
 static bool renderPending = false;
 static unsigned long lastTopicRenderMs = 0;
@@ -337,6 +364,19 @@ static void setupRenderStack();
 static void setupNetworking();
 static void enterSetupMode();
 
+// -1 when nothing is configured, no project is loaded, or the saved id is
+// not in this project. Every caller treats that as "leave the screen alone".
+static int resolveIdleScreenIndex()
+{
+  if (idleScreenId.isEmpty() || !projectLoader.isLoaded()) return -1;
+  const ProjectConfig &project = projectLoader.getProject();
+  for (size_t i = 0; i < project.screens.size(); i++)
+  {
+    if (project.screens[i].id == idleScreenId) return (int)i;
+  }
+  return -1;
+}
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
@@ -352,6 +392,49 @@ static void renderAndPresent(const char *reason)
   Serial.printf("[4v3b] render(screen %d, %s): %s | draw %lums, blit %lums\n",
                 currentScreen, reason, ok ? "ok" : "FAILED",
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
+}
+
+static void wakeDisplay()
+{
+  lastHumanInputMs = millis();
+  if (!displayIsOff) return;
+  displayIsOff = false;
+  expander.write(Ch422g::EXIO_LCD_BL, true);
+  // Repainted before the backlight can reveal a stale frame: the panel
+  // keeps whatever it last received, and that is the screen from before it
+  // went dark, which may be minutes old.
+  renderAndPresent("woke");
+  Serial.println("[display] woke");
+}
+
+static void blankDisplay(const char *reason)
+{
+  if (displayIsOff) return;
+  displayIsOff = true;
+  expander.write(Ch422g::EXIO_LCD_BL, false);
+  Serial.printf("[display] off (%s)\n", reason);
+
+  // Back to the idle screen AFTER the backlight is out: the panel would
+  // otherwise be seen flipping pages on its way off, which reads as the
+  // device doing something rather than settling. Nothing is visible now,
+  // and waking repaints, so the next person finds the idle screen rather
+  // than wherever the last one left it.
+  const int idle = resolveIdleScreenIndex();
+  if (idle < 0 || idle == currentScreen) return;
+  currentScreen = idle;
+  forgetTouchFeedback();
+  renderer->renderScreen(currentScreen);
+}
+
+// Re-read from NVS so a saved setting takes effect without a restart.
+static void applyDeviceSettings()
+{
+  displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
+  idleScreenId = DeviceSettings::idleScreenId();
+  lastHumanInputMs = millis();
+  wakeDisplay();
+  Serial.printf("[display] blanking after %us, idle screen \"%s\"\n",
+                (unsigned)(displayOffAfterMs / 1000), idleScreenId.c_str());
 }
 
 static void setupRenderStack()
@@ -510,6 +593,25 @@ static void setupNetworking()
   testInterface.setTopicValueHandler(
       [](const String &topic) { return projectLoader.getTopicValue(topic); });
 
+  testInterface.setSettingsChangedHandler(applyDeviceSettings);
+  // The Device tab's idle-screen dropdown is built from this.
+  testInterface.setScreenListHandler([]() -> String {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    if (projectLoader.isLoaded())
+    {
+      for (const auto &screen : projectLoader.getProject().screens)
+      {
+        JsonObject o = arr.add<JsonObject>();
+        o["id"] = screen.id;
+        o["name"] = screen.name;
+      }
+    }
+    String out;
+    serializeJson(doc, out);
+    return out;
+  });
+
   testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
     injectX = x;
     injectY = y;
@@ -533,6 +635,8 @@ static void setupNetworking()
     out += "  last tap: " + lastTap + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
+    out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
+           String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";
     out += swipe.report();
     out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
            " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
@@ -869,6 +973,9 @@ void setup()
     Serial.printf("[4v3b] GT911 at 0x%02X\n", touch.address());
 
   setupRenderStack();
+  // After the project is loaded: the idle screen is held as an id and has
+  // to be resolved against a project that exists.
+  applyDeviceSettings();
   setupNetworking();
 }
 
@@ -1170,12 +1277,20 @@ static void dispatchButtonAction(const ButtonAction &action)
   }
   else if (action.type == "device-action")
   {
-    // This board declares no deviceActions in its DDF yet, so every id is
-    // unknown here. Logged and skipped rather than treated as an error: a
-    // project may legitimately have been built against a device offering
-    // more of them, and additive changes degrade rather than break.
-    Serial.printf("[tap] device action \"%s\" - this board offers none\n",
-                  action.deviceActionId.c_str());
+    // Actions the DEVICE offers and the designer only names - declared in
+    // this board's DDF as deviceActions. An id this firmware does not know
+    // is logged and skipped, never an error: a project may legitimately
+    // have been built against a device offering more of them, and additive
+    // changes degrade rather than break.
+    if (action.deviceActionId == "displayOff")
+    {
+      blankDisplay("button");
+    }
+    else
+    {
+      Serial.printf("[tap] unknown device action \"%s\" - skipping\n",
+                    action.deviceActionId.c_str());
+    }
   }
   else if (action.type == "goto-setup-mode")
   {
@@ -1413,9 +1528,21 @@ void loop()
       contactCount++;
       contactSamples = 0;
       contactDrift = 0;
+      contactOnlyWoke = displayIsOff;
+      wakeDisplay();
       // Before anything is decided about what this gesture will be. A press
-      // that waits to find out is not a press.
-      beginPressFeedback(touchX, touchY);
+      // that waits to find out is not a press - but a finger that arrived on
+      // a dark panel is not pressing anything at all.
+      if (!contactOnlyWoke) beginPressFeedback(touchX, touchY);
+    }
+    lastHumanInputMs = millis();
+    if (contactOnlyWoke)
+    {
+      // Nothing else may claim this contact: not a tap, not a drag, not the
+      // setup hold. The next one is a real one.
+      testInterface.handleClient();
+      delay(5);
+      return;
     }
     contactSamples++;
     const int dx = (int)touchX - holdStartX;
@@ -1523,10 +1650,16 @@ void loop()
     pressedSwitchIndex = -1;
 
     const uint32_t generationBefore = renderGeneration;
-    if (!holdConsumed && contactDrift <= TAP_MAX_DRIFT)
+    // A contact that arrived on a dark panel wakes it and does nothing
+    // else, all the way to the lift. Checked here as well as at touch-down
+    // because the down path returns early and never reaches the dispatch -
+    // so without this the wake tap fired on release anyway, which is the
+    // exact behaviour the rule exists to prevent.
+    if (!contactOnlyWoke && !holdConsumed && contactDrift <= TAP_MAX_DRIFT)
     {
       dispatchTapAt(holdStartX, holdStartY);
     }
+    contactOnlyWoke = false;
     if (renderGeneration == generationBefore)
     {
       renderFeedbackRegion("release");
@@ -1575,11 +1708,21 @@ void loop()
     clearPending("pending timed out");
   }
 
+  // Only ever from here, where no finger is down: a screen going dark under
+  // a hand resting on it would be the one moment it must not.
+  if (!displayIsOff && displayOffAfterMs > 0 && (millis() - lastHumanInputMs) >= displayOffAfterMs)
+  {
+    blankDisplay("inactivity");
+  }
+
   if (renderPending && topicRenderEnabled && (millis() - lastTopicRenderMs) >= TOPIC_RENDER_MIN_MS)
   {
     renderPending = false;
     lastTopicRenderMs = millis();
     const uint32_t t0 = micros();
+    // Drawn even while dark: waking repaints, but a partial redraw would
+    // otherwise have nothing to catch up on and the canvas would be stale in
+    // exactly the rectangles that changed.
     if (!renderValueChangesPartial())
     {
       lastValueDraw = "full screen";
