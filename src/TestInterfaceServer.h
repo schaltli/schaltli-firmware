@@ -95,6 +95,18 @@ public:
   // only exists once CanvasPresenter has allocated it, which can fail.
   bool begin(ClippedCanvas16& canvas, uint16_t port = 80);
 
+  // Points the snapshot at a different canvas.
+  //
+  // Needed by any board that owns more than one and swaps between them.
+  // The 4.3B keeps a second canvas for its screen transitions and swaps
+  // the pointers when one commits, so from then on begin()'s canvas was
+  // the one NOT being drawn into - and /snapshot.bmp served the screen the
+  // user had just swiped away from while the panel showed the right one.
+  // A pixel-parity run reported every pixel of every case as differing
+  // (2026-09-10), which is the only reason it was noticed at all: to a
+  // person looking at the panel, nothing was wrong.
+  void setCanvas(ClippedCanvas16& canvas) { canvas_ = &canvas; }
+
   void setScreenSwitchHandler(ScreenSwitchHandler handler) { screenSwitchHandler_ = handler; }
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }

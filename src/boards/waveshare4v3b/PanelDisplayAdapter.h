@@ -29,15 +29,15 @@
 class PanelDisplayAdapter : public IDisplay {
 public:
   PanelDisplayAdapter(ClippedCanvas16 &canvas, RgbPanel &panel, int16_t w, int16_t h)
-      : canvas_(canvas), panel_(panel), width_(w), height_(h)
+      : canvas_(&canvas), panel_(panel), width_(w), height_(h)
   {
-    u8g2_.begin(canvas_);
+    u8g2_.begin(*canvas_);
     u8g2_.setFontMode(1);
   }
 
   void showLines(std::initializer_list<String> lines) override
   {
-    canvas_.fillRect(0, 0, width_, height_, BACKGROUND);
+    canvas_->fillRect(0, 0, width_, height_, BACKGROUND);
     u8g2_.setForegroundColor(FOREGROUND);
     u8g2_.setFont(u8g2_font_fur35_tf);
 
@@ -57,19 +57,30 @@ public:
     present();
   }
 
+  // Follows the board when it swaps canvases.
+  void setCanvas(ClippedCanvas16 &canvas)
+  {
+    canvas_ = &canvas;
+    u8g2_.begin(*canvas_);
+  }
+
   void clear() override
   {
-    canvas_.fillRect(0, 0, width_, height_, BACKGROUND);
+    canvas_->fillRect(0, 0, width_, height_, BACKGROUND);
     present();
   }
 
 private:
-  void present() { panel_.blit(canvas_.getBuffer()); }
+  void present() { panel_.blit(canvas_->getBuffer()); }
 
   static const uint16_t BACKGROUND = 0x0000;
   static const uint16_t FOREGROUND = 0xFFFF;
 
-  ClippedCanvas16 &canvas_;
+  // A pointer rather than a reference, because this board swaps which canvas
+  // is current when a screen transition commits. Holding the one handed over
+  // at construction meant the setup countdown would be drawn into the canvas
+  // that is no longer on the panel, after any swipe.
+  ClippedCanvas16 *canvas_;
   RgbPanel &panel_;
   U8G2_FOR_ADAFRUIT_GFX u8g2_;
   int16_t width_;

@@ -148,6 +148,15 @@ static ClippedCanvas16 *spareCanvas = nullptr;
 static FollowSwipe swipe;
 // A value that arrived while a transition was running. The value itself is
 // stored the moment it lands; only the drawing waits.
+// Which broker this device is pointed at. Read once at boot with the rest
+// of the credentials and kept here, because "mqtt NOT connected" says
+// nothing about who it failed to reach - and the only other way to find out
+// is a serial monitor, whose attach resets the board. It also makes the
+// setting restorable: POST /api/mqtt can overwrite it and nothing could
+// read it back before changing it.
+static String brokerHost;
+static uint16_t brokerPort = 0;
+
 static bool renderPending = false;
 static unsigned long lastTopicRenderMs = 0;
 // A render plus its blit costs 180ms. Drawing every value as it lands left
@@ -511,7 +520,9 @@ static void setupNetworking()
       out += "  value renders " + String(topicRenders) + " in " + String(windowMs / 1000.0f, 1) +
              " s = " + String(windowMs ? topicRenderUs / 10.0f / windowMs : 0.0f, 1) +
              "% of the time blind" + String(topicRenderEnabled ? "" : "  (rendering is OFF)") + "\n";
-      out += "  loop " + String(loopTurns) + " turns, " +
+      out += "  broker " + (brokerHost.isEmpty() ? String("(none configured)")
+                                               : brokerHost + ":" + String(brokerPort)) + "\n";
+    out += "  loop " + String(loopTurns) + " turns, " +
              String(loopTurns ? windowMs * 1000.0f / loopTurns / 1000.0f : 0.0f, 1) +
              " ms each on average, worst turn " + String(worstTurnUs / 1000.0f, 1) + " ms\n";
       out += "  worst web " + String(worstWebUs / 1000.0f, 1) + " ms, worst mqtt " +
@@ -747,6 +758,8 @@ static void setupNetworking()
     return;
   }
 
+  brokerHost = creds.mqttHost;
+  brokerPort = (uint16_t)creds.mqttPort;
   mqttClient.configure(creds.mqttHost, (uint16_t)creds.mqttPort, creds.mqttUsername, creds.mqttPassword);
   deployManager.setPublishStatusHandler(
       [](const String &id, const String &state, const String &error, int percent) {
@@ -1169,6 +1182,11 @@ void loop()
     }
 
     swipe.release();
+    // The transition may have swapped which canvas is current. Anything
+    // holding the old pointer would now be looking at the screen that just
+    // left the glass.
+    testInterface.setCanvas(*canvas);
+    if (displayAdapter) displayAdapter->setCanvas(*canvas);
     // Whatever was marked belonged to the screen that just slid away, or to
     // the one that stayed - either way its rectangle has been repainted by
     // the transition and the mark is gone from the glass already.
