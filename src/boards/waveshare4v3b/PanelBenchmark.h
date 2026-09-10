@@ -24,11 +24,23 @@
 // memset and a hand-written store loop agree to within noise, so nothing is
 // to be won in the loop, and a freshly allocated buffer asked for the way
 // the LCD driver asks for its own is just as slow, so it is not alignment
-// or the allocator either. Every buffer we make writes at 17.7 MB/s and the
-// driver's framebuffer writes at 30.3. Why that one is different is not yet
-// known - the addresses are printed next to the numbers as the next place
-// to start. A rewritten canvas fill was built on the strength of the first
-// number, measured, and reverted.
+// or the allocator either. A rewritten canvas fill was built on the
+// strength of the first number, measured, and reverted.
+//
+// ANSWERED 2026-09-10, and the answer was the last thing suspected. The
+// framebuffer is not special memory. It was faster only while there was
+// exactly ONE of it - the driver gives a single framebuffer a speed no
+// other PSRAM buffer gets, and it vanishes at two:
+//
+//   1 framebuffer    fb_memset 25.5 ms   30.1 MB/s   compose 65.3 ms
+//   2 framebuffers   fb_memset 43.3 ms   17.7 MB/s   compose 68.7 ms
+//   3 framebuffers   fb_memset 43.9 ms   17.5 MB/s   compose 68.4 ms
+//
+// 17.7 MB/s is simply what this board writes at, framebuffer included. The
+// board runs three of them now, for a tear-free picture, so every number
+// in the first table above was taken on a configuration that no longer
+// exists. That is why they are dated rather than deleted - and why the
+// HIL check picks its thresholds from the framebuffer count it finds.
 //
 // The first run settled the diagnosis:
 //
