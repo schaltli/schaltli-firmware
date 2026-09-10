@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include "../../ClippedCanvas16.h"
+#include "RgbPanel.h"
 #include "../../project/ColorScreenRenderer.h"
 
 // A screen transition that follows the finger, on the board whose numbers say
@@ -53,11 +54,11 @@ public:
     bool valid = false;
   };
 
-  void attach(uint16_t *framebuffer, ClippedCanvas16 **current, ClippedCanvas16 *spare,
+  void attach(RgbPanel *panel, ClippedCanvas16 **current, ClippedCanvas16 *spare,
               ColorScreenRenderer *renderer, int *currentScreen, int screenCount,
               int16_t w, int16_t h)
   {
-    fb_ = framebuffer;
+    panel_ = panel;
     current_ = current;
     spare_ = spare;
     renderer_ = renderer;
@@ -67,7 +68,7 @@ public:
     h_ = h;
   }
 
-  bool ready() const { return fb_ && current_ && spare_ && renderer_ && screenCount_ >= 2; }
+  bool ready() const { return panel_ && current_ && spare_ && renderer_ && screenCount_ >= 2; }
   bool active() const { return active_; }
   const Stats &stats() const { return stats_; }
 
@@ -273,6 +274,10 @@ private:
   void compose(int offset)
   {
     const uint32_t t0 = micros();
+    // Into whichever buffer is not on the glass, and handed over whole at
+    // the end. With one framebuffer this is the same pointer every time and
+    // the frame tears; with two it cannot.
+    uint16_t *fb_ = panel_->back();
     const uint16_t *out = (*current_)->getBuffer();
     const uint16_t *in = spare_->getBuffer();
     const size_t stride = (size_t)w_;
@@ -298,6 +303,8 @@ private:
       }
     }
 
+    panel_->flip();
+
     offset_ = offset;
     const uint32_t d = micros() - t0;
     stats_.frames++;
@@ -305,7 +312,7 @@ private:
     if (d > stats_.worstUs) stats_.worstUs = d;
   }
 
-  uint16_t *fb_ = nullptr;
+  RgbPanel *panel_ = nullptr;
   ClippedCanvas16 **current_ = nullptr;
   ClippedCanvas16 *spare_ = nullptr;
   ColorScreenRenderer *renderer_ = nullptr;

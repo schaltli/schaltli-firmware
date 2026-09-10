@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <U8g2_for_Adafruit_GFX.h>
-#include <Arduino_GFX_Library.h>
+#include "RgbPanel.h"
 #include "../../interfaces/IDisplay.h"
 #include "../../ClippedCanvas16.h"
 
@@ -28,8 +28,8 @@
 // LVGL into this build for one file is not worth it before the rest works.
 class PanelDisplayAdapter : public IDisplay {
 public:
-  PanelDisplayAdapter(ClippedCanvas16 &canvas, Arduino_RGB_Display &gfx, int16_t w, int16_t h)
-      : canvas_(canvas), gfx_(gfx), width_(w), height_(h)
+  PanelDisplayAdapter(ClippedCanvas16 &canvas, RgbPanel &panel, int16_t w, int16_t h)
+      : canvas_(canvas), panel_(panel), width_(w), height_(h)
   {
     u8g2_.begin(canvas_);
     u8g2_.setFontMode(1);
@@ -64,13 +64,13 @@ public:
   }
 
 private:
-  void present() { gfx_.draw16bitRGBBitmap(0, 0, canvas_.getBuffer(), width_, height_); }
+  void present() { panel_.blit(canvas_.getBuffer()); }
 
   static const uint16_t BACKGROUND = 0x0000;
   static const uint16_t FOREGROUND = 0xFFFF;
 
   ClippedCanvas16 &canvas_;
-  Arduino_RGB_Display &gfx_;
+  RgbPanel &panel_;
   U8G2_FOR_ADAFRUIT_GFX u8g2_;
   int16_t width_;
   int16_t height_;

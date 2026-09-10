@@ -60,7 +60,6 @@
 // sources agree; nothing here is inferred from the 1.8" knob port, which is
 // the mistake that produced four hardware bugs on the last one.
 #include <Arduino.h>
-#include <Arduino_GFX_Library.h>
 #include <Wire.h>
 #include <WiFi.h>
 #include <LittleFS.h>
@@ -73,6 +72,7 @@
 #include "../../MqttClient.h"
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
+#include "RgbPanel.h"
 #include "PanelBenchmark.h"
 #include "../../project/RenderProfile.h"
 #include "ArcSelfTest.h"
@@ -111,20 +111,21 @@ static const int TP_INT = 4;
 // DATA0-4 = blue, DATA5-10 = green, DATA11-15 = red. Arduino_GFX wants them
 // split, hence the regrouping. The wiki names the same lines B3..B7, G2..G7
 // and R3..R7 - the panel's own bit numbering, same physical pins.
-static Arduino_ESP32RGBPanel *panel = new Arduino_ESP32RGBPanel(
+static const RgbPanel::Pins PANEL_PINS = {
     /* de */ 5, /* vsync */ 3, /* hsync */ 46, /* pclk */ 7,
-    /* r0..r4 */ 1, 2, 42, 41, 40,
-    /* g0..g5 */ 39, 0, 45, 48, 47, 21,
-    /* b0..b4 */ 14, 38, 18, 17, 10,
-    /* hsync */ 0, HSYNC_FRONT_PORCH, HSYNC_PULSE_WIDTH, HSYNC_BACK_PORCH,
-    /* vsync */ 0, VSYNC_FRONT_PORCH, VSYNC_PULSE_WIDTH, VSYNC_BACK_PORCH,
-    /* pclk_active_neg */ 1, /* prefer_speed */ PCLK_HZ, /* useBigEndian */ false,
-    /* de_idle_high */ 0, /* pclk_idle_high */ 0,
-    /* bounce_buffer_size_px */ BOUNCE_BUFFER_PX);
+    /* r0..r4 */ {1, 2, 42, 41, 40},
+    /* g0..g5 */ {39, 0, 45, 48, 47, 21},
+    /* b0..b4 */ {14, 38, 18, 17, 10}};
+
+static const RgbPanel::Timing PANEL_TIMING = {
+    PCLK_HZ,
+    HSYNC_PULSE_WIDTH, HSYNC_BACK_PORCH, HSYNC_FRONT_PORCH,
+    VSYNC_PULSE_WIDTH, VSYNC_BACK_PORCH, VSYNC_FRONT_PORCH};
+
+static RgbPanel panel;
 
 // No panel reset line on this board - LCD_RST is on the expander and the
 // panel comes up without it, as Waveshare's own example also assumes.
-static Arduino_RGB_Display *gfx = new Arduino_RGB_Display(PANEL_W, PANEL_H, panel);
 
 static Ch422g expander;
 static Gt911 touch;
@@ -239,7 +240,7 @@ static void renderAndPresent(const char *reason)
   uint32_t t0 = micros();
   bool ok = renderer->renderScreen(currentScreen);
   uint32_t t1 = micros();
-  gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
+  panel.blit(canvas->getBuffer());
   uint32_t t2 = micros();
   Serial.printf("[4v3b] render(screen %d, %s): %s | draw %lums, blit %lums\n",
                 currentScreen, reason, ok ? "ok" : "FAILED",
@@ -313,7 +314,7 @@ static void setupRenderStack()
   spareCanvas = new ClippedCanvas16(PANEL_W, PANEL_H);
   if (spareCanvas && spareCanvas->getBuffer())
   {
-    swipe.attach(gfx->getFramebuffer(), &canvas, spareCanvas, renderer, &currentScreen,
+    swipe.attach(&panel, &canvas, spareCanvas, renderer, &currentScreen,
                  (int)projectLoader.getProject().screens.size(), PANEL_W, PANEL_H);
     Serial.printf("[4v3b] swipe %s: %u screens, spare canvas at %p, psram free %u\n",
                   swipe.ready() ? "ready" : "idle (needs two screens)",
@@ -355,7 +356,7 @@ static void setupNetworking()
 {
   if (!canvas) return;
 
-  displayAdapter = new PanelDisplayAdapter(*canvas, *gfx, PANEL_W, PANEL_H);
+  displayAdapter = new PanelDisplayAdapter(*canvas, panel, PANEL_W, PANEL_H);
   configStorage.begin();
   wifiSetupServer = new WiFiSetupServer(*displayAdapter, configStorage);
 
@@ -393,6 +394,7 @@ static void setupNetworking()
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
+    out += panel.report();
     out += swipe.report();
     out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
            " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
@@ -412,9 +414,9 @@ static void setupNetworking()
              String(mqttUs / 1000) + " ms, touch " + String(touchUs / 1000) + " ms, mqtt " +
              String(mqttClient.isConnected() ? "connected" : "NOT connected") + "\n";
     }
-    if (setArg == "bench=1" && canvas && gfx)
+    if (setArg == "bench=1" && canvas)
     {
-      out += "\n" + PanelBenchmark::run(gfx->getFramebuffer(), canvas->getBuffer(), PANEL_W, PANEL_H);
+      out += "\n" + PanelBenchmark::run(panel.back(), canvas->getBuffer(), PANEL_W, PANEL_H);
       renderAndPresent("after benchmark");
     }
     else if (setArg == "render=1" && canvas && renderer)
@@ -447,7 +449,7 @@ static void setupNetworking()
       for (int i = 0; i < 5; i++)
       {
         uint32_t b0 = micros();
-        gfx->draw16bitRGBBitmap(0, 0, canvas->getBuffer(), PANEL_W, PANEL_H);
+        panel.blit(canvas->getBuffer());
         uint32_t d = micros() - b0;
         if (d < blitBest) blitBest = d;
       }
@@ -586,14 +588,14 @@ void setup()
   Serial.println();
   Serial.println("[4v3b] boot");
 
-  if (!gfx->begin())
+  if (!panel.begin(PANEL_W, PANEL_H, PANEL_PINS, PANEL_TIMING, BOUNCE_BUFFER_PX))
   {
     // Nothing to draw on if this fails, so the serial line is the only
     // channel left - which is why this build keeps CDC-on-boot enabled.
-    Serial.println("[4v3b] gfx->begin() FAILED");
+    Serial.println("[4v3b] panel.begin() FAILED");
     return;
   }
-  gfx->fillScreen(0x0000);
+  panel.fill(0x0000);
 
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
