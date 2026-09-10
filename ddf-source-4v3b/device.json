@@ -11,6 +11,17 @@
     "height": 480,
     "colorDepth": "24bit"
   },
+  "testInterface": {
+    "uploadUrl": "http://{ip}/api/project",
+    "uploadMethod": "POST",
+    "uploadContentType": "multipart-zip",
+    "screenSwitchUrl": "http://{ip}/api/screen",
+    "screenSwitchMethod": "POST",
+    "screenSwitchBody": "form-urlencoded",
+    "snapshotUrl": "http://{ip}/snapshot.bmp",
+    "snapshotFormat": "bmp",
+    "postRenderSettleMs": 0
+  },
   "adornment": {
     "svgPath": "adornment.svg"
   },
