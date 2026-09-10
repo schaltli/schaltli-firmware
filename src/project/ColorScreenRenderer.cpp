@@ -1061,7 +1061,13 @@ bool ColorScreenRenderer::renderIcon(const ScreenObject& obj) {
 // this only needs to decode and blit whichever one applies, not
 // reconstruct any of that.
 bool ColorScreenRenderer::renderSoftwareButton(const ScreenObject& obj, bool isPressed) {
-  const String& path = isPressed ? obj.pathActive : obj.pathNormal;
+  // Faellt auf das normale Bild zurueck, wenn es kein gedruecktes gibt.
+  // Sonst zeichnete ein Druck GAR NICHTS und der Knopf verschwaende, solange
+  // der Finger liegt - und der Designer zeigt in diesem Fall ebenfalls das
+  // normale Bild, die Pixelgleichheit wird dadurch also hergestellt und
+  // nicht gebrochen. Vor dem 2026-09-10 war das unerreichbar: kein Board
+  // hat je einen gedrueckten Zustand angefordert.
+  const String& path = (isPressed && !obj.pathActive.isEmpty()) ? obj.pathActive : obj.pathNormal;
   if (path.isEmpty()) return false;
   if (!ColorAssetLoader::drawBMPToCanvas(canvas_, path, obj.x, obj.y)) {
     canvas_->fillRect(obj.x + 2, obj.y + 2, obj.width - 4, obj.height - 4, 0x0000);
@@ -1559,7 +1565,10 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
 // Objektliste, sondern auch deren Sortierung und den Hintergrund - jede
 // Abweichung waere ein Pixelunterschied, und genau darauf pruefen die
 // HIL-Suiten.
-bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh) {
+bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh,
+                                             const String& pressedButtonId, const String& pendingSwitchId,
+                                             int pendingSwitchStateIndex, const String& pressedSwitchId,
+                                             int pressedSwitchStateIndex) {
   if (!projectLoader_.isLoaded()) return false;
   const ProjectConfig& project = projectLoader_.getProject();
   if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
@@ -1590,7 +1599,8 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
   for (const auto& obj : sortedObjects) {
     if (obj.x + obj.width + RAND <= rx || obj.x - RAND >= rx + rw) continue;
     if (obj.y + obj.height + RAND <= ry || obj.y - RAND >= ry + rh) continue;
-    renderObject(obj, "", "", -1, "", -1);
+    renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId,
+                 pressedSwitchStateIndex);
   }
 
   canvas_->clearRegion();

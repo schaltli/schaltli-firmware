@@ -237,6 +237,33 @@ static const int TAP_MAX_DRIFT = 10;
 // published command, which is invisible when the broker is away. Without
 // this, "did the tap land" is unanswerable from outside.
 static String lastTap = "none since boot";
+// What the last feedback repaint cost. Claimed at roughly 80ms before it
+// was built; kept on the device so the claim stays checkable.
+static String lastFeedback = "none since boot";
+
+// Touch feedback. The shared renderer has drawn all three of these states
+// from the start and this board had never asked for any of them: a finger
+// went down on a switch, a command went out, and the panel looked exactly
+// as it had a moment earlier. On a vehicle, where the answer comes back
+// from a broker over a link that may be down, "nothing happened" and "I
+// have your tap and I am waiting" have to look different.
+static String pressedButtonId;
+static String pressedSwitchId;
+static int pressedSwitchIndex = -1;
+static String pendingSwitchId;
+static int pendingSwitchIndex = -1;
+static unsigned long pendingSinceMs = 0;
+// Long enough for a broker on the same network to answer several times
+// over, short enough that a dead link does not leave a switch waiting for
+// ever on a screen nobody is watching.
+static const unsigned long PENDING_TIMEOUT_MS = 4000;
+// The rectangle the feedback lives in. Only this is redrawn, because a
+// button lighting up does not justify the whole screen.
+static int16_t feedbackX = 0, feedbackY = 0, feedbackW = 0, feedbackH = 0;
+static bool feedbackActive = false;
+// Counts full renders, so a caller can tell whether something it invoked
+// already repainted the screen and a region render would be waste.
+static uint32_t renderGeneration = 0;
 
 // A touch sample posted to /api/touch, standing in for the panel.
 //
@@ -248,9 +275,13 @@ static int16_t injectX = 0, injectY = 0;
 static bool injectDown = false;
 static bool injectLiftOnce = false;
 static unsigned long injectUntilMs = 0;
-// Long enough to survive a frame of a transition, short enough that a test
-// which stops posting cannot wedge the panel into a phantom contact.
-static const unsigned long TOUCH_INJECT_HOLD_MS = 400;
+// The knob holds an injected sample for 400ms. This board needs longer, and
+// the reason is its own snapshot: 1.15MB against the knob's 259KB, roughly
+// a second on the wire. A press that expires while the photograph of it is
+// still being sent cannot be photographed - which is how the press feedback
+// first appeared to do nothing at all. Still short enough that a test which
+// stops posting cannot wedge the panel into a phantom contact.
+static const unsigned long TOUCH_INJECT_HOLD_MS = 2000;
 static bool holdActive = false;
 static int16_t holdStartX = 0, holdStartY = 0;
 static unsigned long holdStartMs = 0;
@@ -265,7 +296,9 @@ static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
   uint32_t t0 = micros();
-  bool ok = renderer->renderScreen(currentScreen);
+  bool ok = renderer->renderScreen(currentScreen, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                                   pressedSwitchId, pressedSwitchIndex);
+  renderGeneration++;
   uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
   uint32_t t2 = micros();
@@ -450,6 +483,7 @@ static void setupNetworking()
     out += "uptime " + String(millis() / 1000) + " s\n";
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
+    out += "  last feedback: " + lastFeedback + "\n";
     out += swipe.report();
     out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
            " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
@@ -664,6 +698,123 @@ void setup()
   setupNetworking();
 }
 
+// Which segment of a switch a tap at x selects.
+//
+// One function rather than two, because the pressed segment and the
+// published one have to be the same or the panel lights up one thing and
+// commands another.
+static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
+{
+  const int states = (int)hit->properties.states.size();
+  if (states <= 0) return -1;
+
+  if (hit->properties.mode == "single")
+  {
+    // One area, one target: a tap moves to the next state and wraps. Two
+    // states make a toggle, three a cycle, so there is no special case.
+    // The active index comes from the renderer rather than from a second
+    // copy of the same rule here - what is drawn and what is tapped have
+    // to agree about the state.
+    const int active = renderer->getActiveSwitchStateIndex(*hit);
+    // No retained value yet: the tile shows "?" and a tap starts at the
+    // beginning instead of doing nothing.
+    return (active < 0) ? 0 : (active + 1) % states;
+  }
+
+  // Equal segments across the object's width, the same division
+  // ColorScreenRenderer::renderSwitch() draws. If this differs, the finger
+  // hits a segment other than the one it is pointing at.
+  int index = ((int)(x - objX) * states) / hit->width;
+  if (index < 0) index = 0;
+  if (index >= states) index = states - 1;
+  return index;
+}
+
+// Redraws only the rectangle the feedback lives in, then shows it.
+//
+// The region render is what makes this worth doing at all: a full screen is
+// 113ms before the panel even sees it, and a press that arrives a tenth of a
+// second late is not feedback. The blit is still whole, because with three
+// framebuffers the one being drawn into is two flips old and a partial copy
+// would show two frames at once - the tearing this board just got rid of, by
+// another route.
+static void renderFeedbackRegion(const char *reason, bool present = true)
+{
+  if (!renderer || !canvas || !feedbackActive) return;
+  const uint32_t t0 = micros();
+  renderer->renderScreenRegion(currentScreen, feedbackX, feedbackY, feedbackW, feedbackH,
+                               pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                               pressedSwitchId, pressedSwitchIndex);
+  const uint32_t t1 = micros();
+  // A transition composes from the canvas, not from the panel, so the one
+  // caller that is about to start one needs the canvas corrected and
+  // nothing else - the first composed frame replaces the glass anyway.
+  if (present) panel.blit(canvas->getBuffer());
+  const uint32_t t2 = micros();
+  Serial.printf("[feedback] %s: region %lums, blit %lums\n", reason,
+                (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
+  lastFeedback = String(reason) + ": " + String(feedbackW) + "x" + String(feedbackH) +
+                 " region " + String((t1 - t0) / 1000.0f, 1) + " ms" +
+                 (present ? ", blit " + String((t2 - t1) / 1000.0f, 1) + " ms" : ", no blit");
+}
+
+// A finger has landed on something tappable: show it pressed at once,
+// before anything is decided about what the gesture will turn out to be.
+static void beginPressFeedback(int16_t x, int16_t y)
+{
+  if (!projectLoader.isLoaded() || renderer == nullptr) return;
+
+  int16_t objX = 0, objY = 0;
+  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  if (hit == nullptr) return;
+
+  if (hit->type == "SoftwareButton") pressedButtonId = hit->id;
+  else if (hit->type == "Switch")
+  {
+    pressedSwitchId = hit->id;
+    pressedSwitchIndex = switchSegmentFor(hit, x, objX);
+  }
+  else return;
+
+  feedbackX = objX;
+  feedbackY = objY;
+  feedbackW = hit->width;
+  feedbackH = hit->height;
+  feedbackActive = true;
+  renderFeedbackRegion("press");
+}
+
+// The finger is gone, whatever it turned out to mean. Anything still shown
+// pressed has to stop being pressed, and a switch waiting for its broker
+// keeps its pending mark.
+static void clearPressFeedback()
+{
+  if (pressedButtonId.isEmpty() && pressedSwitchId.isEmpty()) return;
+  pressedButtonId = "";
+  pressedSwitchId = "";
+  pressedSwitchIndex = -1;
+  renderFeedbackRegion("release");
+  if (pendingSwitchId.isEmpty()) feedbackActive = false;
+}
+
+// A tap has gone out and nothing has confirmed it yet.
+static void markPending(const String &id, int index)
+{
+  pendingSwitchId = id;
+  pendingSwitchIndex = index;
+  pendingSinceMs = millis();
+}
+
+// Whatever came back, or ran out of patience.
+static void clearPending(const char *reason)
+{
+  if (pendingSwitchId.isEmpty()) return;
+  pendingSwitchId = "";
+  pendingSwitchIndex = -1;
+  renderFeedbackRegion(reason);
+  feedbackActive = false;
+}
+
 // What a project binds to a button, and what this board does about it.
 // Ported from the knob rather than reinvented: same action names, same
 // order, same treatment of an unknown one.
@@ -758,28 +909,8 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     return false;
   }
 
-  int index;
-  if (hit->properties.mode == "single")
-  {
-    // One area, one target: a tap moves to the next state and wraps. Two
-    // states make a toggle, three a cycle, so there is no special case.
-    // The active index comes from the renderer rather than from a second
-    // copy of the same rule here - what is drawn and what is tapped have
-    // to agree about the state.
-    const int active = renderer->getActiveSwitchStateIndex(*hit);
-    // No retained value yet: the tile shows "?" and a tap starts at the
-    // beginning instead of doing nothing.
-    index = (active < 0) ? 0 : (active + 1) % states;
-  }
-  else
-  {
-    // Equal segments across the object's width, the same division
-    // ColorScreenRenderer::renderSwitch() draws. If this differs, the finger
-    // hits a segment other than the one it is pointing at.
-    index = ((int)(x - objX) * states) / hit->width;
-    if (index < 0) index = 0;
-    if (index >= states) index = states - 1;
-  }
+  const int index = switchSegmentFor(hit, x, objX);
+  if (index < 0) return false;
 
   const String &value = hit->properties.states[index].writeValue;
   if (value.isEmpty()) return false;
@@ -790,6 +921,10 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // topic and colours the segment, so the switch shows what actually
   // happened rather than what it believed it was doing.
   const bool sent = mqttClient.publish(hit->properties.writeTopic, value, false);
+  // Marked as asked-for either way. If the command did not even leave the
+  // device, the mark expiring is the honest outcome - the alternative is a
+  // segment that looks switched because we said so.
+  markPending(hit->id, index);
   lastTap = "(" + String(x) + "," + String(y) + ") Switch \"" + hit->id + "\" segment " +
             String(index) + " -> " + hit->properties.writeTopic + " = " + value +
             (sent ? "" : "  (NOT published - broker away)");
@@ -943,6 +1078,9 @@ void loop()
       contactCount++;
       contactSamples = 0;
       contactDrift = 0;
+      // Before anything is decided about what this gesture will be. A press
+      // that waits to find out is not a press.
+      beginPressFeedback(touchX, touchY);
     }
     contactSamples++;
     const int dx = (int)touchX - holdStartX;
@@ -960,11 +1098,24 @@ void loop()
 
     if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
 
-    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
-        swipe.start(dx < 0 ? 1 : -1, holdStartX))
+    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy))
     {
-      holdActive = false;
-      return;
+      // The finger is leaving, so nothing it touched on the way is pressed.
+      // Corrected in the canvas only: the transition reads from there, and
+      // the panel is about to be replaced wholesale.
+      if (!pressedButtonId.isEmpty() || !pressedSwitchId.isEmpty())
+      {
+        pressedButtonId = "";
+        pressedSwitchId = "";
+        pressedSwitchIndex = -1;
+        renderFeedbackRegion("drag took over", false);
+        if (pendingSwitchId.isEmpty()) feedbackActive = false;
+      }
+      if (swipe.start(dx < 0 ? 1 : -1, holdStartX))
+      {
+        holdActive = false;
+        return;
+      }
     }
 
     if (abs(dx) <= SETUP_HOLD_MAX_DRIFT && abs(dy) <= SETUP_HOLD_MAX_DRIFT)
@@ -999,9 +1150,20 @@ void loop()
       holdLastSecondShown = -1;
     }
 
-    // Nothing else gets a turn while the finger is down. 5ms is short
-    // against a gesture and long against an I2C read, so a 300ms swipe is
-    // seen dozens of times instead of once or twice.
+    // The web client still gets its turn, MQTT still does not. That split is
+    // the whole point: the 3s that blinded this board was a broker connect,
+    // measured, while the web server's worst turn was 13ms. Leaving it out
+    // as well cost more than it saved - a press cannot be photographed if
+    // the request for the photograph is only served after the finger lifts,
+    // which is exactly how the press feedback came to look like it was not
+    // working at all. A test fetching a full snapshot does block a gesture
+    // for about a second; that is a trade taken deliberately, because
+    // nobody fetches snapshots while swiping except a test that wants one.
+    testInterface.handleClient();
+
+    // Otherwise nothing else gets a turn. 5ms is short against a gesture
+    // and long against an I2C read, so a 300ms swipe is seen dozens of
+    // times instead of once or twice.
     delay(5);
     return;
   }
@@ -1018,9 +1180,22 @@ void loop()
     // A contact that stayed put and was not claimed by the setup hold is a
     // tap. Dispatched from where the finger went down rather than where it
     // left, because that is the point the user aimed at.
+    // Unpressed first, then dispatched: an action that changes screens
+    // repaints everything itself, and a region render afterwards would be
+    // drawing yesterday's rectangle onto today's screen.
+    pressedButtonId = "";
+    pressedSwitchId = "";
+    pressedSwitchIndex = -1;
+
+    const uint32_t generationBefore = renderGeneration;
     if (!holdConsumed && contactDrift <= TAP_MAX_DRIFT)
     {
       dispatchTapAt(holdStartX, holdStartY);
+    }
+    if (renderGeneration == generationBefore)
+    {
+      renderFeedbackRegion("release");
+      if (pendingSwitchId.isEmpty()) feedbackActive = false;
     }
     // A hold that showed a countdown and was then released must not count as
     // anything else, and the panel has to be put back because the countdown
@@ -1047,6 +1222,22 @@ void loop()
     const uint32_t d = micros() - mqttT0;
     mqttUs += d;
     if (d > worstMqttUs) worstMqttUs = d;
+  }
+
+  // A value arrived, so the device has newer state than the mark does. The
+  // mark goes before the render rather than after it, so the fresh values
+  // decide the picture instead of being drawn under a stale "waiting".
+  if (renderPending && !pendingSwitchId.isEmpty())
+  {
+    pendingSwitchId = "";
+    pendingSwitchIndex = -1;
+    feedbackActive = false;
+  }
+  else if (!pendingSwitchId.isEmpty() && (millis() - pendingSinceMs) >= PENDING_TIMEOUT_MS)
+  {
+    // Nothing came back. Better to drop the mark than to leave a switch
+    // looking like it is still being asked.
+    clearPending("pending timed out");
   }
 
   if (renderPending && topicRenderEnabled && (millis() - lastTopicRenderMs) >= TOPIC_RENDER_MIN_MS)

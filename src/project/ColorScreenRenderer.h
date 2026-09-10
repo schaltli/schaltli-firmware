@@ -100,7 +100,16 @@ public:
   // das Ergebnis bitgleich zu renderScreen(), weil dieselbe Reihenfolge auf
   // denselben Hintergrund gezeichnet wird; ausserhalb bleibt das vorige Bild
   // stehen. Die Pixel-Gleichheit mit dem Designer bleibt damit erhalten.
-  bool renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh);
+  // Die Rueckmeldeparameter sind dieselben wie bei renderScreen() und
+  // werden genauso durchgereicht. Sie haben Vorgabewerte, weil dieser
+  // Ausschnitt-Render bis 2026-09-10 gar keine kannte: er zeichnete jedes
+  // Objekt ungedrueckt, was fuer den Bogen-Ausschnitt des Knobs richtig war
+  // und einen gedrueckten Knopf unmoeglich machte. Ein Tastendruck ist genau
+  // der Fall, fuer den sich ein Vollbild nicht lohnt.
+  bool renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh,
+                          const String& pressedButtonId = "", const String& pendingSwitchId = "",
+                          int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
+                          int pressedSwitchStateIndex = -1);
 
   // Welches Rechteck sich aendert, wenn dieser Ring von oldValue auf newValue
   // geht - Bogenenden plus die Zahl in der Mitte. Liefert false, wenn sich
