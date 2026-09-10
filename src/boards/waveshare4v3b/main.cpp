@@ -261,6 +261,17 @@ static const unsigned long PENDING_TIMEOUT_MS = 4000;
 // button lighting up does not justify the whole screen.
 static int16_t feedbackX = 0, feedbackY = 0, feedbackW = 0, feedbackH = 0;
 static bool feedbackActive = false;
+// The pending mark keeps its OWN rectangle, and that is the whole fix for a
+// bug reported from the glass: tap three tiles in a row and only the last
+// one's mark ever cleared. Both states used to share one rectangle, so the
+// press on tile three moved it there, and when tile three's mark expired it
+// repainted tile three - leaving marks on one and two standing for ever,
+// because nothing pointed at them any more.
+static int16_t pendingX = 0, pendingY = 0, pendingW = 0, pendingH = 0;
+// Declared here because the test interface is wired up before the feedback
+// helpers are defined, and a screen forced from outside invalidates them
+// exactly as one chosen by a finger does.
+static void forgetTouchFeedback();
 // Counts full renders, so a caller can tell whether something it invoked
 // already repainted the screen and a region render would be waste.
 static uint32_t renderGeneration = 0;
@@ -453,6 +464,7 @@ static void setupNetworking()
     if (!projectLoader.isLoaded()) return false;
     if (index < 0 || index >= (int)projectLoader.getProject().screens.size()) return false;
     currentScreen = index;
+    forgetTouchFeedback();
     renderAndPresent("test interface: screen switch");
     return true;
   });
@@ -738,11 +750,12 @@ static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
 // framebuffers the one being drawn into is two flips old and a partial copy
 // would show two frames at once - the tearing this board just got rid of, by
 // another route.
-static void renderFeedbackRegion(const char *reason, bool present = true)
+static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const char *reason,
+                         bool present = true)
 {
-  if (!renderer || !canvas || !feedbackActive) return;
+  if (!renderer || !canvas || rw <= 0 || rh <= 0) return;
   const uint32_t t0 = micros();
-  renderer->renderScreenRegion(currentScreen, feedbackX, feedbackY, feedbackW, feedbackH,
+  renderer->renderScreenRegion(currentScreen, rx, ry, rw, rh,
                                pressedButtonId, pendingSwitchId, pendingSwitchIndex,
                                pressedSwitchId, pressedSwitchIndex);
   const uint32_t t1 = micros();
@@ -753,9 +766,16 @@ static void renderFeedbackRegion(const char *reason, bool present = true)
   const uint32_t t2 = micros();
   Serial.printf("[feedback] %s: region %lums, blit %lums\n", reason,
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
-  lastFeedback = String(reason) + ": " + String(feedbackW) + "x" + String(feedbackH) +
+  lastFeedback = String(reason) + ": " + String(rw) + "x" + String(rh) +
                  " region " + String((t1 - t0) / 1000.0f, 1) + " ms" +
                  (present ? ", blit " + String((t2 - t1) / 1000.0f, 1) + " ms" : ", no blit");
+}
+
+// The rectangle whatever is currently showing lives in.
+static void renderFeedbackRegion(const char *reason, bool present = true)
+{
+  if (!feedbackActive) return;
+  renderRegion(feedbackX, feedbackY, feedbackW, feedbackH, reason, present);
 }
 
 // A finger has landed on something tappable: show it pressed at once,
@@ -798,20 +818,49 @@ static void clearPressFeedback()
 }
 
 // A tap has gone out and nothing has confirmed it yet.
-static void markPending(const String &id, int index)
+static void markPending(const String &id, int index, int16_t rx, int16_t ry, int16_t rw, int16_t rh)
 {
+  // A mark on some other tile is now stale, and it is the only thing that
+  // knows where it is. Wiped before the new one takes the state over.
+  if (!pendingSwitchId.isEmpty() && pendingSwitchId != id)
+  {
+    const int16_t oldX = pendingX, oldY = pendingY, oldW = pendingW, oldH = pendingH;
+    pendingSwitchId = "";
+    pendingSwitchIndex = -1;
+    renderRegion(oldX, oldY, oldW, oldH, "superseded");
+  }
+
   pendingSwitchId = id;
   pendingSwitchIndex = index;
   pendingSinceMs = millis();
+  pendingX = rx;
+  pendingY = ry;
+  pendingW = rw;
+  pendingH = rh;
 }
 
 // Whatever came back, or ran out of patience.
 static void clearPending(const char *reason)
 {
   if (pendingSwitchId.isEmpty()) return;
+  const int16_t x = pendingX, y = pendingY, w = pendingW, h = pendingH;
   pendingSwitchId = "";
   pendingSwitchIndex = -1;
-  renderFeedbackRegion(reason);
+  renderRegion(x, y, w, h, reason);
+  feedbackActive = false;
+}
+
+// Everything the touch feedback believes, dropped without repainting.
+// For a screen change, where the rectangles it remembers belong to a screen
+// that is no longer showing and repainting them would put a mark on the
+// wrong picture.
+static void forgetTouchFeedback()
+{
+  pressedButtonId = "";
+  pressedSwitchId = "";
+  pressedSwitchIndex = -1;
+  pendingSwitchId = "";
+  pendingSwitchIndex = -1;
   feedbackActive = false;
 }
 
@@ -829,6 +878,7 @@ static void dispatchButtonAction(const ButtonAction &action)
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
     currentScreen = ((currentScreen + delta) % count + count) % count;
+    forgetTouchFeedback();
     renderAndPresent("button: screen change");
   }
   else if (action.type == "goto-screen")
@@ -838,6 +888,7 @@ static void dispatchButtonAction(const ButtonAction &action)
       if (project.screens[i].id == action.targetScreenId)
       {
         currentScreen = i;
+        forgetTouchFeedback();
         renderAndPresent("button: goto screen");
         break;
       }
@@ -924,7 +975,7 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // Marked as asked-for either way. If the command did not even leave the
   // device, the mark expiring is the honest outcome - the alternative is a
   // segment that looks switched because we said so.
-  markPending(hit->id, index);
+  markPending(hit->id, index, objX, objY, hit->width, hit->height);
   lastTap = "(" + String(x) + "," + String(y) + ") Switch \"" + hit->id + "\" segment " +
             String(index) + " -> " + hit->properties.writeTopic + " = " + value +
             (sent ? "" : "  (NOT published - broker away)");
@@ -1015,6 +1066,10 @@ void loop()
     }
 
     swipe.release();
+    // Whatever was marked belonged to the screen that just slid away, or to
+    // the one that stayed - either way its rectangle has been repainted by
+    // the transition and the mark is gone from the glass already.
+    forgetTouchFeedback();
     // Deliberately not rendering here, even though a value is usually
     // waiting. That render is 180ms during which the next contact cannot
     // be seen, and these gestures come in quick succession - a fifth of a
