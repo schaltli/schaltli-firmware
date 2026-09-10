@@ -154,6 +154,18 @@ private:
   uint32_t connectCount_ = 0;
   int lastDisconnectState_ = 0;
   unsigned long lastReconnectAttempt_;
+  // The wait before the next attempt, doubling while attempts keep failing
+  // and reset the moment one succeeds. A blocked attempt is not free: the
+  // TCP connect blocks this single-threaded loop for the socket timeout,
+  // measured at 3.0s on the 4.3B against an unreachable broker. Retrying
+  // every 5s therefore spent 60% of all time inside this call, and the
+  // panel was blind to its own touchscreen for three seconds out of five -
+  // twelve of twenty deliberate swipes were never seen at all.
+  unsigned long reconnectBackoffMs_ = RECONNECT_INTERVAL_MS;
   static const unsigned long RECONNECT_INTERVAL_MS = 5000;
+  // A minute between attempts against a broker that is not there. Nothing
+  // is lost by waiting: a broker that comes back stays back, and one
+  // attempt in sixty seconds costs 5% of the loop instead of 60%.
+  static const unsigned long RECONNECT_BACKOFF_MAX_MS = 60000;
 };
 

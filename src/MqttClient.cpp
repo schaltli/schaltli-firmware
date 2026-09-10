@@ -207,7 +207,7 @@ void MqttClient::loop() {
     // Try to reconnect if disconnected
     if (!mqttClient_.connected()) {
       unsigned long now = millis();
-      if (now - lastReconnectAttempt_ > RECONNECT_INTERVAL_MS) {
+      if (now - lastReconnectAttempt_ > reconnectBackoffMs_) {
         // Temporary diagnostic (2026-08-10): this device was found
         // reconnecting to the broker roughly every 5s continuously
         // (matching RECONNECT_INTERVAL_MS exactly), which explains why a
@@ -229,6 +229,20 @@ void MqttClient::loop() {
         // an, wie es der Nutzer beschreibt: meistens fluessig, dann haengt es.
         lastDisconnectState_ = mqttClient_.state();
         reconnect();
+
+        // Widen the wait while it keeps failing, and snap back on success.
+        // Without this the loop pays the full socket timeout every five
+        // seconds for as long as the broker is away, which on a vehicle is
+        // most of the time the panel is switched on.
+        if (mqttClient_.connected())
+        {
+          reconnectBackoffMs_ = RECONNECT_INTERVAL_MS;
+        }
+        else if (reconnectBackoffMs_ < RECONNECT_BACKOFF_MAX_MS)
+        {
+          reconnectBackoffMs_ *= 2;
+          if (reconnectBackoffMs_ > RECONNECT_BACKOFF_MAX_MS) reconnectBackoffMs_ = RECONNECT_BACKOFF_MAX_MS;
+        }
       }
     } else {
       // Process incoming messages
