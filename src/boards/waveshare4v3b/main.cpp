@@ -157,6 +157,25 @@ static FollowSwipe swipe;
 static String brokerHost;
 static uint16_t brokerPort = 0;
 
+// Which topics changed since the last draw, and what they held before.
+//
+// The old value is the part that is easy to lose: an arc-level's dirty
+// rectangle is the ground the pointer SWEPT, so it needs where the value
+// came from, not just where it went. Coalescing keeps the oldest one seen
+// per topic for exactly that reason - three values arriving inside one
+// window have swept the whole way from the first to the last.
+struct PendingTopic {
+  String topic;
+  String oldValue;
+};
+static const int MAX_PENDING_TOPICS = 6;
+static PendingTopic pendingTopics[MAX_PENDING_TOPICS];
+static int pendingTopicCount = 0;
+static bool pendingTopicOverflow = false;
+// What the last value change cost, so "the partial path is running" stays
+// checkable from outside rather than being assumed.
+static String lastValueDraw = "none since boot";
+
 static bool renderPending = false;
 static unsigned long lastTopicRenderMs = 0;
 // A render plus its blit costs 180ms. Drawing every value as it lands left
@@ -325,6 +344,8 @@ static void renderAndPresent(const char *reason)
   bool ok = renderer->renderScreen(currentScreen, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
                                    pressedSwitchId, pressedSwitchIndex);
   renderGeneration++;
+  pendingTopicCount = 0;
+  pendingTopicOverflow = false;
   uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
   uint32_t t2 = micros();
@@ -511,6 +532,7 @@ static void setupNetworking()
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
+    out += "  last value draw: " + lastValueDraw + "\n";
     out += swipe.report();
     out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
            " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
@@ -781,7 +803,31 @@ static void setupNetworking()
       deployManager.handleDeployMessage(payload);
       return;
     }
+    // Read before it is overwritten: the partial redraw needs the value the
+    // screen is still showing.
+    const String previous = projectLoader.getTopicValue(topic);
     projectLoader.setTopicValue(topic, payload);
+
+    bool known = false;
+    for (int i = 0; i < pendingTopicCount; i++)
+    {
+      if (pendingTopics[i].topic == topic) { known = true; break; }
+    }
+    if (!known)
+    {
+      if (pendingTopicCount < MAX_PENDING_TOPICS)
+      {
+        pendingTopics[pendingTopicCount].topic = topic;
+        pendingTopics[pendingTopicCount].oldValue = previous;
+        pendingTopicCount++;
+      }
+      else
+      {
+        // More topics than rectangles worth drawing. A full screen is the
+        // honest answer rather than a partial one that misses something.
+        pendingTopicOverflow = true;
+      }
+    }
 
     // Never drawn from here. This runs inside mqttClient.loop(), so a
     // render costing 180ms happened between two touch samples and, during a
@@ -978,6 +1024,111 @@ static void forgetTouchFeedback()
   pendingSwitchId = "";
   pendingSwitchIndex = -1;
   feedbackActive = false;
+}
+
+static String stripJsonPath(const String &topicOrPath)
+{
+  const int hashIndex = topicOrPath.indexOf('#');
+  return hashIndex == -1 ? topicOrPath : topicOrPath.substring(0, hashIndex);
+}
+
+// Redraws only what a new value actually changes.
+//
+// Ported from the knob, which learned the shape of this the hard way: its
+// first version demanded exactly one object per topic and fell back to a
+// full screen otherwise, and the shortcut vanished silently the day someone
+// bound a second object to the same brightness. So: any number of objects,
+// each with its own rectangle.
+//
+// What this board adds is the second half. The knob hands its regions to
+// LVGL, which flushes only what changed; here the canvas still has to reach
+// the panel, and a full blit is 69ms against a 113ms render - so redrawing
+// less would have saved a third of nothing without RgbPanel::blitRegion().
+//
+// Returns false when the change cannot be bounded safely; the caller then
+// draws a full screen, which is always correct and merely slow.
+static bool renderValueChangesPartial()
+{
+  if (renderer == nullptr || canvas == nullptr || !projectLoader.isLoaded()) return false;
+  if (pendingTopicOverflow || pendingTopicCount == 0) return false;
+
+  const ProjectConfig &project = projectLoader.getProject();
+  if (currentScreen < 0 || currentScreen >= (int)project.screens.size()) return false;
+  const Screen &screen = project.screens[currentScreen];
+
+  const int MAX_RECTS = 8;
+  int16_t rx[MAX_RECTS], ry[MAX_RECTS], rw[MAX_RECTS], rh[MAX_RECTS];
+  int rects = 0;
+
+  for (const auto &obj : screen.objects)
+  {
+    // Nested objects are not bounded here: a child's coordinates are
+    // relative to its parent, and getting that wrong leaves a stale
+    // rectangle on the glass rather than failing loudly.
+    if (!obj.children.empty()) return false;
+    if (obj.properties.topic.isEmpty()) continue;
+
+    const String objTopic = stripJsonPath(obj.properties.topic);
+    const String *oldValue = nullptr;
+    for (int i = 0; i < pendingTopicCount; i++)
+    {
+      if (pendingTopics[i].topic == objTopic) { oldValue = &pendingTopics[i].oldValue; break; }
+    }
+    if (oldValue == nullptr) continue;
+    if (oldValue->isEmpty()) return false;  // nothing to compare a sweep against
+
+    if (obj.type == "arc-level")
+    {
+      const String newValue = projectLoader.getTopicValue(obj.properties.topic);
+      if (newValue.isEmpty() || newValue == *oldValue) return false;
+      if (rects + 2 > MAX_RECTS) return false;
+      // The swept arc and the number in the middle, separately: their
+      // common hull would be nearly the whole object, because one is at
+      // the rim and the other at the centre.
+      if (!renderer->arcLevelDirtyRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
+                                       &rh[rects]))
+      {
+        return false;
+      }
+      rects++;
+      if (renderer->arcLevelTextRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
+                                     &rh[rects]))
+      {
+        rects++;
+      }
+    }
+    else
+    {
+      if (rects + 1 > MAX_RECTS) return false;
+      rx[rects] = obj.x;
+      ry[rects] = obj.y;
+      rw[rects] = obj.width;
+      rh[rects] = obj.height;
+      rects++;
+    }
+  }
+  if (rects == 0) return false;
+
+  const uint32_t t0 = micros();
+  for (int i = 0; i < rects; i++)
+  {
+    if (!renderer->renderScreenRegion(currentScreen, rx[i], ry[i], rw[i], rh[i], pressedButtonId,
+                                      pendingSwitchId, pendingSwitchIndex, pressedSwitchId,
+                                      pressedSwitchIndex))
+    {
+      // Half the regions drawn and the rest not: the canvas is now a mix
+      // and only a full screen can be trusted to sort it out.
+      return false;
+    }
+  }
+  const uint32_t t1 = micros();
+  for (int i = 0; i < rects; i++) panel.blitRegion(canvas->getBuffer(), rx[i], ry[i], rw[i], rh[i]);
+  const uint32_t t2 = micros();
+
+  lastValueDraw = String(rects) + " region(s), render " + String((t1 - t0) / 1000.0f, 1) + " ms, blit " +
+                  String((t2 - t1) / 1000.0f, 1) + " ms, " + String(panel.lastPresentPixels()) +
+                  " px copied";
+  return true;
 }
 
 // What a project binds to a button, and what this board does about it.
@@ -1429,9 +1580,15 @@ void loop()
     renderPending = false;
     lastTopicRenderMs = millis();
     const uint32_t t0 = micros();
-    renderAndPresent("topic");
+    if (!renderValueChangesPartial())
+    {
+      lastValueDraw = "full screen";
+      renderAndPresent("topic");
+    }
     topicRenderUs += micros() - t0;
     topicRenders++;
+    pendingTopicCount = 0;
+    pendingTopicOverflow = false;
   }
 
   {
