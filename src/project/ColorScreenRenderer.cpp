@@ -1183,7 +1183,7 @@ void ColorScreenRenderer::drawSwitchBar(int x, int y, int width, uint16_t color,
 // a state cannot look different depending on which mode drew it - the same
 // reason render-switch.ts factors this out.
 void ColorScreenRenderer::drawSwitchStateContent(const SwitchState& state, const String& iconPath,
-                                                 int x, int width, int bandTop, int bandHeight,
+                                                 float x, float width, int bandTop, int bandHeight,
                                                  uint16_t textColor, const BdfFont* font,
                                                  int16_t fontAscent, int16_t fontDescent) {
   float centerX = x + width / 2.0f;
@@ -1207,9 +1207,19 @@ void ColorScreenRenderer::drawSwitchStateContent(const SwitchState& state, const
 
   int16_t fontHeight = fontAscent + fontDescent;
   int16_t textWidth = measureTrueTextWidth(state.label, font);
-  int16_t maxWidth = width - 4;
-  if (maxWidth > 0 && textWidth > maxWidth) textWidth = maxWidth;
-  int16_t textX = x + jsRound((width - textWidth) / 2.0f);
+  // Float throughout, and rounded exactly once at the end - the same shape as
+  // render-switch.ts's Math.round(centerX - min(textWidth, maxWidth) / 2).
+  //
+  // Rounding the half-difference first and adding a fractional x afterwards
+  // is not the same sum: the assignment then truncates what the rounding
+  // already moved, and the label lands a pixel left of the designer's on any
+  // segment whose boundary is not a whole pixel. That was the last 170 pixels
+  // of the switch's disagreement after the boundaries themselves were fixed
+  // (2026-09-10).
+  float maxWidth = width - 4.0f;
+  float effectiveTextWidth = (float)textWidth;
+  if (maxWidth > 0.0f && effectiveTextWidth > maxWidth) effectiveTextWidth = maxWidth;
+  int16_t textX = jsRound(x + (width - effectiveTextWidth) / 2.0f);
   int16_t textY;
   if (hasIcon) {
     // Below the icon, top-anchored - matches render-switch.ts's anchorTop
@@ -1353,17 +1363,37 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     return true;
   }
 
-  int baseSegmentWidth = obj.width / (int)stateCount;
+  // Float division, exactly as render-switch.ts does it, with rounding only
+  // where the designer rounds.
+  //
+  // This used to be integer division, with the last segment absorbing the
+  // remainder so the segments summed to obj.width - and a comment calling the
+  // difference from the designer's float division "close enough to never
+  // matter on a display this size". It matters whenever obj.width does not
+  // divide by the state count: at 555px across two states the boundary falls
+  // at 400.5, integer division put it at 400 and the designer's Math.round
+  // put it at 401, so every divider and every marker bar sat one pixel apart.
+  // Found 2026-09-10 by the generated type-coverage run, whose switch is a
+  // width the hand-written fixtures never used (theirs is 280 across two
+  // states, which divides exactly and hid this for as long as it existed).
+  const float segmentWidth = (float)obj.width / (float)stateCount;
+  // jsRound, not lroundf: the designer rounds with Math.round, which takes
+  // .5 upward rather than away from zero. Identical for positive values, and
+  // this is the file where "identical for the cases we tried" has already
+  // cost one bug.
+  auto boundary = [&](size_t index) {
+    return jsRound((float)obj.x + (float)index * segmentWidth);
+  };
 
   for (size_t i = 0; i < stateCount; i++) {
-    int segX = obj.x + (int)i * baseSegmentWidth;
-    // Last segment absorbs the integer-division remainder so segments
-    // always sum to exactly obj.width - the designer uses float division
-    // (obj.width / states.length) instead, close enough a difference to
-    // never matter on a display this size, but this keeps every pixel of
-    // obj.width accounted for rather than losing up to (stateCount-1) px
-    // off the right edge.
-    int segW = (i + 1 == stateCount) ? (obj.x + obj.width - segX) : baseSegmentWidth;
+    int segX = boundary(i);
+    // Two different widths, because the designer uses two. Content is clipped
+    // to the gap between this boundary and the next, which tiles obj.width
+    // exactly with no seam; the marker bar is sized from the segment width
+    // itself (Math.round(width) in drawBar), which is the same number for
+    // every segment even when the boundaries are not evenly spaced.
+    int segW = boundary(i + 1) - segX;
+    int barW = jsRound(segmentWidth);
 
     bool isPending = (int)i == pendingStateIndex;
     bool isPressed = (int)i == pressedStateIndex && !isPending;
@@ -1382,9 +1412,9 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     // and the confirmed one stays solid, so during a write you see both -
     // "it is this, you asked for that" - and nothing has to lie.
     if (isPending || isPressed) {
-      drawSwitchBar(segX, obj.y, segW, markerColor, true);
+      drawSwitchBar(segX, obj.y, barW, markerColor, true);
     } else if (isActive) {
-      drawSwitchBar(segX, obj.y, segW, markerColor, false);
+      drawSwitchBar(segX, obj.y, barW, markerColor, false);
     }
 
     const SwitchState& state = obj.properties.states[i];
@@ -1402,7 +1432,10 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     // the segment, which is taller than the text, so nothing is being
     // shaved off in the first place.
     canvas_->setClip(segX, obj.y, segW, obj.height);
-    drawSwitchStateContent(state, iconPath, segX, segW, bandTop, bandHeight,
+    // Floats, so the centre matches. The designer centres on the unrounded
+    // segment (x + width/2), and handing it a rounded pair here would shift
+    // an icon or a label by a pixel on any boundary that is not whole.
+    drawSwitchStateContent(state, iconPath, (float)obj.x + (float)i * segmentWidth, segmentWidth, bandTop, bandHeight,
                            textColor, font, fontAscent, fontDescent);
     canvas_->clearClip();
   }

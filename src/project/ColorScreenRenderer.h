@@ -190,8 +190,10 @@ private:
   void drawSwitchBar(int x, int y, int width, uint16_t color, bool hollow);
   // One Switch state's icon + label inside the content band, shared by both
   // modes so a state cannot look different depending on which drew it.
+  // x/width are floats because a switch segment's own boundaries need not
+  // be whole pixels - see renderSwitch()'s segment loop.
   void drawSwitchStateContent(const SwitchState& state, const String& iconPath,
-                              int x, int width, int bandTop, int bandHeight,
+                              float x, float width, int bandTop, int bandHeight,
                               uint16_t textColor, const BdfFont* font,
                               int16_t fontAscent, int16_t fontDescent);
   bool renderMqttDataLine(const ScreenObject& obj);

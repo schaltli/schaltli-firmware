@@ -1,5 +1,6 @@
 #include "ProjectLoader.h"
 #include <exception>
+#include <math.h>
 
 namespace {
 // Every asset path stored in project.json (icon `path`, SoftwareButton
@@ -285,14 +286,37 @@ void ProjectLoader::parseScreens(JsonArray screensArray) {
   }
 }
 
+// Reads a JSON number that is meant to be a whole pixel, whatever the
+// designer happened to write.
+//
+// `objJson["x"] | 0` cannot do this. ArduinoJson's `|` returns the fallback
+// unless the stored value is already of the requested type, and a JSON float
+// with a fractional part is not an integer - so 400.5 does not truncate to
+// 400, it becomes 0. Silently, and only for the coordinates that happen to
+// land off a whole pixel.
+//
+// The result is a shape with one vertex dragged into the screen corner, or an
+// object drawn at the top left, which looks like a rendering bug and is not
+// one. Found 2026-09-10 by the generated type-coverage run: its line specimen
+// put the apex at width/2 of an odd width, the board drew the apex at x=0,
+// and the picture was wrong in a way that took a pixel comparison to see and
+// this comment to explain.
+//
+// Rounding rather than truncating, because a half pixel belongs to the nearer
+// one and that is what the designer's own canvas does with it.
+static int pixelValue(JsonVariantConst value, int fallback = 0) {
+  if (!value.is<float>() && !value.is<int>()) return fallback;
+  return (int)lroundf(value.as<float>());
+}
+
 ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   ScreenObject obj;
   obj.type = objJson["type"] | "";
   obj.id = objJson["id"] | "";
-  obj.x = objJson["x"] | 0;
-  obj.y = objJson["y"] | 0;
-  obj.width = objJson["width"] | 0;
-  obj.height = objJson["height"] | 0;
+  obj.x = pixelValue(objJson["x"]);
+  obj.y = pixelValue(objJson["y"]);
+  obj.width = pixelValue(objJson["width"]);
+  obj.height = pixelValue(objJson["height"]);
   obj.zIndex = objJson["zIndex"] | 0;
   obj.path = resolveAssetPath(objJson["path"] | "");
   obj.pathNormal = resolveAssetPath(objJson["pathNormal"] | "");
@@ -385,9 +409,9 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.markerWidth = propsJson["markerWidth"] | 4;
 
   // line properties
-  props.strokeWidth = propsJson["strokeWidth"] | 1;
+  props.strokeWidth = pixelValue(propsJson["strokeWidth"], 1);
   props.strokeStyle = propsJson["strokeStyle"] | "solid";
-  props.filletRadius = propsJson["filletRadius"] | 0;
+  props.filletRadius = pixelValue(propsJson["filletRadius"]);
   if (propsJson["points"].is<JsonArray>()) {
     props.points = parseLinePoints(propsJson["points"]);
   }
@@ -405,7 +429,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // box properties - strokeColor defaults to empty (no border), matching
   // the designer's `if (strokeColor && strokeWidth > 0)` check exactly.
   props.strokeColor = propsJson["strokeColor"] | "";
-  props.cornerRadius = propsJson["cornerRadius"] | 0;
+  props.cornerRadius = pixelValue(propsJson["cornerRadius"]);
 
   // panel properties - matched against the parent tab-control's own
   // `topic` (already parsed above). Default operator "==" covers the
@@ -644,8 +668,12 @@ std::vector<Point> ProjectLoader::parseLinePoints(JsonArray pointsArray) {
 
   for (JsonObject pointJson : pointsArray) {
     Point point;
-    point.x = pointJson["x"] | 0;
-    point.y = pointJson["y"] | 0;
+    // Rounded, not truncated, and emphatically not `| 0` - see pixelValue().
+    // A line's own vertices are the field where a fractional coordinate is
+    // most likely (a midpoint of an odd width) and where reading one as 0
+    // does the most visible damage.
+    point.x = pixelValue(pointJson["x"]);
+    point.y = pixelValue(pointJson["y"]);
 
     points.push_back(point);
   }
