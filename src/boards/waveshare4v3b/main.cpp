@@ -165,6 +165,9 @@ static const unsigned long TOPIC_RENDER_MIN_MS = 250;
 // glass looks like at that instant; the silence between reports says
 // nothing at all, so the state has to be held here rather than re-derived
 // from every read. See Gt911::poll().
+// How far a contact wandered, so a release can tell a tap from a gesture
+// that was never wide enough to become one.
+static int16_t contactDrift = 0;
 static bool fingerDown = false;
 static int16_t touchX = 0;
 static int16_t touchY = 0;
@@ -224,6 +227,30 @@ static bool setupModeActive = false;
 static const unsigned long SETUP_HOLD_MS = 5000;
 static const unsigned long SETUP_HOLD_FEEDBACK_MS = 1000;
 static const int SETUP_HOLD_MAX_DRIFT = 40;
+// A finger on an 800x480 panel is not a mouse pointer, and a button here is
+// finger sized. Well below the 12px that starts a horizontal drag, so a tap
+// and a swipe can never both fire from one contact.
+static const int TAP_MAX_DRIFT = 10;
+
+// What the last tap hit, in words. Serial is not a neutral observer on this
+// board - opening the port resets it - and the effect of a tap is usually a
+// published command, which is invisible when the broker is away. Without
+// this, "did the tap land" is unanswerable from outside.
+static String lastTap = "none since boot";
+
+// A touch sample posted to /api/touch, standing in for the panel.
+//
+// Exists because a gesture is not otherwise reachable from a test. Posting
+// an action says whether the action works; posting a series of these drives
+// the real detector, the real dispatch and the real transition - which is
+// where every fault of the last two days actually lived.
+static int16_t injectX = 0, injectY = 0;
+static bool injectDown = false;
+static bool injectLiftOnce = false;
+static unsigned long injectUntilMs = 0;
+// Long enough to survive a frame of a transition, short enough that a test
+// which stops posting cannot wedge the panel into a phantom contact.
+static const unsigned long TOUCH_INJECT_HOLD_MS = 400;
 static bool holdActive = false;
 static int16_t holdStartX = 0, holdStartY = 0;
 static unsigned long holdStartMs = 0;
@@ -386,6 +413,33 @@ static void setupNetworking()
   // this board a HIL comparison at all.
   if (testInterface.begin(*canvas)) Serial.println("[4v3b] test interface on :80");
 
+  // The three the HIL orchestrator drives. Only the debug handler was wired
+  // before, which is why no pixel-parity run has ever been possible on this
+  // board even though the endpoints serving it were already there.
+  testInterface.setScreenSwitchHandler([](int index) -> bool {
+    if (!projectLoader.isLoaded()) return false;
+    if (index < 0 || index >= (int)projectLoader.getProject().screens.size()) return false;
+    currentScreen = index;
+    renderAndPresent("test interface: screen switch");
+    return true;
+  });
+
+  // Lets a test ask "has the device applied this value yet" instead of
+  // sleeping and hoping - the fix for a whole class of flaky HIL runs.
+  testInterface.setTopicValueHandler(
+      [](const String &topic) { return projectLoader.getTopicValue(topic); });
+
+  testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
+    injectX = x;
+    injectY = y;
+    injectDown = down;
+    // A posted lift ends the window rather than extending it, so the
+    // release runs against the real panel - which is also reading idle -
+    // instead of against 400ms of frozen injected state.
+    injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
+    injectLiftOnce = !down;
+  });
+
   // GET /api/debug?set=bench=1 measures where a swipe frame goes. Behind a
   // parameter rather than run at boot because it writes rubbish into the
   // framebuffer for a few hundred milliseconds before re-rendering, and
@@ -395,6 +449,7 @@ static void setupNetworking()
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
     out += panel.report();
+    out += "  last tap: " + lastTap + "\n";
     out += swipe.report();
     out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
            " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
@@ -609,6 +664,166 @@ void setup()
   setupNetworking();
 }
 
+// What a project binds to a button, and what this board does about it.
+// Ported from the knob rather than reinvented: same action names, same
+// order, same treatment of an unknown one.
+static void dispatchButtonAction(const ButtonAction &action)
+{
+  if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  const int count = (int)project.screens.size();
+
+  if (action.type == "next-screen" || action.type == "previous-screen")
+  {
+    if (count == 0) return;
+    const int delta = (action.type == "next-screen") ? 1 : -1;
+    currentScreen = ((currentScreen + delta) % count + count) % count;
+    renderAndPresent("button: screen change");
+  }
+  else if (action.type == "goto-screen")
+  {
+    for (int i = 0; i < count; i++)
+    {
+      if (project.screens[i].id == action.targetScreenId)
+      {
+        currentScreen = i;
+        renderAndPresent("button: goto screen");
+        break;
+      }
+    }
+  }
+  else if (action.type == "send-mqtt")
+  {
+    // Not retained: this is a command, not a state. What comes back on the
+    // read topic is what the panel then shows.
+    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+    Serial.printf("[tap] send-mqtt %s = %s\n", action.mqttTopic.c_str(), action.mqttMessage.c_str());
+  }
+  else if (action.type == "device-action")
+  {
+    // This board declares no deviceActions in its DDF yet, so every id is
+    // unknown here. Logged and skipped rather than treated as an error: a
+    // project may legitimately have been built against a device offering
+    // more of them, and additive changes degrade rather than break.
+    Serial.printf("[tap] device action \"%s\" - this board offers none\n",
+                  action.deviceActionId.c_str());
+  }
+  else if (action.type == "goto-setup-mode")
+  {
+    enterSetupMode();
+  }
+}
+
+// What a tap at this point hits, and what that does.
+//
+// Until now this board could render a SoftwareButton and a Switch, and show
+// the Switch's state correctly because that arrives over MQTT - but a finger
+// on either did nothing at all. It rendered a control panel without being
+// one.
+//
+// The search runs through ColorScreenRenderer::hitTestTappable(), not a loop
+// over screen.objects here, because the answer depends on two things that
+// already live in the renderer: which panel of a tab-control is showing, and
+// how far its children are drawn shifted. A second copy would mean the finger
+// and the picture disagreeing about geometry. The knob learned that the hard
+// way - its top-level switch worked and the four inside panels did not.
+static bool dispatchTapAt(int16_t x, int16_t y)
+{
+  if (!projectLoader.isLoaded() || renderer == nullptr) return false;
+
+  // Absolute corner of whatever was hit. For an object inside a panel that
+  // is NOT obj.x/obj.y, and the segment arithmetic below depends on it.
+  int16_t objX = 0, objY = 0;
+  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  if (hit == nullptr)
+  {
+    lastTap = "(" + String(x) + "," + String(y) + ") hit nothing tappable";
+    return false;
+  }
+
+  if (hit->type == "SoftwareButton")
+  {
+    Serial.printf("[tap] SoftwareButton \"%s\"\n", hit->id.c_str());
+    lastTap = "(" + String(x) + "," + String(y) + ") SoftwareButton \"" + hit->id + "\" action " +
+              (hit->properties.action.type.isEmpty() ? String("(none)") : hit->properties.action.type);
+    dispatchButtonAction(hit->properties.action);
+    return true;
+  }
+
+  const int states = (int)hit->properties.states.size();
+  if (states <= 0 || hit->properties.writeTopic.isEmpty())
+  {
+    lastTap = "(" + String(x) + "," + String(y) + ") " + hit->type + " \"" + hit->id +
+              "\" has nothing to write";
+    return false;
+  }
+
+  int index;
+  if (hit->properties.mode == "single")
+  {
+    // One area, one target: a tap moves to the next state and wraps. Two
+    // states make a toggle, three a cycle, so there is no special case.
+    // The active index comes from the renderer rather than from a second
+    // copy of the same rule here - what is drawn and what is tapped have
+    // to agree about the state.
+    const int active = renderer->getActiveSwitchStateIndex(*hit);
+    // No retained value yet: the tile shows "?" and a tap starts at the
+    // beginning instead of doing nothing.
+    index = (active < 0) ? 0 : (active + 1) % states;
+  }
+  else
+  {
+    // Equal segments across the object's width, the same division
+    // ColorScreenRenderer::renderSwitch() draws. If this differs, the finger
+    // hits a segment other than the one it is pointing at.
+    index = ((int)(x - objX) * states) / hit->width;
+    if (index < 0) index = 0;
+    if (index >= states) index = states - 1;
+  }
+
+  const String &value = hit->properties.states[index].writeValue;
+  if (value.isEmpty()) return false;
+
+  Serial.printf("[tap] Switch \"%s\" segment %d -> %s = %s\n", hit->id.c_str(), index,
+                hit->properties.writeTopic.c_str(), value.c_str());
+  // Not retained: a command, not a state. The state comes back on the read
+  // topic and colours the segment, so the switch shows what actually
+  // happened rather than what it believed it was doing.
+  const bool sent = mqttClient.publish(hit->properties.writeTopic, value, false);
+  lastTap = "(" + String(x) + "," + String(y) + ") Switch \"" + hit->id + "\" segment " +
+            String(index) + " -> " + hit->properties.writeTopic + " = " + value +
+            (sent ? "" : "  (NOT published - broker away)");
+  return true;
+}
+
+// One touch sample, from the glass or from a test, and the caller cannot
+// tell which. Injection wins while its window lasts; a posted lift ends it
+// at once rather than leaving the panel to time out into it.
+static Gt911::Status readTouch(int16_t &x, int16_t &y)
+{
+  if (injectLiftOnce)
+  {
+    injectLiftOnce = false;
+    return Gt911::Lifted;
+  }
+  if (injectUntilMs != 0 && (long)(millis() - injectUntilMs) < 0)
+  {
+    x = injectX;
+    y = injectY;
+    return injectDown ? Gt911::Touched : Gt911::Lifted;
+  }
+
+  Gt911::Point points[Gt911::MAX_POINTS];
+  uint8_t n = 0;
+  const Gt911::Status status = touch.poll(points, Gt911::MAX_POINTS, n);
+  if (status == Gt911::Touched && n > 0)
+  {
+    x = (int16_t)points[0].x;
+    y = (int16_t)points[0].y;
+  }
+  return status;
+}
+
 void loop()
 {
   // Setup mode owns the device completely: it draws its own screen, it is
@@ -641,14 +856,13 @@ void loop()
   // gets a turn until the finger is up.
   if (swipe.active())
   {
-    Gt911::Point dragPoints[Gt911::MAX_POINTS];
-    uint8_t dragN = 0;
-    const Gt911::Status dragStatus = touch.poll(dragPoints, Gt911::MAX_POINTS, dragN);
+    int16_t dragX = touchX, dragY = touchY;
+    const Gt911::Status dragStatus = readTouch(dragX, dragY);
 
-    if (dragStatus == Gt911::Touched && dragN > 0)
+    if (dragStatus == Gt911::Touched)
     {
       lastTouchReportMs = millis();
-      swipe.follow((int16_t)dragPoints[0].x);
+      swipe.follow(dragX);
       return;
     }
 
@@ -687,20 +901,19 @@ void loop()
   const uint32_t turnStart = micros();
   loopTurns++;
 
-  Gt911::Point points[Gt911::MAX_POINTS];
-  uint8_t n = 0;
+  int16_t sampleX = touchX, sampleY = touchY;
   const uint32_t touchT0 = micros();
-  const Gt911::Status touchStatus = touch.poll(points, Gt911::MAX_POINTS, n);
+  const Gt911::Status touchStatus = readTouch(sampleX, sampleY);
   {
     const uint32_t d = micros() - touchT0;
     touchUs += d;
     if (d > worstTouchUs) worstTouchUs = d;
   }
-  if (touchStatus == Gt911::Touched && n > 0)
+  if (touchStatus == Gt911::Touched)
   {
     fingerDown = true;
-    touchX = (int16_t)points[0].x;
-    touchY = (int16_t)points[0].y;
+    touchX = sampleX;
+    touchY = sampleY;
     lastTouchReportMs = millis();
   }
   else if (touchStatus == Gt911::Lifted)
@@ -729,6 +942,7 @@ void loop()
       holdConsumed = false;
       contactCount++;
       contactSamples = 0;
+      contactDrift = 0;
     }
     contactSamples++;
     const int dx = (int)touchX - holdStartX;
@@ -741,6 +955,9 @@ void loop()
     // Measured from where the finger went down, not from where the drag was
     // recognised: the screen then sits exactly under the finger, and the
     // commit threshold means the distance the user actually swiped.
+    const int16_t drift = (int16_t)max(abs(dx), abs(dy));
+    if (drift > contactDrift) contactDrift = drift;
+
     if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
 
     if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
@@ -797,6 +1014,14 @@ void loop()
     // which of the two explanations is the right one.
     missedContacts++;
     if (contactSamples > missedMaxSamples) missedMaxSamples = contactSamples;
+
+    // A contact that stayed put and was not claimed by the setup hold is a
+    // tap. Dispatched from where the finger went down rather than where it
+    // left, because that is the point the user aimed at.
+    if (!holdConsumed && contactDrift <= TAP_MAX_DRIFT)
+    {
+      dispatchTapAt(holdStartX, holdStartY);
+    }
     // A hold that showed a countdown and was then released must not count as
     // anything else, and the panel has to be put back because the countdown
     // drew over it.
