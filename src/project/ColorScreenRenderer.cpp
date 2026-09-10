@@ -339,7 +339,8 @@ bool ColorScreenRenderer::renderBox(const ScreenObject& obj) {
 // strokes, fixed arrowheads, via the shared renderLineBody/fillThickLine/
 // drawArrowhead/shortenForArrow helpers below (see their own comments).
 bool ColorScreenRenderer::renderLine(const ScreenObject& obj) {
-  uint16_t color = parseHexColor(obj.properties.color);
+  // Black when the project sets none, matching render-line.ts.
+  uint16_t color = parseHexColor(obj.properties.color.isEmpty() ? "#000000" : obj.properties.color);
   float strokeWidth = (float)obj.properties.strokeWidth;
 
   std::vector<Point> points = obj.properties.points;
@@ -385,7 +386,8 @@ bool ColorScreenRenderer::renderLine(const ScreenObject& obj) {
 // of renderLine's fixed booleans. Ported near-verbatim from
 // MqttEPaperDisplay2's ScreenRenderer::renderMqttDataLine().
 bool ColorScreenRenderer::renderMqttDataLine(const ScreenObject& obj) {
-  uint16_t color = parseHexColor(obj.properties.color);
+  // Black when the project sets none, matching render-mqtt-data-line.ts.
+  uint16_t color = parseHexColor(obj.properties.color.isEmpty() ? "#000000" : obj.properties.color);
 
   std::vector<Point> points = obj.properties.points;
   if (points.size() < 2) {
@@ -648,6 +650,32 @@ void ColorScreenRenderer::fillThickLine(int16_t x0, int16_t y0, int16_t x1, int1
       }
     }
   }
+}
+
+String ColorScreenRenderer::describeScreen(int screenIndex) {
+  if (!projectLoader_.isLoaded()) return "no project loaded\n";
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return "no such screen\n";
+  const Screen& screen = project.screens[screenIndex];
+
+  String out = "screen " + String(screenIndex) + " \"" + screen.name + "\", " +
+               String((unsigned)screen.objects.size()) + " object(s)\n";
+  for (const auto& obj : screen.objects) {
+    out += "  " + obj.type + " \"" + obj.id + "\" at " + String(obj.x) + "," + String(obj.y) +
+           " " + String(obj.width) + "x" + String(obj.height);
+    if (!obj.properties.fontId.isEmpty()) {
+      out += "  font " + obj.properties.fontId +
+             (fontFor(obj.properties.fontId) == nullptr ? " (NOT LOADED)" : "") +
+             " size " + String(getFontSizeById(obj.properties.fontId));
+    }
+    if (!obj.properties.topic.isEmpty()) {
+      const String value = projectLoader_.getTopicValue(obj.properties.topic);
+      out += "  topic " + obj.properties.topic + " = \"" + value + "\"";
+    }
+    if (!obj.children.empty()) out += "  " + String((unsigned)obj.children.size()) + " child(ren)";
+    out += "\n";
+  }
+  return out;
 }
 
 bool ColorScreenRenderer::renderMQTTDataField(const ScreenObject& obj) {

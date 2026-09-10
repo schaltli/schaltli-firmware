@@ -2474,6 +2474,12 @@ static void setupWiFi() {
           long v = setArg.substring(11).toInt();
           if (v >= 0 && v <= 2000) navFrameMs = (uint32_t)v;
         }
+        // Plain text rather than the JSON blob: this one is read by a human
+        // who is asking why something did not appear.
+        if (setArg == "describe") {
+          return screenRenderer ? screenRenderer->describeScreen(currentScreenIndex)
+                                : String("no renderer\n");
+        }
         return buildDebugJson();
       });
 #endif

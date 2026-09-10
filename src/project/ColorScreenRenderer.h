@@ -140,6 +140,15 @@ public:
   const ScreenObject* hitTestTappable(int screenIndex, int16_t x, int16_t y,
                                       int16_t& objX, int16_t& objY) const;
 
+  // Was der Renderer auf diesem Screen SIEHT, eine Zeile je Objekt.
+  //
+  // Entstanden 2026-09-10, weil ein MqttDataField auf dem Knob gar nichts
+  // zeichnete - kein Text, kein Hintergrund - und von aussen nicht zu
+  // unterscheiden war, ob es fehlt, ob seine Schrift fehlt oder ob sein Wert
+  // leer ist. Genau diese drei Faelle sehen auf dem Glas identisch aus, und
+  // eine Stunde Codelesen hat sie nicht getrennt.
+  String describeScreen(int screenIndex);
+
 private:
   // Laeuft in Zeichenreihenfolge; der LETZTE Treffer gewinnt, weil zuletzt
   // gezeichnet heisst obenauf. Ueber Ebenen hinweg ist das richtig, ein

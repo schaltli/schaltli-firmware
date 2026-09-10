@@ -332,7 +332,19 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // borderColor explicitly (2026-07-21 finding, level indicator work).
   props.borderColor = propsJson["borderColor"] | "#cccccc";
   props.textColor = propsJson["textColor"] | "#000000";
-  props.color = propsJson["color"] | "#000000";  // Label color property
+  // Empty when the project does not carry one, NOT black.
+  //
+  // The designer reads this as `color || textColor || "#000000"`, where an
+  // absent color is undefined and falls through. Defaulting it to black here
+  // made it never empty, so the fallback to textColor was dead code and
+  // every text box drew black - which looks right on a light background and
+  // is invisible on a dark one. An MqttDataField asking for white on black
+  // drew nothing at all, and nothing at all is indistinguishable from a
+  // missing object, a missing font or a missing value. It cost an hour.
+  //
+  // The two callers that genuinely want black when nothing is set - lines -
+  // now say so themselves, which is also what the designer does.
+  props.color = propsJson["color"] | "";
   props.textAlign = propsJson["textAlign"] | "left";
   props.fontId = propsJson["fontId"] | "";
   props.fontWeight = propsJson["fontWeight"] | "normal";
