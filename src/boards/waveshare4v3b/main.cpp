@@ -1317,6 +1317,61 @@ static void dispatchButtonAction(const ButtonAction &action)
 // how far its children are drawn shifted. A second copy would mean the finger
 // and the picture disagreeing about geometry. The knob learned that the hard
 // way - its top-level switch worked and the four inside panels did not.
+// Which screen a horizontal swipe should arrive at, or -1 when this one is
+// not a page turn on this screen.
+//
+// Until 2026-09-10 this board paged on every horizontal drag and never
+// asked the project. That happened to match what the vehicle project binds,
+// which is exactly why it could look right while being wrong: a project
+// that binds a leftward swipe to something else - a command, a jump to a
+// named screen - would have had its screens turned instead.
+static int pagingTargetFor(int dx)
+{
+  if (!projectLoader.isLoaded()) return -1;
+  const ProjectConfig &project = projectLoader.getProject();
+  const int count = (int)project.screens.size();
+  if (count < 2) return -1;
+
+  const ButtonAction action = projectLoader.getButtonAction(currentScreen, dx < 0 ? "swipe-left" : "swipe-right");
+  int delta = 0;
+  if (action.type == "next-screen") delta = 1;
+  else if (action.type == "previous-screen") delta = -1;
+  else return -1;  // bound to something else, or to nothing - the release decides
+
+  return ((currentScreen + delta) % count + count) % count;
+}
+
+// A gesture that was not a page turn, resolved at release the way the knob
+// resolves all of its swipes: the dominant axis names a button, and the
+// project says what that button does. Without this, a swipe bound to
+// send-mqtt on this board did nothing at all.
+static const int SWIPE_MIN_DISTANCE = 60;  // px, well past a jittery tap
+static const int SWIPE_AXIS_RATIO = 2;
+
+static void dispatchSwipeAtRelease(int dx, int dy)
+{
+  if (!projectLoader.isLoaded()) return;
+
+  const char *buttonId = nullptr;
+  if (abs(dx) > abs(dy))
+  {
+    if (abs(dx) >= SWIPE_MIN_DISTANCE && abs(dx) >= abs(dy) * SWIPE_AXIS_RATIO)
+      buttonId = dx > 0 ? "swipe-right" : "swipe-left";
+  }
+  else
+  {
+    if (abs(dy) >= SWIPE_MIN_DISTANCE && abs(dy) >= abs(dx) * SWIPE_AXIS_RATIO)
+      buttonId = dy > 0 ? "swipe-down" : "swipe-up";
+  }
+  if (buttonId == nullptr) return;
+
+  const ButtonAction action = projectLoader.getButtonAction(currentScreen, buttonId);
+  if (action.type.isEmpty()) return;
+  Serial.printf("[swipe] %s -> %s\n", buttonId, action.type.c_str());
+  lastTap = String(buttonId) + " -> " + action.type;
+  dispatchButtonAction(action);
+}
+
 static bool dispatchTapAt(int16_t x, int16_t y)
 {
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
@@ -1566,7 +1621,8 @@ void loop()
 
     if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
 
-    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy))
+    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
+        pagingTargetFor(dx) >= 0)
     {
       // The finger is leaving, so nothing it touched on the way is pressed.
       // Corrected in the canvas only: the transition reads from there, and
@@ -1579,7 +1635,9 @@ void loop()
         renderFeedbackRegion("drag took over", false);
         if (pendingSwitchId.isEmpty()) feedbackActive = false;
       }
-      if (swipe.start(dx < 0 ? 1 : -1, holdStartX))
+      // The incoming screen enters from the edge the finger is heading
+      // toward, whichever screen the project says that is.
+      if (swipe.start(pagingTargetFor(dx), dx < 0 ? 1 : -1, holdStartX))
       {
         holdActive = false;
         return;
@@ -1664,6 +1722,12 @@ void loop()
     if (!contactOnlyWoke && !holdConsumed && contactDrift <= TAP_MAX_DRIFT)
     {
       dispatchTapAt(holdStartX, holdStartY);
+    }
+    else if (!contactOnlyWoke && !holdConsumed)
+    {
+      // Moved too far to be a tap and never became a page turn: whatever the
+      // project binds to this direction, if anything.
+      dispatchSwipeAtRelease((int)touchX - holdStartX, (int)touchY - holdStartY);
     }
     contactOnlyWoke = false;
     if (renderGeneration == generationBefore)

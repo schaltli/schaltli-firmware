@@ -72,16 +72,22 @@ public:
   bool active() const { return active_; }
   const Stats &stats() const { return stats_; }
 
-  // direction +1 brings the next screen in from the right, -1 the previous
-  // one from the left. Returns false when there is nothing to swipe to, so
-  // the caller can leave the contact to whatever else wants it.
-  bool start(int direction, int16_t fromX)
+  // `target` is the screen to arrive at; `motion` says which way the picture
+  // travels: +1 when the incoming screen enters from the right, which is what
+  // a finger moving left produces.
+  //
+  // The two are given separately on purpose. Which screen comes next is the
+  // project's business - it may bind a leftward swipe to the PREVIOUS screen
+  // - while which way the picture slides is the hand's, and it always
+  // follows the hand. Tying the two together would mean a project with
+  // reversed bindings sliding its screens backwards under the finger.
+  bool start(int target, int motion, int16_t fromX)
   {
     if (!ready() || active_) return false;
+    if (target < 0 || target >= screenCount_ || target == *currentScreen_) return false;
 
-    direction_ = direction >= 0 ? 1 : -1;
-    target_ = (*currentScreen_ + direction_) % screenCount_;
-    if (target_ < 0) target_ += screenCount_;
+    direction_ = motion >= 0 ? 1 : -1;
+    target_ = target;
 
     stats_ = Stats();
     stats_.valid = true;
