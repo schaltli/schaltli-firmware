@@ -11,6 +11,14 @@
 //   GET  /snapshot.bmp - the current framebuffer, 24-bit BMP
 //   GET  /ddf.zip      - this device's own DDF, compiled in via ddf_zip.h
 //   POST /api/project  - upload+install a project zip, then reboot into it
+//   POST /api/firmware - upload+install a firmware image, then reboot into
+//                        it. The partition table carries two app slots, so
+//                        the running image is never the one being written:
+//                        a failed or truncated upload leaves the device on
+//                        what it already had. Until this existed, updating
+//                        the firmware meant getting a USB cable to the
+//                        device - which on a panel mounted in a vehicle
+//                        means taking the panel out.
 //   POST /api/screen   - force a full render of one screen index
 //   POST /api/mqtt     - store broker settings in NVS (applied on reboot)
 //   POST /api/forget-wifi - clear stored credentials and reboot into the
@@ -167,6 +175,8 @@ private:
   void handlePanel();
   void sendBMP(const uint16_t* source);
   void handleProjectUploadChunk();
+  void handleFirmwareUploadComplete();
+  void handleFirmwareUploadChunk();
   void handleProjectUploadComplete();
   bool validateAndInstallZip();
   void sendJSONResponse(bool success, const String& message);
@@ -190,6 +200,10 @@ private:
   ScreenListHandler screenListHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
+  // Empty while a firmware upload is going well. Held rather than answered
+  // immediately because the upload handler runs per chunk and has nowhere to
+  // send a reply from - the completion handler is the only place with one.
+  String firmwareError_;
   // Why the last install refused, kept so it can be read back over HTTP.
   // The upload reply is sent before the install even runs ("Processing
   // upload..."), so a refusal used to reach nobody but the serial console -

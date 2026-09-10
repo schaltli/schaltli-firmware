@@ -1,4 +1,5 @@
 #include "TestInterfaceServer.h"
+#include <Update.h>
 #include "ddf_zip.h"
 #include "DeviceInfo.h"
 #include "DeviceSettingsEndpoint.h"
@@ -49,10 +50,13 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
+  webServer_->on(
+      "/api/firmware", HTTP_POST, [this]() { this->handleFirmwareUploadComplete(); },
+      [this]() { this->handleFirmwareUploadChunk(); });
   webServer_->begin();
   serverRunning_ = true;
 
-  Serial.printf("[TestInterface] listening on port %u: /snapshot.bmp, /ddf.zip, /api/screen, /api/project\n", port);
+  Serial.printf("[TestInterface] listening on port %u: /snapshot.bmp, /ddf.zip, /api/screen, /api/project, /api/firmware\n", port);
   return true;
 }
 
@@ -386,6 +390,67 @@ void TestInterfaceServer::handleProjectUploadChunk() {
 
 void TestInterfaceServer::handleProjectUploadComplete() {
   sendJSONResponse(true, "Processing upload...");
+}
+
+// Writes the incoming image into the app slot that is NOT running.
+//
+// Update refuses an image whose header is not for this chip, and refuses to
+// finish one whose length does not match what the header declares, so a
+// truncated upload or a file for another board fails at end() rather than
+// leaving half an image marked bootable. The running slot is untouched
+// either way: the worst case of a failed update is a device that is still
+// on the firmware it had.
+//
+// No authentication, deliberately consistent with the rest of this server -
+// anyone who can reach it can already install a project, clear the WiFi and
+// read the screen. The trust boundary is the network, and saying so is
+// better than a password that would make it look otherwise.
+void TestInterfaceServer::handleFirmwareUploadChunk() {
+  HTTPUpload& upload = webServer_->upload();
+
+  if (upload.status == UPLOAD_FILE_START) {
+    firmwareError_ = "";
+    Serial.printf("[TestInterface] firmware upload: %s\n", upload.filename.c_str());
+    // UPDATE_SIZE_UNKNOWN: a multipart upload does not announce its length,
+    // and the image header carries it anyway.
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+      firmwareError_ = String("could not start: ") + Update.errorString();
+      Serial.printf("[TestInterface] %s\n", firmwareError_.c_str());
+    }
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (!firmwareError_.isEmpty()) return;
+    if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+      firmwareError_ = String("write failed: ") + Update.errorString();
+      Serial.printf("[TestInterface] %s\n", firmwareError_.c_str());
+    }
+  } else if (upload.status == UPLOAD_FILE_END) {
+    if (!firmwareError_.isEmpty()) {
+      Update.abort();
+      return;
+    }
+    if (!Update.end(true)) {
+      firmwareError_ = String("could not finish: ") + Update.errorString();
+      Serial.printf("[TestInterface] %s\n", firmwareError_.c_str());
+      return;
+    }
+    Serial.printf("[TestInterface] firmware installed, %u bytes\n", (unsigned)upload.totalSize);
+  } else if (upload.status == UPLOAD_FILE_ABORTED) {
+    firmwareError_ = "upload aborted";
+    Update.abort();
+  }
+}
+
+void TestInterfaceServer::handleFirmwareUploadComplete() {
+  if (!firmwareError_.isEmpty()) {
+    sendJSONResponse(false, firmwareError_);
+    firmwareError_ = "";
+    return;
+  }
+  sendJSONResponse(true, "Firmware installed - rebooting");
+  // Let the response reach the caller before the reset, the same way
+  // forgetting the WiFi does.
+  delay(500);
+  ESP.restart();
 }
 
 // Walks one directory recursively, appending {"name","size"} objects.

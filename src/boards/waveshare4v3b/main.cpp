@@ -631,6 +631,12 @@ static void setupNetworking()
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
+    // Which image is running, so an update that arrived over the network
+    // can be told from a device that merely rebooted. The MD5 is of the
+    // running sketch and changes with every build; the timestamp is this
+    // file's last compile, which is close enough to say "that one".
+    out += "firmware " + ESP.getSketchMD5() + ", " + String(ESP.getSketchSize() / 1024) +
+           " KB, built " + String(__DATE__) + " " + String(__TIME__) + "\n";
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
