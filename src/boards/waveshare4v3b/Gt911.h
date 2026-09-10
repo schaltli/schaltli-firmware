@@ -82,39 +82,64 @@ public:
     return true;
   }
 
-  // Returns the number of points read (0 when nothing is touched).
-  uint8_t read(Point *points, uint8_t maxPoints)
+  // Three answers, not two, and the difference is the whole gesture layer.
+  //
+  // The controller reports at its own pace. Between reports the data-ready
+  // bit is clear, and that says nothing about whether a finger is on the
+  // glass - only that there is nothing new to say. Folding that into the
+  // same 0 an empty panel gives is fine for a caller polling every 30ms and
+  // looking for taps, and wrong for one polling every 5ms to follow a finger.
+  //
+  // Measured before this existed (2026-09-10): twenty deliberate swipes
+  // arrived as 46 contacts, and no missed one lasted more than three samples.
+  // Every gap between reports ended a contact, the next report began a fresh
+  // one, and travel never accumulated far enough to read as a swipe. The nine
+  // of twenty that did work were the ones where a 68ms compose sat between
+  // two reads - long enough that a report was always ready.
+  enum Status {
+    NoNewSample,  // nothing reported since the last read - says nothing more
+    Lifted,       // reported, and there is no finger
+    Touched,      // reported points, written to the caller's array
+  };
+
+  Status poll(Point *points, uint8_t maxPoints, uint8_t &count)
   {
+    count = 0;
+
     uint8_t status = 0;
-    if (!readRegister(0x814E, &status, 1)) return 0;
+    if (!readRegister(0x814E, &status, 1)) return NoNewSample;
 
-    if ((status & 0x80) == 0)
+    // Not cleared here, deliberately: the reference driver clears only after
+    // it has read a report, and writing to the status register while the
+    // controller is preparing one is not something to do on a hunch.
+    if ((status & 0x80) == 0) return NoNewSample;
+
+    const uint8_t reported = status & 0x0F;
+    if (reported == 0)
     {
-      // No data pending. The clear still has to happen: leaving a stale
-      // status byte is how the controller ends up never reporting again.
       writeRegister(0x814E, 0);
-      return 0;
+      return Lifted;
     }
-
-    uint8_t count = status & 0x0F;
-    if (count == 0 || count > MAX_POINTS)
+    if (reported > MAX_POINTS)
     {
+      // A count this controller cannot produce. Cleared so it keeps
+      // reporting, but believed in neither direction.
       writeRegister(0x814E, 0);
-      return 0;
+      return NoNewSample;
     }
 
     uint8_t buf[MAX_POINTS * 8] = {0};
-    if (!readRegister(0x814F, buf, (uint8_t)(count * 8)))
+    if (!readRegister(0x814F, buf, (uint8_t)(reported * 8)))
     {
       writeRegister(0x814E, 0);
-      return 0;
+      return NoNewSample;
     }
     writeRegister(0x814E, 0);
 
     // Offsets are one lower than the reference driver's because it reads
     // into buf[1..] to keep the status byte at buf[0]; this reads the point
     // block on its own.
-    uint8_t n = count < maxPoints ? count : maxPoints;
+    const uint8_t n = reported < maxPoints ? reported : maxPoints;
     for (uint8_t i = 0; i < n; i++)
     {
       const uint8_t *p = &buf[i * 8];
@@ -123,7 +148,17 @@ public:
       points[i].y = (uint16_t)(p[4] << 8) | p[3];
       points[i].strength = (uint16_t)(p[6] << 8) | p[5];
     }
-    return n;
+    count = n;
+    return Touched;
+  }
+
+  // Points if a report was waiting, 0 otherwise. Enough for a caller that
+  // only wants to know whether the glass is being touched right now, and not
+  // enough to follow a gesture: use poll() for that.
+  uint8_t read(Point *points, uint8_t maxPoints)
+  {
+    uint8_t count = 0;
+    return poll(points, maxPoints, count) == Touched ? count : 0;
   }
 
 private:
