@@ -76,6 +76,7 @@
 #include "PanelBenchmark.h"
 #include "../../project/RenderProfile.h"
 #include "ArcSelfTest.h"
+#include "FollowSwipe.h"
 #include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
@@ -139,6 +140,64 @@ static ProjectLoader projectLoader;
 static ClippedCanvas16 *canvas = nullptr;
 static ColorScreenRenderer *renderer = nullptr;
 static int currentScreen = 0;
+// The transition's second surface and the transition itself. See
+// FollowSwipe.h for why a full-screen follow exists on a board that
+// measures 15fps for one.
+static ClippedCanvas16 *spareCanvas = nullptr;
+static FollowSwipe swipe;
+// A value that arrived while a transition was running. The value itself is
+// stored the moment it lands; only the drawing waits.
+static bool renderPending = false;
+static unsigned long lastTopicRenderMs = 0;
+// A render plus its blit costs 180ms. Drawing every value as it lands left
+// the loop no time for anything else, so values are coalesced to at most
+// one render in this window. The first value after a quiet spell is still
+// drawn at once - the window has already passed by then.
+static const unsigned long TOPIC_RENDER_MIN_MS = 250;
+
+// Where the swipes that never happened went. Half of twenty were missing
+// twice in a row while every recorded one was clean, and the two possible
+// explanations need different fixes: either the contact is never seen at
+// all, because the loop was busy elsewhere for the whole 400ms of it, or it
+// is seen and never recognised. Counting both settles it in one run.
+// The finger, as opposed to the controller. A GT911 report says what the
+// glass looks like at that instant; the silence between reports says
+// nothing at all, so the state has to be held here rather than re-derived
+// from every read. See Gt911::poll().
+static bool fingerDown = false;
+static int16_t touchX = 0;
+static int16_t touchY = 0;
+static unsigned long lastTouchReportMs = 0;
+// Longer than any gap this controller leaves between reports, short enough
+// that a report lost for good cannot hold a gesture open.
+static const unsigned long TOUCH_LOST_MS = 150;
+
+// How much of the time the loop is inside a value render and therefore
+// blind to the glass. A render plus its blit is 180ms and values arrive
+// faster than that on this vehicle, so this is the number that decides
+// whether a 300ms gesture can be seen at all.
+static uint32_t topicRenders = 0;
+static uint32_t topicRenderUs = 0;
+static unsigned long dutyWindowStartMs = 0;
+// Diagnostic only: lets a gesture be judged with nothing else touching the
+// panel. Not a setting - it survives nothing, and the board renders again
+// after a restart.
+static bool topicRenderEnabled = true;
+
+// Where a turn of the loop goes. Twelve of twenty gestures never produced a
+// contact at all while the board was rendering nothing, so something else
+// is holding the loop for longer than a finger stays on the glass. Guessing
+// which has now been wrong twice, so each section is timed instead.
+static uint32_t loopTurns = 0;
+static uint32_t webUs = 0, mqttUs = 0, touchUs = 0;
+static uint32_t worstWebUs = 0, worstMqttUs = 0, worstTouchUs = 0;
+static uint32_t worstTurnUs = 0;
+
+static uint32_t contactCount = 0;
+static uint32_t contactSamples = 0;
+static uint32_t missedContacts = 0;
+static uint32_t missedMaxSamples = 0;
+static int missedMaxDx = 0;
 
 // --- networking -----------------------------------------------------------
 // All six of these compiled for this board without a single change. What was
@@ -246,6 +305,26 @@ static void setupRenderStack()
                 (unsigned)ESP.getFreePsram());
 
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+
+  // A second canvas of the same size, so the incoming screen can be drawn
+  // while the outgoing one is still on the panel. Taken at boot rather than
+  // at the first gesture: there are 6.5MB of PSRAM free and an allocation
+  // that failed mid-swipe would have nowhere to go.
+  spareCanvas = new ClippedCanvas16(PANEL_W, PANEL_H);
+  if (spareCanvas && spareCanvas->getBuffer())
+  {
+    swipe.attach(gfx->getFramebuffer(), &canvas, spareCanvas, renderer, &currentScreen,
+                 (int)projectLoader.getProject().screens.size(), PANEL_W, PANEL_H);
+    Serial.printf("[4v3b] swipe %s: %u screens, spare canvas at %p, psram free %u\n",
+                  swipe.ready() ? "ready" : "idle (needs two screens)",
+                  (unsigned)projectLoader.getProject().screens.size(), spareCanvas->getBuffer(),
+                  (unsigned)ESP.getFreePsram());
+  }
+  else
+  {
+    Serial.println("[4v3b] spare canvas allocation failed - no transitions");
+  }
+
   renderAndPresent("boot");
 }
 
@@ -314,6 +393,25 @@ static void setupNetworking()
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
+    out += swipe.report();
+    out += "  contacts " + String(contactCount) + ", of them missed " + String(missedContacts) +
+           " (most samples in a missed one " + String(missedMaxSamples) + ", widest dx " +
+           String(missedMaxDx) + " px)\n";
+    {
+      const unsigned long windowMs = millis() - dutyWindowStartMs;
+      out += "  value renders " + String(topicRenders) + " in " + String(windowMs / 1000.0f, 1) +
+             " s = " + String(windowMs ? topicRenderUs / 10.0f / windowMs : 0.0f, 1) +
+             "% of the time blind" + String(topicRenderEnabled ? "" : "  (rendering is OFF)") + "\n";
+      out += "  loop " + String(loopTurns) + " turns, " +
+             String(loopTurns ? windowMs * 1000.0f / loopTurns / 1000.0f : 0.0f, 1) +
+             " ms each on average, worst turn " + String(worstTurnUs / 1000.0f, 1) + " ms\n";
+      out += "  worst web " + String(worstWebUs / 1000.0f, 1) + " ms, worst mqtt " +
+             String(worstMqttUs / 1000.0f, 1) + " ms, worst touch read " +
+             String(worstTouchUs / 1000.0f, 1) + " ms\n";
+      out += "  totals over the window: web " + String(webUs / 1000) + " ms, mqtt " +
+             String(mqttUs / 1000) + " ms, touch " + String(touchUs / 1000) + " ms, mqtt " +
+             String(mqttClient.isConnected() ? "connected" : "NOT connected") + "\n";
+    }
     if (setArg == "bench=1" && canvas && gfx)
     {
       out += "\n" + PanelBenchmark::run(gfx->getFramebuffer(), canvas->getBuffer(), PANEL_W, PANEL_H);
@@ -391,6 +489,35 @@ static void setupNetworking()
 
       renderAndPresent("after render profile");
     }
+    else if (setArg == "swipes=1" || setArg == "swipes=clear")
+    {
+      if (setArg == "swipes=clear")
+      {
+        swipe.clearLog();
+        contactCount = 0;
+        contactSamples = 0;
+        missedContacts = 0;
+        missedMaxSamples = 0;
+        missedMaxDx = 0;
+        topicRenders = 0;
+        topicRenderUs = 0;
+        dutyWindowStartMs = millis();
+        loopTurns = 0;
+        webUs = mqttUs = touchUs = 0;
+        worstWebUs = worstMqttUs = worstTouchUs = worstTurnUs = 0;
+        out += "\ngesture log cleared\n";
+      }
+      else
+      {
+        out += "\ngesture log\n" + swipe.log();
+      }
+    }
+    else if (setArg == "topicrender=off" || setArg == "topicrender=on")
+    {
+      topicRenderEnabled = setArg == "topicrender=on";
+      out += String("\nvalue rendering is now ") + (topicRenderEnabled ? "on" : "off") + "\n";
+      if (topicRenderEnabled) renderAndPresent("rendering back on");
+    }
     else if (setArg == "arcselftest=1")
     {
       // Needs no project, no broker and no fixture - it compares the
@@ -401,7 +528,9 @@ static void setupNetworking()
     else
     {
       out += "\nadd ?set=bench=1 for panel bandwidth, ?set=render=1 for the render breakdown, ";
-      out += "?set=arcselftest=1 to prove the arc short cut\n";
+      out += "?set=arcselftest=1 to prove the arc short cut, ";
+      out += "?set=swipes=1 for the gesture log (?set=swipes=clear to reset it), ";
+      out += "?set=topicrender=off to judge a gesture with nothing else drawing\n";
     }
     return out;
   });
@@ -434,7 +563,16 @@ static void setupNetworking()
       return;
     }
     projectLoader.setTopicValue(topic, payload);
-    renderAndPresent("topic");
+
+    // Never drawn from here. This runs inside mqttClient.loop(), so a
+    // render costing 180ms happened between two touch samples and, during a
+    // transition, drew the outgoing screen straight over the frame being
+    // composed. Measured on a real gesture: 7 composed frames in 3.4
+    // seconds of dragging, the rest of the time spent here.
+    //
+    // The value is stored the moment it lands. Only the drawing waits, and
+    // the loop decides when.
+    renderPending = true;
   });
   mqttClient.connect();
   Serial.printf("[4v3b] mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
@@ -494,28 +632,122 @@ void loop()
     return;
   }
 
-  testInterface.handleClient();
-  mqttClient.loop();
-  subscribeToProjectTopics();
+  // A transition owns the whole loop while it runs, the same way setup mode
+  // does above. The web client and the MQTT client can each block for
+  // longer than a frame, and a value arriving through the second one used
+  // to render the outgoing screen straight over the gesture. Nothing else
+  // gets a turn until the finger is up.
+  if (swipe.active())
+  {
+    Gt911::Point dragPoints[Gt911::MAX_POINTS];
+    uint8_t dragN = 0;
+    const Gt911::Status dragStatus = touch.poll(dragPoints, Gt911::MAX_POINTS, dragN);
+
+    if (dragStatus == Gt911::Touched && dragN > 0)
+    {
+      lastTouchReportMs = millis();
+      swipe.follow((int16_t)dragPoints[0].x);
+      return;
+    }
+
+    if (dragStatus == Gt911::NoNewSample)
+    {
+      // Nothing new to say is not a lifted finger. Wait for the controller
+      // instead of composing the same frame again, and give up only once it
+      // has been quiet for longer than any gap it leaves between reports.
+      swipe.noteRecovery();
+      if (millis() - lastTouchReportMs < TOUCH_LOST_MS)
+      {
+        delay(2);
+        return;
+      }
+    }
+
+    swipe.release();
+    // Deliberately not rendering here, even though a value is usually
+    // waiting. That render is 180ms during which the next contact cannot
+    // be seen, and these gestures come in quick succession - a fifth of a
+    // second of blindness immediately after every swipe is its own way of
+    // losing every other one. The loop below draws it on its next turn,
+    // after it has looked for a finger.
+    return;
+  }
+
+  // A finger on the glass owns the loop, for the same reason a transition
+  // does. Recognising a swipe needs two touch samples inside one contact,
+  // and a contact is over in 300ms - while one arriving value costs 180ms
+  // to draw and the web client can block for longer. Eleven of twenty real
+  // swipes were never seen at all: both samples landed either side of the
+  // gesture, so the finger was only ever observed standing still.
+  //
+  // Whatever arrives meanwhile waits in the socket for a second or two,
+  // which nobody can see, and is drawn when the finger lifts.
+  const uint32_t turnStart = micros();
+  loopTurns++;
 
   Gt911::Point points[Gt911::MAX_POINTS];
-  uint8_t n = touch.read(points, Gt911::MAX_POINTS);
+  uint8_t n = 0;
+  const uint32_t touchT0 = micros();
+  const Gt911::Status touchStatus = touch.poll(points, Gt911::MAX_POINTS, n);
+  {
+    const uint32_t d = micros() - touchT0;
+    touchUs += d;
+    if (d > worstTouchUs) worstTouchUs = d;
+  }
+  if (touchStatus == Gt911::Touched && n > 0)
+  {
+    fingerDown = true;
+    touchX = (int16_t)points[0].x;
+    touchY = (int16_t)points[0].y;
+    lastTouchReportMs = millis();
+  }
+  else if (touchStatus == Gt911::Lifted)
+  {
+    fingerDown = false;
+  }
+  else if (fingerDown && (millis() - lastTouchReportMs) >= TOUCH_LOST_MS)
+  {
+    // Quiet for longer than a gap between reports, and it never said the
+    // finger was gone. Treated as gone, so one lost report cannot leave a
+    // contact open for ever.
+    fingerDown = false;
+  }
 
   // The reserved setup hold, checked before anything else can claim this
   // contact.
-  if (n > 0)
+  if (fingerDown)
   {
     if (!holdActive)
     {
       holdActive = true;
-      holdStartX = (int16_t)points[0].x;
-      holdStartY = (int16_t)points[0].y;
+      holdStartX = touchX;
+      holdStartY = touchY;
       holdStartMs = millis();
       holdLastSecondShown = -1;
       holdConsumed = false;
+      contactCount++;
+      contactSamples = 0;
     }
-    const int dx = (int)points[0].x - holdStartX;
-    const int dy = (int)points[0].y - holdStartY;
+    contactSamples++;
+    const int dx = (int)touchX - holdStartX;
+    const int dy = (int)touchY - holdStartY;
+
+    // Travel that is clearly horizontal is a page turn, not a hold that
+    // wandered. Tested before the drift branch below, which would otherwise
+    // swallow every drag by treating it as a fresh hold reference. A finger
+    // that has already been shown a countdown is left alone.
+    // Measured from where the finger went down, not from where the drag was
+    // recognised: the screen then sits exactly under the finger, and the
+    // commit threshold means the distance the user actually swiped.
+    if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
+
+    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
+        swipe.start(dx < 0 ? 1 : -1, holdStartX))
+    {
+      holdActive = false;
+      return;
+    }
+
     if (abs(dx) <= SETUP_HOLD_MAX_DRIFT && abs(dy) <= SETUP_HOLD_MAX_DRIFT)
     {
       const unsigned long held = millis() - holdStartMs;
@@ -542,15 +774,27 @@ void loop()
       // Moved too far for a hold. Nothing else claims a horizontal drag
       // on this board, so the reference simply restarts from here - a
       // finger that wandered and then settled can still reach five seconds.
-      holdStartX = (int16_t)points[0].x;
-      holdStartY = (int16_t)points[0].y;
+      holdStartX = touchX;
+      holdStartY = touchY;
       holdStartMs = millis();
       holdLastSecondShown = -1;
     }
+
+    // Nothing else gets a turn while the finger is down. 5ms is short
+    // against a gesture and long against an I2C read, so a 300ms swipe is
+    // seen dozens of times instead of once or twice.
+    delay(5);
+    return;
   }
-  else if (holdActive)
+
+  if (holdActive)
   {
     holdActive = false;
+    // A contact that came and went without ever being read as a swipe.
+    // How many samples it got, and how far it was seen to travel, say
+    // which of the two explanations is the right one.
+    missedContacts++;
+    if (contactSamples > missedMaxSamples) missedMaxSamples = contactSamples;
     // A hold that showed a countdown and was then released must not count as
     // anything else, and the panel has to be put back because the countdown
     // drew over it.
@@ -561,5 +805,37 @@ void loop()
     }
   }
 
-  delay(n ? 10 : 30);
+  const uint32_t webT0 = micros();
+  testInterface.handleClient();
+  {
+    const uint32_t d = micros() - webT0;
+    webUs += d;
+    if (d > worstWebUs) worstWebUs = d;
+  }
+
+  const uint32_t mqttT0 = micros();
+  mqttClient.loop();
+  subscribeToProjectTopics();
+  {
+    const uint32_t d = micros() - mqttT0;
+    mqttUs += d;
+    if (d > worstMqttUs) worstMqttUs = d;
+  }
+
+  if (renderPending && topicRenderEnabled && (millis() - lastTopicRenderMs) >= TOPIC_RENDER_MIN_MS)
+  {
+    renderPending = false;
+    lastTopicRenderMs = millis();
+    const uint32_t t0 = micros();
+    renderAndPresent("topic");
+    topicRenderUs += micros() - t0;
+    topicRenders++;
+  }
+
+  {
+    const uint32_t turn = micros() - turnStart;
+    if (turn > worstTurnUs) worstTurnUs = turn;
+  }
+
+  delay(20);
 }
