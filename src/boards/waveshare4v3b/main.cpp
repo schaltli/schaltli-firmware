@@ -188,6 +188,12 @@ static unsigned long dutyWindowStartMs = 0;
 // after a restart.
 static bool topicRenderEnabled = true;
 
+// The measuring square owns the panel while it is up. Without this it lasted
+// until the next touch: a press repaints its object from the project, and a
+// tap on a button repaints everything - and a ruler in one hand and a finger
+// on the glass is exactly the situation it exists for.
+static bool measuringPattern = false;
+
 // Where a turn of the loop goes. Twelve of twenty gestures never produced a
 // contact at all while the board was rendering nothing, so something else
 // is holding the loop for longer than a finger stays on the glass. Guessing
@@ -621,6 +627,101 @@ static void setupNetworking()
       out += String("\nvalue rendering is now ") + (topicRenderEnabled ? "on" : "off") + "\n";
       if (topicRenderEnabled) renderAndPresent("rendering back on");
     }
+    else if (setArg == "aspect=1" && canvas)
+    {
+      // A square of equal pixel counts, for measuring with a ruler.
+      //
+      // Why the panel and not the datasheet: a circle was reported as wider
+      // than tall, and the render turned out to be exactly round - 360px
+      // across and 360 down. So the distortion is the panel's pixel pitch,
+      // and the way to learn it is to measure something drawn rather than
+      // to work backwards from the case, where a bezel eats a few
+      // millimetres of height and turns a 6% error into an apparent 16%.
+      //
+      // 400x400 with a cross through the middle: the block is easy to lay a
+      // ruler along, and the arms say where its edges are if the corners
+      // fall under a rounded bezel.
+      measuringPattern = true;
+      const int16_t side = 400;
+      const int16_t x0 = (int16_t)((PANEL_W - side) / 2);
+      const int16_t y0 = (int16_t)((PANEL_H - side) / 2);
+      canvas->fillScreen(0x0000);
+      canvas->fillRect(x0, y0, side, side, 0xFFFF);
+      canvas->fillRect(x0 + side / 2 - 1, 0, 2, PANEL_H, 0xF800);
+      canvas->fillRect(0, y0 + side / 2 - 1, PANEL_W, 2, 0xF800);
+      panel.blit(canvas->getBuffer());
+      out += "\nmeasuring square: " + String(side) + "x" + String(side) +
+             " px, centred, red cross through its middle\n";
+      out += "  measure the WHITE block, width and height, in mm\n";
+      out += "  the panel ignores touches until you put the project back\n";
+      out += "  equal numbers mean square pixels; wider means a circle cannot look round\n";
+      out += "  ?set=aspect=0 puts the project back\n";
+    }
+    else if (setArg == "circle=1" && canvas)
+    {
+      // A closed ring of exactly 400px outer diameter, drawn through the
+      // project's own rasterizer.
+      //
+      // Why not simply trust the measurement already taken from a snapshot:
+      // the project's dial is open at the bottom, so its vertical diameter
+      // had to be inferred from the centre and the top rather than read off.
+      // A closed ring can be laid a ruler against, and it exercises
+      // ArcRaster on the way, so a bug in the rasterizer could not hide
+      // behind a hand-drawn circle either.
+      measuringPattern = true;
+      const int32_t side = 400;
+      const int16_t x0 = (int16_t)((PANEL_W - side) / 2);
+      const int16_t y0 = (int16_t)((PANEL_H - side) / 2);
+
+      ArcRaster::RingGeometry geom;
+      geom.size = side;
+      geom.thickness = 20;
+      geom.track = ArcRaster::makeSector(0, 360 * ArcRaster::ANGLE_SCALE);
+      geom.fill = ArcRaster::makeSector(0, 0);
+      geom.marker = ArcRaster::makeSector(0, 0);
+
+      const ArcRaster::Rgb565 ink = ArcRaster::toRgb565(0xFFFF);
+      const ArcRaster::Rgb565 back = ArcRaster::toRgb565(0x0000);
+      const ArcRaster::Rgb565 none = ArcRaster::toRgb565(0x0000);
+
+      canvas->fillScreen(0x0000);
+      const uint32_t t0 = micros();
+      for (int32_t py = 0; py < side; py++)
+      {
+        const ArcRaster::RowSpan span = ArcRaster::rowSpan(geom, py);
+        for (int32_t px = span.x0; px <= span.x1; px++)
+        {
+          if (span.holeX1 >= span.holeX0 && px >= span.holeX0 && px <= span.holeX1) continue;
+          const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
+          const int32_t covered = bands.fill + bands.track + bands.marker;
+          if (covered == 0) continue;
+          const uint16_t mixed = ArcRaster::blendBands(none, bands.fill, ink, bands.track, none,
+                                                       bands.marker, back,
+                                                       (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+          canvas->drawPixel(x0 + px, y0 + py, mixed);
+        }
+      }
+      const uint32_t drawUs = micros() - t0;
+
+      // Marks at the four extremes, so a ruler has something to aim at.
+      canvas->fillRect(x0 - 30, y0 + side / 2 - 1, 24, 2, 0xF800);
+      canvas->fillRect(x0 + side + 6, y0 + side / 2 - 1, 24, 2, 0xF800);
+      canvas->fillRect(x0 + side / 2 - 1, y0 - 30, 2, 24, 0xF800);
+      canvas->fillRect(x0 + side / 2 - 1, y0 + side + 6, 2, 24, 0xF800);
+      panel.blit(canvas->getBuffer());
+
+      out += "\nclosed ring: outer diameter " + String(side) + " px both ways, drawn in " +
+             String(drawUs / 1000.0f, 1) + " ms\n";
+      out += "  red marks sit level with its outer edge on all four sides\n";
+      out += "  measure across the outside of the ring, horizontally and vertically\n";
+      out += "  the panel ignores touches until ?set=aspect=0 puts the project back\n";
+    }
+    else if (setArg == "aspect=0")
+    {
+      measuringPattern = false;
+      renderAndPresent("after the measuring square");
+      out += "\nproject restored\n";
+    }
     else if (setArg == "arcselftest=1")
     {
       // Needs no project, no broker and no fixture - it compares the
@@ -633,7 +734,9 @@ static void setupNetworking()
       out += "\nadd ?set=bench=1 for panel bandwidth, ?set=render=1 for the render breakdown, ";
       out += "?set=arcselftest=1 to prove the arc short cut, ";
       out += "?set=swipes=1 for the gesture log (?set=swipes=clear to reset it), ";
-      out += "?set=topicrender=off to judge a gesture with nothing else drawing\n";
+      out += "?set=topicrender=off to judge a gesture with nothing else drawing, ";
+      out += "?set=aspect=1 for a 400x400 measuring square, ?set=circle=1 for a closed 400px ring ";
+      out += "(?set=aspect=0 puts the project back)\n";
     }
     return out;
   });
@@ -1090,6 +1193,14 @@ void loop()
   // which nobody can see, and is drawn when the finger lifts.
   const uint32_t turnStart = micros();
   loopTurns++;
+
+  // Nothing may draw over the measuring square, including a finger.
+  if (measuringPattern)
+  {
+    testInterface.handleClient();
+    delay(10);
+    return;
+  }
 
   int16_t sampleX = touchX, sampleY = touchY;
   const uint32_t touchT0 = micros();
