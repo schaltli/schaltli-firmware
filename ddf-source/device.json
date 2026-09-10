@@ -134,6 +134,7 @@
     "screenSwitchBody": "form-urlencoded",
     "snapshotUrl": "http://{ip}/snapshot.bmp",
     "snapshotFormat": "bmp",
+    "snapshotQuantize": "rgb565",
     "postRenderSettleMs": 0
   },
   "needsPageIconsInSize": 56
