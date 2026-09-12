@@ -1,0 +1,9 @@
+# The DDF sources go into the built zip byte for byte
+# (tools/generate-ddf-header.js), and that build is only deterministic if a
+# clone reproduces those bytes exactly. Some of these .bdf files contain
+# CRLF and some LF - mixed, in the same directory - so any translation
+# changes half of them: the same source would build a different DDF on a
+# Linux checkout, --check would report stale on a clean tree, and the fonts
+# compiled into the firmware would differ from the ones the designer
+# renders with.
+ddf-source*/** -text
