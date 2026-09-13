@@ -4,12 +4,10 @@
 // built to are in the designer repo's docs/2026-09-13-papers3-grilling.md,
 // cited by number where they bite.
 //
-// What is here: the panel, the project stack above it, and the test
-// interface that lets a conformance run compare this device against the
-// designer pixel for pixel. What is deliberately not here yet: touch, and
-// therefore the setup-mode gesture, Switch and SoftwareButton. Those are the
-// next increment - wiring them at the same time as everything else would
-// give a first failure six possible causes instead of one.
+// What is here: the panel, the project stack above it, the test interface
+// that lets a conformance run compare this device against the designer pixel
+// for pixel, and touch - taps on Switch and SoftwareButton, plus the
+// ten-second hold that opens setup mode.
 //
 // Almost none of the code below is this board's. ProjectLoader,
 // ColorScreenRenderer, MqttClient, DeployManager and TestInterfaceServer
@@ -67,6 +65,30 @@ static bool topicsSubscribed = false;
 // the drawing waits, and loop() decides when.
 static bool renderPending = false;
 
+// --- touch ------------------------------------------------------------
+//
+// The panel's GT911 comes with M5Unified, so unlike the 4.3B there is no
+// driver to port - M5.update() fills M5.Touch and the code below only has to
+// decide what a contact means.
+//
+// Injection exists so a test can press without a finger: POST /api/touch
+// sets a point and a short window during which it wins over the glass. A
+// posted lift ends the window at once rather than extending it, so the
+// release runs against a panel that is also reading idle.
+static const uint32_t TOUCH_INJECT_HOLD_MS = 2000;
+static int16_t injectX = 0, injectY = 0;
+static bool injectDown = false;
+static uint32_t injectUntilMs = 0;
+static bool injectLiftOnce = false;
+
+// The setup-mode gesture (decision 7): ten seconds held in the top left
+// quadrant. Long on purpose - 0.3s of feedback latency trains people to
+// press longer, so the 4.3B's two seconds would fire here by accident.
+static const uint32_t SETUP_HOLD_MS = 10000;
+static bool holdActive = false;
+static uint32_t holdStartMs = 0;
+static int holdLastSecondShown = -1;
+
 // One status line every ten seconds, because on this board the boot log is
 // genuinely hard to catch: its USB device re-enumerates on every reset, so a
 // serial capture started beforehand ends up holding a handle to a device
@@ -87,6 +109,8 @@ static void heartbeat()
                 (unsigned)panel.partialsSinceFull(), (unsigned)EpdPanel::PARTIALS_BEFORE_FULL);
 }
 
+static void enterSetupMode();
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
@@ -100,6 +124,187 @@ static void renderAndPresent(const char *reason)
                 currentScreen, reason, ok ? "ok" : "FAILED",
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000),
                 panel.lastWasFull() ? " (full refresh)" : "");
+}
+
+// Which state a tap on a Switch asks for. Segment arithmetic identical to
+// ColorScreenRenderer::renderSwitch()'s own division, because a finger and
+// the picture disagreeing about where a segment ends is a bug nobody can
+// see in a screenshot.
+static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
+{
+  const int states = (int)hit->properties.states.size();
+  if (states <= 0) return -1;
+
+  if (hit->properties.mode == "single")
+  {
+    // One area, one target: a tap moves to the next state and wraps. The
+    // active index comes from the renderer rather than a second copy of the
+    // rule here - what is drawn and what is tapped have to agree.
+    const int active = renderer->getActiveSwitchStateIndex(*hit);
+    return (active < 0) ? 0 : (active + 1) % states;
+  }
+
+  int index = ((int)(x - objX) * states) / hit->width;
+  if (index < 0) index = 0;
+  if (index >= states) index = states - 1;
+  return index;
+}
+
+static void dispatchButtonAction(const ButtonAction &action)
+{
+  if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  const int count = (int)project.screens.size();
+
+  if (action.type == "next-screen" || action.type == "previous-screen")
+  {
+    if (count == 0) return;
+    const int delta = (action.type == "next-screen") ? 1 : -1;
+    currentScreen = ((currentScreen + delta) % count + count) % count;
+    panel.forceFullNext();
+    renderAndPresent("button: screen change");
+  }
+  else if (action.type == "goto-screen")
+  {
+    for (int i = 0; i < count; i++)
+    {
+      if (project.screens[i].id == action.targetScreenId)
+      {
+        currentScreen = i;
+        panel.forceFullNext();
+        renderAndPresent("button: goto screen");
+        break;
+      }
+    }
+  }
+  else if (action.type == "send-mqtt")
+  {
+    // Not retained: a command, not a state. What comes back on the read
+    // topic is what the panel then shows.
+    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+  }
+}
+
+// A press at x,y. Returns true when it hit something that acted.
+//
+// The search runs through ColorScreenRenderer::hitTestTappable() rather than
+// a loop over the screen's objects here, because the answer depends on two
+// things that already live in the renderer: which panel of a tab-control is
+// showing, and how far its children are drawn shifted. A second copy would
+// mean the finger and the picture disagreeing about geometry, which is how
+// the knob ended up with a working top-level switch and four dead ones
+// inside panels.
+static bool handleTap(int16_t x, int16_t y)
+{
+  if (!renderer || !projectLoader.isLoaded()) return false;
+
+  int16_t objX = 0, objY = 0;
+  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  if (hit == nullptr) return false;
+
+  if (hit->type == "SoftwareButton")
+  {
+    Serial.printf("[papers3] tap: SoftwareButton \"%s\"\n", hit->id.c_str());
+    dispatchButtonAction(hit->properties.action);
+    return true;
+  }
+
+  const int states = (int)hit->properties.states.size();
+  if (states <= 0 || hit->properties.writeTopic.isEmpty()) return false;
+
+  const int index = switchSegmentFor(hit, x, objX);
+  if (index < 0) return false;
+  const String &value = hit->properties.states[index].writeValue;
+  if (value.isEmpty()) return false;
+
+  // Not retained: a command, not a state. The state comes back on the read
+  // topic and colours the segment, so the switch shows what actually
+  // happened rather than what it believed it was doing.
+  const bool sent = mqttClient.publish(hit->properties.writeTopic, value, false);
+  Serial.printf("[papers3] tap: Switch \"%s\" segment %d -> %s = %s%s\n", hit->id.c_str(), index,
+                hit->properties.writeTopic.c_str(), value.c_str(),
+                sent ? "" : "  (NOT published - broker away)");
+  return true;
+}
+
+// One touch sample, from the glass or from a test, and the caller cannot
+// tell which.
+static bool readTouch(int16_t &x, int16_t &y)
+{
+  if (injectLiftOnce)
+  {
+    injectLiftOnce = false;
+    return false;
+  }
+  if (millis() < injectUntilMs)
+  {
+    x = injectX;
+    y = injectY;
+    return injectDown;
+  }
+
+  const auto &d = M5.Touch.getDetail();
+  if (!d.isPressed()) return false;
+  x = d.x;
+  y = d.y;
+  return true;
+}
+
+// Press, hold and release, plus the setup gesture.
+//
+// Acting on release rather than on contact: a hold that becomes setup mode
+// must not also have fired whatever it was resting on.
+static void serviceTouch()
+{
+  int16_t x = 0, y = 0;
+  const bool down = readTouch(x, y);
+
+  if (down && !holdActive)
+  {
+    holdActive = true;
+    holdStartMs = millis();
+    holdLastSecondShown = -1;
+    injectX = x;
+    injectY = y;
+    return;
+  }
+
+  if (down && holdActive)
+  {
+    // Top left quadrant only (decision 20 of the grilling: "oben links").
+    const bool inCorner = injectX < panel.width() / 2 && injectY < panel.height() / 2;
+    if (!inCorner) return;
+
+    const uint32_t held = millis() - holdStartMs;
+    if (held >= SETUP_HOLD_MS)
+    {
+      holdActive = false;
+      enterSetupMode();
+      return;
+    }
+
+    const int second = (int)(held / 1000);
+    if (second != holdLastSecondShown && second > 0)
+    {
+      holdLastSecondShown = second;
+      // Deliberately not counted against the refresh budget (decision 7):
+      // ten ticks would spend it exactly, and the full refresh would land in
+      // the final moment of the hold - a black-and-white flash immediately
+      // before setup mode appears, which reads as a fault. Reaching setup
+      // mode repaints everything anyway.
+      Serial.printf("[papers3] setup hold %d/%d s\n", second, (int)(SETUP_HOLD_MS / 1000));
+    }
+    return;
+  }
+
+  if (!down && holdActive)
+  {
+    holdActive = false;
+    const uint32_t held = millis() - holdStartMs;
+    // A release short of the setup hold is an ordinary tap on whatever was
+    // under it.
+    if (held < SETUP_HOLD_MS) handleTap(injectX, injectY);
+  }
 }
 
 static void subscribeToProjectTopics()
@@ -253,6 +458,16 @@ static void setupNetworking()
     return out;
   });
 
+  // Lets a run press a Switch or a SoftwareButton without a finger, which
+  // is what makes those two types testable at all (decision 11).
+  testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
+    injectX = x;
+    injectY = y;
+    injectDown = down;
+    injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
+    injectLiftOnce = !down;
+  });
+
   testInterface.setDebugHandler([](const String &) -> String {
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " +
@@ -335,6 +550,7 @@ void loop()
     return;
   }
 
+  serviceTouch();
   testInterface.handleClient();
   mqttClient.loop();
   subscribeToProjectTopics();
