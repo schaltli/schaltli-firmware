@@ -1,20 +1,42 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="620" viewBox="0 0 1040 620">
-  <!--
-    M5Stack PaperS3, drawn rather than traced.
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Adornment for the M5Stack PaperS3.
 
-    Decision 9 of the 2026-09-13 PaperS3 grilling: a plain grey frame. There
-    is nothing to place on it - this device has no hardware buttons the
-    firmware can read (its one side button is power, reset and download
-    mode), so there are no id^="button" elements here, and the panel is
-    rectangular, so there are no id="offscreen-N" covers either.
+  Drawn to scale rather than decoratively. The case measures 121.5 x 67.7 mm
+  and the ED047TC1's active area is 104.0 x 58.5 mm (4.7" diagonal at 16:9),
+  so at 960px across the screen one millimetre is 9.23px. That puts the case
+  at 1120 x 624 and leaves a bezel of 80px left and right and 42px top and
+  bottom. The designer shows this behind the canvas, and a bezel invented by
+  eye would make every layout look better or worse placed than it really is -
+  which is what the first version of this file did (2026-09-13).
 
-    The bezel is 40px on every side, which is a proportion that looks right
-    rather than a measurement off the real case. Nothing reads it: the
-    designer takes the screen's position and size from the rect below and
-    nothing else, so a nicer drawing can replace this file without touching
-    any code. The document is sized to the whole footprint because an SVG
-    loaded as an image is clipped to its own viewBox.
-  -->
-  <rect x="0" y="0" width="1040" height="620" rx="24" ry="24" fill="#d4d4d4" stroke="#9a9a9a" stroke-width="2"/>
-  <rect id="screen" x="40" y="40" width="960" height="540" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+  THE SCREEN IS A PUNCHED-OUT HOLE, not an unfilled rect on top. That first
+  version got this wrong in exactly the way DEVICE_GUIDE.md warns about, and
+  the way the 4.3B's own adornment got it wrong before it: the adornment is
+  drawn *over* the project canvas, so an opaque body covers the entire design
+  and a rect laid on top removes nothing. The body below is therefore one
+  path with fill-rule="evenodd" and two subpaths, outer case and inner
+  screen, which is the SVG equivalent of Inkscape's Path -> Difference.
+
+  Conventions (DEVICE_GUIDE.md, "Building the adornment SVG"):
+    - explicit width/height on <svg>, not viewBox alone: the designer loads
+      this as an Image() and draws it at its natural size
+    - nothing extends past the document edge, or it is silently discarded
+    - <rect id="screen"> is a measurement-only marker, read for its own
+      x/y/width/height; the visible hole is the path
+
+  No button elements: this device's single side button is power, reset and
+  download mode, so there is nothing a screen design could bind to
+  (decision 9 of the 2026-09-13 PaperS3 grilling).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="624" viewBox="0 0 1120 624">
+  <path
+    fill-rule="evenodd"
+    fill="#d4d4d4"
+    stroke="#9a9a9a"
+    stroke-width="2"
+    d="M18,1 H1102 A17,17 0 0 1 1119,18 V606 A17,17 0 0 1 1102,623 H18 A17,17 0 0 1 1,606 V18 A17,17 0 0 1 18,1 Z
+       M80,42 H1040 V582 H80 Z"
+  />
+  <rect id="screen" x="80" y="42" width="960" height="540" fill="none"/>
 </svg>

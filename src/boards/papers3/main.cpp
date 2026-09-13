@@ -88,6 +88,19 @@ static const uint32_t SETUP_HOLD_MS = 10000;
 static bool holdActive = false;
 static uint32_t holdStartMs = 0;
 static int holdLastSecondShown = -1;
+// Where the contact began and where it is now. A tap acts on the first, a
+// swipe on the difference, and a hold needs to know it has not become either.
+static int16_t contactStartX = 0, contactStartY = 0;
+static int16_t contactLastX = 0, contactLastY = 0;
+static bool contactMoved = false;
+
+// Past a jittery finger, and clearly one axis rather than a diagonal. Same
+// numbers as the 4.3B's, which were settled against real hands.
+static const int SWIPE_MIN_DISTANCE = 60;
+static const int SWIPE_AXIS_RATIO = 2;
+// A hold stops being a hold once the finger travels. Without this a slow
+// drag that began in the top left would still open setup mode.
+static const int HOLD_MOVE_CANCEL = 20;
 
 // One status line every ten seconds, because on this board the boot log is
 // genuinely hard to catch: its USB device re-enumerates on every reset, so a
@@ -227,6 +240,41 @@ static bool handleTap(int16_t x, int16_t y)
   return true;
 }
 
+// A drag, resolved at release: the dominant axis names a button and the
+// project says what that button does.
+//
+// No animated page turn, unlike the 4.3B's follow-swipe. On this panel every
+// intermediate frame is its own refresh of a second or so, so a gesture that
+// drags the outgoing screen along would take the better part of a minute and
+// leave a trail of ghosts. The screen changes once, at release, with a clean
+// paint.
+static void dispatchSwipeAtRelease(int dx, int dy)
+{
+  if (!projectLoader.isLoaded()) return;
+
+  const char *buttonId = nullptr;
+  if (abs(dx) > abs(dy))
+  {
+    if (abs(dx) >= SWIPE_MIN_DISTANCE && abs(dx) >= abs(dy) * SWIPE_AXIS_RATIO)
+      buttonId = dx > 0 ? "swipe-right" : "swipe-left";
+  }
+  else
+  {
+    if (abs(dy) >= SWIPE_MIN_DISTANCE && abs(dy) >= abs(dx) * SWIPE_AXIS_RATIO)
+      buttonId = dy > 0 ? "swipe-down" : "swipe-up";
+  }
+  if (buttonId == nullptr) return;
+
+  const ButtonAction action = projectLoader.getButtonAction(currentScreen, buttonId);
+  if (action.type.isEmpty())
+  {
+    Serial.printf("[papers3] swipe: %s, nothing bound on this screen\n", buttonId);
+    return;
+  }
+  Serial.printf("[papers3] swipe: %s -> %s\n", buttonId, action.type.c_str());
+  dispatchButtonAction(action);
+}
+
 // One touch sample, from the glass or from a test, and the caller cannot
 // tell which.
 static bool readTouch(int16_t &x, int16_t &y)
@@ -264,15 +312,24 @@ static void serviceTouch()
     holdActive = true;
     holdStartMs = millis();
     holdLastSecondShown = -1;
-    injectX = x;
-    injectY = y;
+    contactStartX = contactLastX = x;
+    contactStartY = contactLastY = y;
+    contactMoved = false;
     return;
   }
 
   if (down && holdActive)
   {
-    // Top left quadrant only (decision 20 of the grilling: "oben links").
-    const bool inCorner = injectX < panel.width() / 2 && injectY < panel.height() / 2;
+    contactLastX = x;
+    contactLastY = y;
+    if (abs(x - contactStartX) > HOLD_MOVE_CANCEL || abs(y - contactStartY) > HOLD_MOVE_CANCEL)
+      contactMoved = true;
+
+    // Setup mode: ten seconds, still, in the top left quadrant (decisions 7
+    // and 20). A gesture that has travelled is on its way to being a swipe
+    // and must not also open setup.
+    if (contactMoved) return;
+    const bool inCorner = contactStartX < panel.width() / 2 && contactStartY < panel.height() / 2;
     if (!inCorner) return;
 
     const uint32_t held = millis() - holdStartMs;
@@ -300,10 +357,18 @@ static void serviceTouch()
   if (!down && holdActive)
   {
     holdActive = false;
-    const uint32_t held = millis() - holdStartMs;
-    // A release short of the setup hold is an ordinary tap on whatever was
-    // under it.
-    if (held < SETUP_HOLD_MS) handleTap(injectX, injectY);
+    const int dx = contactLastX - contactStartX;
+    const int dy = contactLastY - contactStartY;
+
+    // A travelled gesture is a swipe and never also a tap on whatever it
+    // started over. A still one is a tap, provided it was not the setup
+    // hold, which has already acted by now.
+    if (contactMoved)
+    {
+      dispatchSwipeAtRelease(dx, dy);
+      return;
+    }
+    if ((millis() - holdStartMs) < SETUP_HOLD_MS) handleTap(contactStartX, contactStartY);
   }
 }
 
