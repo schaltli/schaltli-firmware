@@ -24,14 +24,31 @@ public:
       : canvas_(&canvas), panel_(panel), width_(w), height_(h)
   {
     u8g2_.begin(*canvas_);
-    u8g2_.setFontMode(1);
   }
 
   void showLines(std::initializer_list<String> lines) override
   {
     canvas_->fillRect(0, 0, width_, height_, BACKGROUND);
-    u8g2_.setForegroundColor(FOREGROUND);
     u8g2_.setFont(u8g2_font_fur35_tf);
+    // AFTER setFont(), never before. u8g2_SetFont() silently resets the mode
+    // to solid/opaque whenever the font actually changes, so a one-time
+    // setFontMode(1) in the constructor holds only until the first
+    // setFont() call - which is every call of this method.
+    //
+    // In solid mode each glyph's whole bounding box is filled with the
+    // background colour before the ink is drawn. The 4.3B has carried this
+    // same ordering since it was written and nothing showed, because its
+    // setup screens are white on black and u8g2's unset background colour is
+    // black too. Flip to black on white, as an e-ink panel wants, and every
+    // letter gets a black box behind it. Seen on the real PaperS3 on
+    // 2026-09-13; the same bug is recorded in the e-paper firmware's
+    // ScreenRenderer from 2026-07-20, where it turned a transparent text box
+    // into a solid white block.
+    u8g2_.setFontMode(1);
+    u8g2_.setForegroundColor(FOREGROUND);
+    // Belt and braces: if some future font change resets the mode again,
+    // filling with the panel's own background is invisible rather than ugly.
+    u8g2_.setBackgroundColor(BACKGROUND);
 
     // Vertically centred as a block, so one line does not sit at the top of
     // an empty panel and four lines do not run off the bottom.

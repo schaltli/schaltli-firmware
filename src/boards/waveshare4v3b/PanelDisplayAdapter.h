@@ -32,14 +32,26 @@ public:
       : canvas_(&canvas), panel_(panel), width_(w), height_(h)
   {
     u8g2_.begin(*canvas_);
-    u8g2_.setFontMode(1);
   }
 
   void showLines(std::initializer_list<String> lines) override
   {
     canvas_->fillRect(0, 0, width_, height_, BACKGROUND);
-    u8g2_.setForegroundColor(FOREGROUND);
     u8g2_.setFont(u8g2_font_fur35_tf);
+    // AFTER setFont(), never before - u8g2_SetFont() silently resets the
+    // mode to solid/opaque on a font change, so the constructor's one-time
+    // setFontMode(1) never survived to here.
+    //
+    // Nothing ever showed on this board: in solid mode each glyph's box is
+    // filled with u8g2's own background colour, which is black because
+    // nobody set it, and these screens are white on black. The PaperS3
+    // inherited this file, flipped to black on white as an e-ink panel
+    // wants, and every letter came out in a black box (2026-09-13). Fixed
+    // here too rather than only there, because the next board to copy this
+    // adapter should not inherit a trap that happens to be invisible.
+    u8g2_.setFontMode(1);
+    u8g2_.setForegroundColor(FOREGROUND);
+    u8g2_.setBackgroundColor(BACKGROUND);
 
     // Vertically centred as a block, so one line does not sit at the top of
     // an empty panel and four lines do not run off the bottom.
