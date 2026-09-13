@@ -1,4 +1,4 @@
-# screenbee-waveshare-1v8
+# screenbee-firmware
 
 Firmware for the **Waveshare ESP32-S3-Knob-Touch-LCD-1.8** — one of the two
 PSRAM-equipped boards evaluated as a successor to the M5 Dial

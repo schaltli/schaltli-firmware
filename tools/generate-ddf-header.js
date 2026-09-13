@@ -43,19 +43,26 @@ const sourceDir = process.argv.slice(2).find((a) => !a.startsWith("--")) || DEFA
 // hash for it, so nothing downstream could tell - which is precisely the
 // class of silent staleness the pre-build hook exists to prevent.
 //
-// "ddf-source" still writes to src/, so the knob is untouched and every
-// existing invocation keeps its meaning. Any other source directory writes
-// next to its own board's code.
+// "ddf-source" still writes the knob's outputs, so every existing invocation
+// keeps its meaning. Any other source directory writes next to its own
+// board's code.
+//
+// The directory name is the board id, verbatim and with no vendor prefix
+// glued on. It used to be "waveshare" + the id, which was fine while both
+// boards were Waveshares and wrong the moment a third vendor arrived: a
+// source directory named ddf-source-papers3 resolved to src/boards/
+// waveshares3, a board that does not exist (decision 2 of the 2026-09-13
+// PaperS3 grilling).
 function outputsFor(dir) {
   const name = path.basename(path.resolve(dir))
   // The knob's own source directory is still called "ddf-source" for
-  // continuity, but its outputs moved into src/boards/waveshareknob1v8/
-  // along with everything else board-specific: while DeviceInfo.h and
-  // ddf_zip.h sat in src/, every shared .cpp that included them by name got
-  // them by proximity, and the second board shipped the first one's
-  // identity and DDF.
-  const boardName = name === "ddf-source" ? "knob1v8" : name.replace(/^ddf-source-/, "")
-  const boardDir = path.join(REPO, "src", "boards", "waveshare" + boardName)
+  // continuity, but its outputs live in src/boards/waveshareknob1v8/ along
+  // with everything else board-specific: while DeviceInfo.h and ddf_zip.h
+  // sat in src/, every shared .cpp that included them by name got them by
+  // proximity, and the second board shipped the first one's identity and
+  // DDF.
+  const boardName = name === "ddf-source" ? "waveshareknob1v8" : name.replace(/^ddf-source-/, "")
+  const boardDir = path.join(REPO, "src", "boards", boardName)
   if (!fs.existsSync(boardDir)) {
     console.error(`no board directory for DDF source "${name}": expected ${boardDir}`)
     process.exit(1)

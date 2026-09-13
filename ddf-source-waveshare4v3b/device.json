@@ -4,7 +4,7 @@
   "device": {
     "id": "waveshare-touch-lcd-4v3b",
     "name": "Waveshare ESP32-S3-Touch-LCD-4.3B",
-    "firmwareRepo": "screenbee-waveshare-1v8"
+    "firmwareRepo": "screenbee-firmware"
   },
   "screen": {
     "width": 800,

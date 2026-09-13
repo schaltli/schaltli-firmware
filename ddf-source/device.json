@@ -4,7 +4,7 @@
   "device": {
     "id": "waveshare-knob-1v8",
     "name": "Waveshare Knob-Touch LCD 1.8",
-    "firmwareRepo": "screenbee-waveshare-1v8"
+    "firmwareRepo": "screenbee-firmware"
   },
   "screen": {
     "width": 360,
