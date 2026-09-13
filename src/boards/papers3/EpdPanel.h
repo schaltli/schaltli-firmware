@@ -38,6 +38,14 @@ public:
   {
     auto cfg = M5.config();
     M5.begin(cfg);
+    // Landscape, because the DDF says 960x540 and decision 8 says landscape
+    // only in v1. M5GFX's rotation 0 on this panel is portrait 540x960 - the
+    // long edge is the one the case stands on, not the one the panel counts
+    // first - so without this the device renders a project laid out for a
+    // screen it does not have. Caught at first boot by main.cpp's check
+    // against the DDF's declared size, which is the whole reason that check
+    // is there rather than trusting the panel.
+    M5.Display.setRotation(1);
     width_ = (int16_t)M5.Display.width();
     height_ = (int16_t)M5.Display.height();
     // Quality mode for the first paint: whatever the panel held before this

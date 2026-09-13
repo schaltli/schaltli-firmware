@@ -141,13 +141,45 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
   bmpFile.seek(28);
   uint16_t bpp = bmpFile.read() | (bmpFile.read() << 8);
 
-  if (bpp != 24) {
-    Serial.printf("[ColorAssetLoader] \"%s\" is %dbpp, only 24bpp is supported\n", path.c_str(), bpp);
+  if (bpp != 24 && bpp != 4) {
+    Serial.printf("[ColorAssetLoader] \"%s\" is %dbpp, only 24bpp and 4bpp are supported\n",
+                  path.c_str(), bpp);
     bmpFile.close();
     return false;
   }
 
-  uint32_t rowSize = ((width * 3 + 3) / 4) * 4;  // padded to 4-byte boundary
+  // 4bpp is what the designer exports for a device whose DDF declares
+  // colorDepth "4bit" - the PaperS3, as of 2026-09-13. Until then every
+  // colour board here was 24bit and this loader only knew that, so the first
+  // conformance run on the PaperS3 failed every type that draws a bitmap and
+  // passed every type that does not: icon, MQTTIconField, SoftwareButton,
+  // and the tab-control and panel specimens because their children are
+  // icons. Nothing was wrong with the rendering; the assets never arrived.
+  //
+  // The palette is 16 BGRA entries written straight after the DIB header
+  // (lib/asset-export.ts's bitmapToBMP4Bit). It is always a grey ramp of
+  // i*17, but it is read rather than assumed: a palette that says what the
+  // pixels mean is the point of having one, and a future export that picks
+  // different shades should not silently come out wrong here.
+  uint16_t palette565[16] = {0};
+  if (bpp == 4) {
+    bmpFile.seek(14);
+    const uint32_t dibSize = bmpFile.read() | (bmpFile.read() << 8) | (bmpFile.read() << 16) |
+                             ((uint32_t)bmpFile.read() << 24);
+    bmpFile.seek(14 + dibSize);
+    for (int i = 0; i < 16; i++) {
+      const uint8_t b = bmpFile.read();
+      const uint8_t g = bmpFile.read();
+      const uint8_t r = bmpFile.read();
+      bmpFile.read();  // reserved
+      palette565[i] = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
+    }
+  }
+
+  // Both formats pad rows to a 4-byte boundary; 4bpp packs two pixels per
+  // byte, high nibble first.
+  uint32_t rowSize = (bpp == 24) ? (((uint32_t)width * 3 + 3) / 4) * 4
+                                 : ((((uint32_t)width + 1) / 2 + 3) / 4) * 4;
 
   bool flip = height > 0;  // positive height = bottom-up (the normal case)
   if (height < 0) height = -height;
@@ -177,10 +209,16 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
     bmpFile.readBytes((char*)rowBuffer, rowSize);
 
     for (int32_t col = 0; col < width; col++) {
-      uint8_t b = rowBuffer[col * 3];
-      uint8_t g = rowBuffer[col * 3 + 1];
-      uint8_t r = rowBuffer[col * 3 + 2];
-      uint16_t rgb565 = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
+      uint16_t rgb565;
+      if (bpp == 24) {
+        uint8_t b = rowBuffer[col * 3];
+        uint8_t g = rowBuffer[col * 3 + 1];
+        uint8_t r = rowBuffer[col * 3 + 2];
+        rgb565 = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | (b >> 3);
+      } else {
+        const uint8_t packed = rowBuffer[col / 2];
+        rgb565 = palette565[(col & 1) ? (packed & 0x0F) : (packed >> 4)];
+      }
       if (cachen) neu.pixels[(size_t)row * (size_t)width + (size_t)col] = rgb565;
       canvas->drawPixel(x + col, y + row, rgb565);
     }
