@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="620" viewBox="0 0 1040 620">
+  <!--
+    M5Stack PaperS3, drawn rather than traced.
+
+    Decision 9 of the 2026-09-13 PaperS3 grilling: a plain grey frame. There
+    is nothing to place on it - this device has no hardware buttons the
+    firmware can read (its one side button is power, reset and download
+    mode), so there are no id^="button" elements here, and the panel is
+    rectangular, so there are no id="offscreen-N" covers either.
+
+    The bezel is 40px on every side, which is a proportion that looks right
+    rather than a measurement off the real case. Nothing reads it: the
+    designer takes the screen's position and size from the rect below and
+    nothing else, so a nicer drawing can replace this file without touching
+    any code. The document is sized to the whole footprint because an SVG
+    loaded as an image is clipped to its own viewBox.
+  -->
+  <rect x="0" y="0" width="1040" height="620" rx="24" ry="24" fill="#d4d4d4" stroke="#9a9a9a" stroke-width="2"/>
+  <rect id="screen" x="40" y="40" width="960" height="540" fill="#ffffff" stroke="#8a8a8a" stroke-width="1"/>
+</svg>
