@@ -637,7 +637,11 @@ void TestInterfaceServer::sendBMP(const uint16_t* source) {
   webServer_->sendHeader("Content-Type", "image/bmp");
   webServer_->sendHeader("Cache-Control", "no-cache");
   webServer_->send(200, "image/bmp", "");
-  webServer_->client().write(header, 54);
+  if (webServer_->client().write(header, 54) != 54) {
+    Serial.println("[TestInterface] snapshot client stopped reading at the header - dropped");
+    webServer_->client().stop();
+    return;
+  }
 
   const uint16_t* buffer = source;
   uint8_t* rowBuffer = (uint8_t*)malloc(paddedRowBytes);
@@ -661,7 +665,18 @@ void TestInterfaceServer::sendBMP(const uint16_t* source) {
       rowBuffer[x * 3 + 1] = g8;
       rowBuffer[x * 3 + 2] = r8;
     }
-    webServer_->client().write(rowBuffer, paddedRowBytes);
+    // A short write means the client stopped taking data: write() has
+    // already waited ten seconds without progress before returning it. Carry
+    // on to the next row and each of the remaining hundreds waits its own ten
+    // seconds, with this board answering nothing else meanwhile - one web
+    // request held a 4.3B's loop for 278s that way (2026-09-14). Give the
+    // client up instead; hil/stalled-snapshot.js holds this in place.
+    if (webServer_->client().write(rowBuffer, paddedRowBytes) != (size_t)paddedRowBytes) {
+      Serial.printf("[TestInterface] snapshot client stopped reading at row %d of %d - dropped\n",
+                    height - 1 - y, height);
+      webServer_->client().stop();
+      break;
+    }
   }
 
   free(rowBuffer);

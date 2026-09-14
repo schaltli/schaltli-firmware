@@ -62,6 +62,7 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <LittleFS.h>
 #include "Ch422g.h"
 #include "Gt911.h"
@@ -561,6 +562,14 @@ static void setupNetworking()
 
   Serial.printf("[4v3b] connecting to \"%s\"\n", creds.ssid.c_str());
   WiFi.mode(WIFI_STA);
+  // Radio power save off, as the knob has had it since 2026-08-24 - a
+  // cross-device building block this port never copied. Measured on this
+  // board on 2026-09-14, interleaved on the same minutes: ping averaged
+  // 67-96ms with the factory WIFI_PS_MIN_MODEM and 7-35ms without, and HTTP
+  // answers dropped to about 20ms. Every request the designer or a HIL run
+  // makes waits for the radio to wake otherwise. ?set=wifips=min puts the
+  // factory mode back for a comparison.
+  WiFi.setSleep(false);
   WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
 
@@ -631,6 +640,21 @@ static void setupNetworking()
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
+    {
+      // The radio's power save, switchable live so it can be measured on and
+      // off against the same board, room and minute (2026-09-14). Straight to
+      // esp_wifi_set_ps() rather than WiFi.setSleep(true), which in this core
+      // selects the deeper mode rather than the factory WIFI_PS_MIN_MODEM -
+      // see the knob's setWiFiPowerSave() in src/main.cpp. Set before
+      // reporting, so the line below already shows what was asked for.
+      if (setArg == "wifips=none") esp_wifi_set_ps(WIFI_PS_NONE);
+      if (setArg == "wifips=min") esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+      wifi_ps_type_t ps = WIFI_PS_NONE;
+      esp_wifi_get_ps(&ps);
+      out += String("wifi power save ") +
+             (ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MIN_MODEM ? "min modem" : "max modem") +
+             " (?set=wifips=none|min)\n";
+    }
     // Which image is running, so an update that arrived over the network
     // can be told from a device that merely rebooted. The MD5 is of the
     // running sketch and changes with every build; the timestamp is this

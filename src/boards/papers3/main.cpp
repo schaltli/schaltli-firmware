@@ -472,6 +472,10 @@ static void setupNetworking()
 
   Serial.printf("[papers3] connecting to \"%s\"\n", creds.ssid.c_str());
   WiFi.mode(WIFI_STA);
+  // Radio power save off, for the reason and measurement recorded at the
+  // same line in the 4.3B's main.cpp. Mains-powered (decision 5), so the
+  // 20-40mA it costs buys a panel that answers without waiting for its radio.
+  WiFi.setSleep(false);
   WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
 
@@ -537,6 +541,7 @@ static void setupNetworking()
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " +
            String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
+    out += String("wifi power save ") + (WiFi.getSleep() ? "on" : "none") + "\n";
     out += "firmware " + ESP.getSketchMD5() + ", built " + String(__DATE__) + " " +
            String(__TIME__) + "\n";
     // The refresh state, because decision 11 asks for this to be checked by
