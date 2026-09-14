@@ -72,7 +72,12 @@ public:
     forceFull_ = false;
     partialsSinceFull_ = full ? 0 : partialsSinceFull_ + 1;
     lastWasFull_ = full;
+    paints_++;
   }
+
+  // Counts every blit. Lets a caller that wants to update "its" screen in
+  // place check that nobody else has painted over it in the meantime.
+  uint32_t paints() const { return paints_; }
 
   // Called by whatever owns the screen when it has decided the next paint
   // must be a clean one - a screen switch, a setup screen, or the clean-up
@@ -108,6 +113,7 @@ private:
   int16_t width_ = 0;
   int16_t height_ = 0;
   uint32_t partialsSinceFull_ = 0;
+  uint32_t paints_ = 0;
   uint32_t lastTouchMs_ = 0;
   bool touchedSinceBoot_ = false;
   bool forceFull_ = false;

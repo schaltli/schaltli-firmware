@@ -546,6 +546,12 @@ static void setupNetworking()
     // topic value would. It is how hil/papers3/refresh-rule.js piles up
     // partials without a project, a broker or a finger.
     if (setting == "repaint=1") renderAndPresent("test interface: repaint");
+    // ?set=setupscreen=<seconds left> draws the real AP setup screen into the
+    // canvas without bringing the AP up, so /snapshot.bmp can show it -
+    // setup mode itself stops this server. hil/papers3/setup-screen.js reads
+    // the QR code back out of it. POST /api/screen puts the project back.
+    if (setting.startsWith("setupscreen="))
+      wifiSetupServer->showSetupScreenAP(setting.substring(12).toInt(), false);
     out += "partials since last full refresh: " + String(panel.partialsSinceFull()) + " of " +
            String(EpdPanel::PARTIALS_BEFORE_CLEANUP) + ", last paint was " +
            String(panel.lastWasFull() ? "full" : "partial") + "\n";
@@ -612,9 +618,28 @@ void loop()
   if (setupModeActive)
   {
     wifiSetupServer->handleClient();
-    if (wifiSetupServer->tick() || wifiSetupServer->exitRequested())
+
+    // "tap to cancel", which the screen has promised since this board first
+    // drew it and which did nothing until 2026-09-14: this branch never read
+    // the touch panel at all. A tap anywhere counts, but only one that
+    // begins after setup mode did - the finger that just held the corner for
+    // ten seconds is still on the glass, and its lift is not a tap.
+    static bool setupLiftSeen = false;
+    static bool setupTapDown = false;
+    bool tapToCancel = false;
+    if (M5.Touch.getDetail().isPressed())
     {
-      Serial.println("[papers3] leaving setup mode - restarting");
+      if (setupLiftSeen) setupTapDown = true;
+    }
+    else
+    {
+      tapToCancel = setupTapDown;
+      setupLiftSeen = true;
+    }
+
+    if (wifiSetupServer->tick() || wifiSetupServer->exitRequested() || tapToCancel)
+    {
+      Serial.printf("[papers3] leaving setup mode%s - restarting\n", tapToCancel ? " (tap to cancel)" : "");
       delay(200);
       ESP.restart();
     }

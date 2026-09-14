@@ -63,6 +63,15 @@ public:
   // against once already on the home network.
   bool tick();
 
+  // secondsLeft/clientConnected only affect the AP-mode screen's extra
+  // status line - see tick()'s comment for the states they represent.
+  //
+  // Public so a board's test interface can draw the real setup screen into
+  // its canvas without bringing the AP up: in setup mode the test interface
+  // is stopped, so the screen could otherwise only ever be judged by eye.
+  // The PaperS3's QR code is checked this way (hil/papers3/setup-screen.js).
+  void showSetupScreenAP(int secondsLeft = -1, bool clientConnected = false);
+
 private:
   IDisplay& display_;
   // Answers every DNS query with the AP's own address while the AP is up.
@@ -124,9 +133,6 @@ private:
   bool saveMqttConfig(const String& protocol, const String& host, int port, const String& username, const String& password);
   String testMqttConnection(const String& protocol, const String& host, int port, const String& username, const String& password);
 
-  // secondsLeft/clientConnected only affect the AP-mode screen's extra
-  // status line - see tick()'s comment for the states they represent.
-  void showSetupScreenAP(int secondsLeft = -1, bool clientConnected = false);
   void showSetupScreenSTA();
   void sendJSONResponse(bool success, const String& message);
 };
