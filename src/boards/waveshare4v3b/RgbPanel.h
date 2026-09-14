@@ -108,6 +108,15 @@ public:
   // displayed, which is the old behaviour and the old tearing.
   uint16_t *back() { return fb_[backIndex_]; }
 
+  // Changes the pixel clock live - a diagnostic, not a setting; a restart
+  // goes back to PCLK_HZ. Exists because the parallel bus's emissions slow
+  // this board's own WiFi and which clock is kindest depends on the channel
+  // (?set=pclk=<hz>, 2026-09-14). 8 MHz showed no picture at all on the 4.3B.
+  bool setPixelClock(uint32_t hz)
+  {
+    return handle_ && esp_lcd_rgb_panel_set_pclk(handle_, hz) == ESP_OK;
+  }
+
   // Hands the finished buffer to the panel and moves on to the next one in
   // the ring. The driver makes the switch at the next VSYNC, so nothing
   // half-written is ever scanned out.

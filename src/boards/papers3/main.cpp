@@ -567,6 +567,7 @@ static void setupNetworking()
     out += "uptime " + String(millis() / 1000) + " s\n";
     out += String("wifi power save ") + (WiFi.getSleep() ? "on" : "none") + "\n";
     out += wifi.report();
+    if (setting == "wifiscan=1") out += wifi.scanReport();
     if (lateWifiBootSeconds > 0)
       out += "wifi held back " + String(lateWifiBootSeconds) + " s at boot (?set=latewifi=<s>)\n";
     if (setting.startsWith("latewifi="))

@@ -74,6 +74,7 @@
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
 #include "../../WiFiSupervisor.h"
+#include "../../TaskLoad.h"
 #include "RgbPanel.h"
 #include "PanelBenchmark.h"
 #include "../../project/RenderProfile.h"
@@ -90,7 +91,28 @@ static const int16_t PANEL_W = 800;
 static const int16_t PANEL_H = 480;
 
 // --- RGB timings (ST7262, 800x480) ---------------------------------------
-static const int32_t PCLK_HZ = 16 * 1000 * 1000;
+//
+// 12 MHz, not the 16 Waveshare's example uses, because at 16 the parallel
+// bus slows this board's own WiFi (2026-09-14). Measured against an access
+// point on channel 6, switching live with ?set=pclk= and interleaving:
+// snapshots ran at 330-480 KB/s at 16 MHz, and in stretches of several
+// minutes as low as 20-30 KB/s with ping answers up to a second, while a
+// PaperS3 on the same access point at the same signal stayed above 800 KB/s
+// throughout. At 12 MHz the 4.3B moved 690-800 KB/s. The CPU was idle and
+// memory unchanged in the slow stretches, which is what pointed at the radio
+// path and away from the firmware.
+//
+// Two limits on what that proves. It was one channel: which harmonics of
+// the pixel clock land inside the WiFi channel depends on the channel, so a
+// board on another access point should be measured again (?set=pclk= is
+// kept for exactly that). And 8 MHz showed no picture at all - only white,
+// which on a white test screen passed for "looks normal" until a coloured
+// one was installed - so the margin below 12 is unknown. 12 was judged by
+// eye on that coloured project, swiping included, and looked right.
+//
+// Refresh is 12 MHz / (820 x 500) = 29 Hz, against 39 at 16; a follow-swipe
+// composes at about 14 frames a second on this board either way.
+static const int32_t PCLK_HZ = 12 * 1000 * 1000;
 static const uint16_t HSYNC_PULSE_WIDTH = 4;
 static const uint16_t HSYNC_BACK_PORCH = 8;
 static const uint16_t HSYNC_FRONT_PORCH = 8;
@@ -557,6 +579,7 @@ RTC_NOINIT_ATTR uint32_t lateWifiSeconds;
 static uint32_t lateWifiBootSeconds = 0;  // what this boot was asked for, for the report
 static uint32_t restartAtMs = 0;          // nonzero: restart once the response is out
 static WiFiSupervisor wifi;
+static TaskLoad taskLoad;  // ?set=tasks=1
 // Set while "WLAN nicht erreichbar" is on the panel, so the project comes
 // back the moment the link does rather than on the next value.
 static bool noWifiScreenShown = false;
@@ -685,6 +708,26 @@ static void setupNetworking()
              (ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MIN_MODEM ? "min modem" : "max modem") +
              " (?set=wifips=none|min)\n";
       out += wifi.report();
+      if (setArg == "wifiscan=1") out += wifi.scanReport();
+      if (setArg.startsWith("pclk="))
+      {
+        const uint32_t hz = (uint32_t)setArg.substring(5).toInt();
+        out += "pixel clock -> " + String(hz) + " Hz: " + (panel.setPixelClock(hz) ? "ok" : "refused") +
+               " (" + String(PCLK_HZ) + " is this build's default; 8000000 showed no picture)\n";
+      }
+      if (setArg == "tasks=1")
+      {
+        out += taskLoad.report();
+        // Internal memory alongside the task load: with
+        // CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP the core falls back to PSRAM
+        // for WiFi and lwIP buffers when internal heap runs short, and PSRAM
+        // is the bus this board's panel refresh never stops using.
+        out += "  internal heap free " + String(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024) +
+               " KB, largest block " +
+               String(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) / 1024) +
+               " KB, lowest ever " + String(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024) +
+               " KB\n";
+      }
       if (lateWifiBootSeconds > 0)
         out += "wifi held back " + String(lateWifiBootSeconds) + " s at boot (?set=latewifi=<s>)\n";
       if (setArg.startsWith("latewifi="))

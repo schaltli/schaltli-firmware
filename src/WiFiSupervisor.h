@@ -95,8 +95,32 @@ public:
 
   String report() const
   {
-    return String("wifi ") + (up_ ? "up" : "down") + ", came up " + String(ups_) + " time(s), " +
-           String(retries_) + " own retr" + (retries_ == 1 ? "y" : "ies") + "\n";
+    String out = String("wifi ") + (up_ ? "up" : "down") + ", came up " + String(ups_) + " time(s), " +
+                 String(retries_) + " own retr" + (retries_ == 1 ? "y" : "ies") + "\n";
+    // Which access point, not just which network: a board that lands on a
+    // far mesh node after a restart looks exactly like a board with a slow
+    // radio from everywhere except here.
+    if (up_)
+      out += "  ap " + WiFi.BSSIDstr() + ", channel " + String(WiFi.channel()) + ", rssi " +
+             String(WiFi.RSSI()) + " dBm\n";
+    return out;
+  }
+
+  // Every access point broadcasting this board's network, strongest first.
+  // Blocks for the scan - a few seconds, during which the link is off
+  // channel - so only on request (?set=wifiscan=1).
+  String scanReport() const
+  {
+    const int n = WiFi.scanNetworks(false, true);
+    String out = "  scan: " + String(n < 0 ? 0 : n) + " network(s) visible, of them \"" + ssid_ + "\":\n";
+    for (int i = 0; i < n; i++)
+    {
+      if (WiFi.SSID(i) != ssid_) continue;
+      out += "    " + WiFi.BSSIDstr(i) + "  channel " + String(WiFi.channel(i)) + "  rssi " +
+             String(WiFi.RSSI(i)) + " dBm" + (WiFi.BSSIDstr(i) == WiFi.BSSIDstr() ? "  <- connected" : "") + "\n";
+    }
+    WiFi.scanDelete();
+    return out;
   }
 
 private:
