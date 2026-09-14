@@ -14,6 +14,34 @@
 // tear line. On a black-to-green boundary that reads as sawteeth marching
 // down the screen, which is exactly what it was reported as.
 //
+// A second, separate thing this panel does, recorded here so it is not
+// investigated from scratch again (2026-09-14):
+//
+// During a project install the picture rolls and repeats, like an old
+// television losing sync. It is the same scan as ever, starved. The
+// framebuffer lives in PSRAM and the LCD peripheral reads it through a
+// 16KB bounce buffer, ten lines at 16MHz; writing flash suspends the cache
+// on this chip, so whatever the refill path needs from flash stops arriving
+// and the scan runs on without it.
+//
+// Reported as "only ever during the tests, never in operation", which is
+// exactly what this explanation predicts: nothing writes flash in normal
+// operation. It renders, it listens to MQTT, and that is all. The one case
+// outside a test run is a deploy - someone sending a new project to a device
+// in use would see the same thing, for as long as the install lasts.
+//
+// Deliberately not mitigated. The known remedy moves code and constants into
+// PSRAM so the refill path no longer depends on the flash cache, which costs
+// execution speed and puts more traffic on the very bus this panel is
+// already short of. That is a real risk to a verified firmware, traded
+// against a cosmetic flicker during an operation that happens once per
+// project change.
+//
+// The same flash work also makes the device stop answering HTTP for over a
+// minute after an upload's own response has returned - see the measurement
+// in the designer repo's hil/conformance/run.js, which is where a failing
+// test run sends people looking.
+
 // Nothing about the writing can fix that. The only fix is to never show a
 // half-written frame: build it in a buffer nobody is looking at, and hand it
 // over between two refreshes. The silicon supports up to three framebuffers
