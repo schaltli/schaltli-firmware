@@ -73,6 +73,7 @@
 #include "../../MqttClient.h"
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
+#include "../../WiFiSupervisor.h"
 #include "RgbPanel.h"
 #include "PanelBenchmark.h"
 #include "../../project/RenderProfile.h"
@@ -543,6 +544,23 @@ static void enterSetupMode()
   wifiSetupServer->startAP();
 }
 
+// A late WiFi, on demand, for hil/late-wifi.js (2026-09-14).
+//
+// GET /api/debug?set=latewifi=<seconds> restarts the board, and the boot
+// that follows holds WiFi.begin() back for that long - a stand-in for an
+// access point that takes its time to associate, which is what a board
+// restarted mid-conformance-run sometimes met. RTC_NOINIT survives
+// ESP.restart() and nothing else, so a power cycle can never inherit it.
+static const uint32_t LATE_WIFI_MAGIC = 0x1A7E3F1F;
+RTC_NOINIT_ATTR uint32_t lateWifiMagic;
+RTC_NOINIT_ATTR uint32_t lateWifiSeconds;
+static uint32_t lateWifiBootSeconds = 0;  // what this boot was asked for, for the report
+static uint32_t restartAtMs = 0;          // nonzero: restart once the response is out
+static WiFiSupervisor wifi;
+// Set while "WLAN nicht erreichbar" is on the panel, so the project comes
+// back the moment the link does rather than on the next value.
+static bool noWifiScreenShown = false;
+
 static void setupNetworking()
 {
   if (!canvas) return;
@@ -561,25 +579,37 @@ static void setupNetworking()
   }
 
   Serial.printf("[4v3b] connecting to \"%s\"\n", creds.ssid.c_str());
-  WiFi.mode(WIFI_STA);
-  // Radio power save off, as the knob has had it since 2026-08-24 - a
-  // cross-device building block this port never copied. Measured on this
-  // board on 2026-09-14, interleaved on the same minutes: ping averaged
-  // 67-96ms with the factory WIFI_PS_MIN_MODEM and 7-35ms without, and HTTP
-  // answers dropped to about 20ms. Every request the designer or a HIL run
-  // makes waits for the radio to wake otherwise. ?set=wifips=min puts the
-  // factory mode back for a comparison.
-  WiFi.setSleep(false);
-  WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
-  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
-
-  if (WiFi.status() != WL_CONNECTED)
+  // WiFiSupervisor turns the radio's power save off, as the knob has had it
+  // since 2026-08-24 - a cross-device building block this port never copied.
+  // Measured on this board on 2026-09-14, interleaved on the same minutes:
+  // ping averaged 67-96ms with the factory WIFI_PS_MIN_MODEM and 7-35ms
+  // without, and HTTP answers dropped to about 20ms. ?set=wifips=min puts
+  // the factory mode back for a comparison.
+  uint32_t holdBackMs = 0;
+  if (lateWifiMagic == LATE_WIFI_MAGIC)
   {
-    Serial.println("[4v3b] WiFi connect FAILED");
-    displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
-    return;
+    lateWifiMagic = 0;
+    lateWifiBootSeconds = lateWifiSeconds;
+    holdBackMs = lateWifiSeconds * 1000UL;
+    Serial.printf("[4v3b] WiFi held back %us by ?set=latewifi\n", (unsigned)lateWifiSeconds);
   }
-  Serial.printf("[4v3b] WiFi ok, ip %s\n", WiFi.localIP().toString().c_str());
+  wifi.begin(creds.ssid, creds.password, holdBackMs);
+  for (int i = 0; i < 40 && !wifi.up(); i++)
+  {
+    wifi.tick();
+    delay(250);
+  }
+
+  // A wait, not a verdict. Everything below is set up either way - the
+  // server binds without an address and MQTT retries on its own - because
+  // returning here is what left a board on the network with nothing
+  // listening until its next restart (2026-09-14, hil/late-wifi.js).
+  if (!wifi.up())
+  {
+    Serial.println("[4v3b] no WiFi yet - carrying on, the supervisor keeps trying");
+    displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
+    noWifiScreenShown = true;
+  }
 
   // The snapshot endpoint reads this canvas directly, which is what gives
   // this board a HIL comparison at all.
@@ -654,6 +684,16 @@ static void setupNetworking()
       out += String("wifi power save ") +
              (ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MIN_MODEM ? "min modem" : "max modem") +
              " (?set=wifips=none|min)\n";
+      out += wifi.report();
+      if (lateWifiBootSeconds > 0)
+        out += "wifi held back " + String(lateWifiBootSeconds) + " s at boot (?set=latewifi=<s>)\n";
+      if (setArg.startsWith("latewifi="))
+      {
+        lateWifiSeconds = (uint32_t)setArg.substring(9).toInt();
+        lateWifiMagic = LATE_WIFI_MAGIC;
+        restartAtMs = millis() + 500;
+        out += "restarting with WiFi held back " + String(lateWifiSeconds) + " s\n";
+      }
     }
     // Which image is running, so an update that arrived over the network
     // can be told from a device that merely rebooted. The MD5 is of the
@@ -1479,6 +1519,13 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
 
 void loop()
 {
+  if (restartAtMs && millis() >= restartAtMs) ESP.restart();
+  if (!setupModeActive && wifi.tick() && noWifiScreenShown)
+  {
+    noWifiScreenShown = false;
+    renderAndPresent("wifi up");
+  }
+
   // Setup mode owns the device completely: it draws its own screen, it is
   // the only thing on port 80, and nothing else may run. Both faults in the
   // first version came from not doing that - the normal loop kept rendering

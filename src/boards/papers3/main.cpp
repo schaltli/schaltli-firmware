@@ -29,6 +29,7 @@
 #include "../../MqttClient.h"
 #include "../../NvsConfigStorage.h"
 #include "../../TestInterfaceServer.h"
+#include "../../WiFiSupervisor.h"
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/ProjectLoader.h"
@@ -455,6 +456,17 @@ static void enterSetupMode()
   wifiSetupServer->startAP();
 }
 
+// A late WiFi on demand, for hil/late-wifi.js - the same hook, for the same
+// reason, as the 4.3B's (see there). RTC_NOINIT survives ESP.restart() and
+// nothing else, so a power cycle can never inherit it.
+static const uint32_t LATE_WIFI_MAGIC = 0x1A7E3F1F;
+RTC_NOINIT_ATTR uint32_t lateWifiMagic;
+RTC_NOINIT_ATTR uint32_t lateWifiSeconds;
+static uint32_t lateWifiBootSeconds = 0;
+static uint32_t restartAtMs = 0;
+static WiFiSupervisor wifi;
+static bool noWifiScreenShown = false;
+
 static void setupNetworking()
 {
   if (!canvas || !displayAdapter) return;
@@ -471,21 +483,33 @@ static void setupNetworking()
   }
 
   Serial.printf("[papers3] connecting to \"%s\"\n", creds.ssid.c_str());
-  WiFi.mode(WIFI_STA);
-  // Radio power save off, for the reason and measurement recorded at the
-  // same line in the 4.3B's main.cpp. Mains-powered (decision 5), so the
-  // 20-40mA it costs buys a panel that answers without waiting for its radio.
-  WiFi.setSleep(false);
-  WiFi.begin(creds.ssid.c_str(), creds.password.c_str());
-  for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) delay(250);
-
-  if (WiFi.status() != WL_CONNECTED)
+  // WiFiSupervisor turns the radio's power save off, for the reason and
+  // measurement recorded in the 4.3B's main.cpp. Mains-powered (decision 5),
+  // so the 20-40mA it costs buys a panel that answers without waiting.
+  uint32_t holdBackMs = 0;
+  if (lateWifiMagic == LATE_WIFI_MAGIC)
   {
-    Serial.println("[papers3] WiFi connect FAILED");
-    displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
-    return;
+    lateWifiMagic = 0;
+    lateWifiBootSeconds = lateWifiSeconds;
+    holdBackMs = lateWifiSeconds * 1000UL;
+    Serial.printf("[papers3] WiFi held back %us by ?set=latewifi\n", (unsigned)lateWifiSeconds);
   }
-  Serial.printf("[papers3] WiFi ok, ip %s\n", WiFi.localIP().toString().c_str());
+  wifi.begin(creds.ssid, creds.password, holdBackMs);
+  for (int i = 0; i < 40 && !wifi.up(); i++)
+  {
+    wifi.tick();
+    delay(250);
+  }
+
+  // A wait, not a verdict - everything below is set up either way. Returning
+  // here left the 4.3B on the network with nothing listening until its next
+  // restart (2026-09-14), and this board carried the same return.
+  if (!wifi.up())
+  {
+    Serial.println("[papers3] no WiFi yet - carrying on, the supervisor keeps trying");
+    displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
+    noWifiScreenShown = true;
+  }
 
   // The snapshot endpoint reads this canvas directly, which is what gives
   // this board a pixel comparison at all - and the reason ghosting is
@@ -542,6 +566,16 @@ static void setupNetworking()
            String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
     out += String("wifi power save ") + (WiFi.getSleep() ? "on" : "none") + "\n";
+    out += wifi.report();
+    if (lateWifiBootSeconds > 0)
+      out += "wifi held back " + String(lateWifiBootSeconds) + " s at boot (?set=latewifi=<s>)\n";
+    if (setting.startsWith("latewifi="))
+    {
+      lateWifiSeconds = (uint32_t)setting.substring(9).toInt();
+      lateWifiMagic = LATE_WIFI_MAGIC;
+      restartAtMs = millis() + 500;
+      out += "restarting with WiFi held back " + String(lateWifiSeconds) + " s\n";
+    }
     out += "firmware " + ESP.getSketchMD5() + ", built " + String(__DATE__) + " " +
            String(__TIME__) + "\n";
     // The refresh state, because decision 11 asks for this to be checked by
@@ -615,6 +649,14 @@ void setup()
 void loop()
 {
   M5.update();
+
+  if (restartAtMs && millis() >= restartAtMs) ESP.restart();
+  if (!setupModeActive && wifi.tick() && noWifiScreenShown)
+  {
+    noWifiScreenShown = false;
+    panel.forceFullNext();
+    renderAndPresent("wifi up");
+  }
 
   // Setup mode owns the device completely: it draws its own screen, it is
   // the only thing on port 80, and nothing else may run - the same shape the

@@ -7,6 +7,7 @@
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <lwip/sockets.h>
 
 bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   if (serverRunning_) return true;
@@ -622,6 +623,55 @@ void TestInterfaceServer::generateBMPHeader(uint8_t* header, int width, int heig
   header[53] = 0;
 }
 
+namespace {
+// Sends a snapshot's bytes, giving the client up once it has taken less than
+// STALL_MIN_BYTES in any STALL_WINDOW_MS.
+//
+// Not client().write(). That waits ten seconds without progress before it
+// returns short - and a reader that has stopped reading still makes
+// progress: TCP lets a byte through with every zero-window probe, and each
+// one restarts the core's ten seconds. With a check on write()'s return
+// value alone, a stalled reader held the 4.3B for 25-33s; before that check,
+// for minutes (2026-09-14). A floor on throughput is the question that
+// matters - is this client still taking the image - and 1 KB in 3 s is far
+// below the slowest real transfer seen that day, 6 KB/s over a starved link.
+struct StallGuard {
+  static const uint32_t STALL_WINDOW_MS = 3000;
+  static const size_t STALL_MIN_BYTES = 1024;
+  uint32_t windowStartMs = millis();
+  size_t windowBytes = 0;
+};
+
+bool sendOrGiveUp(NetworkClient& client, const uint8_t* buf, size_t len, StallGuard& guard) {
+  const int fd = client.fd();
+  if (fd < 0) return false;
+  size_t sent = 0;
+  while (sent < len) {
+    fd_set set;
+    FD_ZERO(&set);
+    FD_SET(fd, &set);
+    struct timeval tv = {0, 200000};
+    const int ready = select(fd + 1, NULL, &set, NULL, &tv);
+    if (ready < 0) return false;
+    if (ready > 0) {
+      const int n = send(fd, buf + sent, len - sent, MSG_DONTWAIT);
+      if (n > 0) {
+        sent += n;
+        guard.windowBytes += n;
+      } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        return false;
+      }
+    }
+    if (millis() - guard.windowStartMs >= StallGuard::STALL_WINDOW_MS) {
+      if (guard.windowBytes < StallGuard::STALL_MIN_BYTES) return false;
+      guard.windowStartMs = millis();
+      guard.windowBytes = 0;
+    }
+  }
+  return true;
+}
+}  // namespace
+
 void TestInterfaceServer::sendBMP(const uint16_t* source) {
   int width = canvas_->width();
   int height = canvas_->height();
@@ -637,7 +687,8 @@ void TestInterfaceServer::sendBMP(const uint16_t* source) {
   webServer_->sendHeader("Content-Type", "image/bmp");
   webServer_->sendHeader("Cache-Control", "no-cache");
   webServer_->send(200, "image/bmp", "");
-  if (webServer_->client().write(header, 54) != 54) {
+  StallGuard guard;
+  if (!sendOrGiveUp(webServer_->client(), header, 54, guard)) {
     Serial.println("[TestInterface] snapshot client stopped reading at the header - dropped");
     webServer_->client().stop();
     return;
@@ -665,13 +716,11 @@ void TestInterfaceServer::sendBMP(const uint16_t* source) {
       rowBuffer[x * 3 + 1] = g8;
       rowBuffer[x * 3 + 2] = r8;
     }
-    // A short write means the client stopped taking data: write() has
-    // already waited ten seconds without progress before returning it. Carry
-    // on to the next row and each of the remaining hundreds waits its own ten
-    // seconds, with this board answering nothing else meanwhile - one web
-    // request held a 4.3B's loop for 278s that way (2026-09-14). Give the
-    // client up instead; hil/stalled-snapshot.js holds this in place.
-    if (webServer_->client().write(rowBuffer, paddedRowBytes) != (size_t)paddedRowBytes) {
+    // Carrying on past a client that stopped reading is what held a 4.3B's
+    // loop for 278s, answering nothing else meanwhile (2026-09-14). See
+    // sendOrGiveUp() for how "stopped" is decided; hil/stalled-snapshot.js
+    // holds this in place.
+    if (!sendOrGiveUp(webServer_->client(), rowBuffer, paddedRowBytes, guard)) {
       Serial.printf("[TestInterface] snapshot client stopped reading at row %d of %d - dropped\n",
                     height - 1 - y, height);
       webServer_->client().stop();
