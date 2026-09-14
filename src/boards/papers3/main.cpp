@@ -119,7 +119,7 @@ static void heartbeat()
                 WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString().c_str() : "-",
                 mqttClient.isConnected() ? "ok" : "down",
                 projectLoader.isLoaded() ? "loaded" : "none", currentScreen,
-                (unsigned)panel.partialsSinceFull(), (unsigned)EpdPanel::PARTIALS_BEFORE_FULL);
+                (unsigned)panel.partialsSinceFull(), (unsigned)EpdPanel::PARTIALS_BEFORE_CLEANUP);
 }
 
 static void enterSetupMode();
@@ -306,6 +306,7 @@ static void serviceTouch()
 {
   int16_t x = 0, y = 0;
   const bool down = readTouch(x, y);
+  if (down) panel.noteTouch();
 
   if (down && !holdActive)
   {
@@ -344,11 +345,9 @@ static void serviceTouch()
     if (second != holdLastSecondShown && second > 0)
     {
       holdLastSecondShown = second;
-      // Deliberately not counted against the refresh budget (decision 7):
-      // ten ticks would spend it exactly, and the full refresh would land in
-      // the final moment of the hold - a black-and-white flash immediately
-      // before setup mode appears, which reads as a fault. Reaching setup
-      // mode repaints everything anyway.
+      // Log only, nothing drawn yet. Whatever draws a countdown here later
+      // cannot trigger a clean-up flash mid-hold: the finger resting on the
+      // glass keeps the panel from ever counting as idle (EpdPanel.h).
       Serial.printf("[papers3] setup hold %d/%d s\n", second, (int)(SETUP_HOLD_MS / 1000));
     }
     return;
@@ -533,7 +532,7 @@ static void setupNetworking()
     injectLiftOnce = !down;
   });
 
-  testInterface.setDebugHandler([](const String &) -> String {
+  testInterface.setDebugHandler([](const String &setting) -> String {
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " +
            String(ESP.getFreePsram() / 1024) + " KB\n";
@@ -543,9 +542,16 @@ static void setupNetworking()
     // The refresh state, because decision 11 asks for this to be checked by
     // hand and no automated test can see it: the snapshot comes from the
     // canvas, not the glass.
+    // ?set=repaint=1 redraws the current screen once, partially, exactly as a
+    // topic value would. It is how hil/papers3/refresh-rule.js piles up
+    // partials without a project, a broker or a finger.
+    if (setting == "repaint=1") renderAndPresent("test interface: repaint");
     out += "partials since last full refresh: " + String(panel.partialsSinceFull()) + " of " +
-           String(EpdPanel::PARTIALS_BEFORE_FULL) + ", last paint was " +
+           String(EpdPanel::PARTIALS_BEFORE_CLEANUP) + ", last paint was " +
            String(panel.lastWasFull() ? "full" : "partial") + "\n";
+    out += "last touch: " +
+           (panel.touchedSinceBoot() ? String(panel.msSinceTouch()) + " ms ago" : String("never")) +
+           ", clean-up after " + String(EpdPanel::IDLE_AFTER_TOUCH_MS) + " ms without one\n";
     return out;
   });
 
@@ -621,6 +627,14 @@ void loop()
   subscribeToProjectTopics();
 
   if (renderPending) renderAndPresent("topic value");
+
+  // The quiet-moment clean-up (decision 6). The canvas still holds the screen
+  // the last paint showed, so this is the same picture, painted clean.
+  if (panel.cleanupDue())
+  {
+    panel.forceFullNext();
+    renderAndPresent("idle clean-up");
+  }
 
   heartbeat();
   delay(5);
