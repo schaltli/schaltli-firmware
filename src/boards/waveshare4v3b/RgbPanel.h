@@ -14,33 +14,33 @@
 // tear line. On a black-to-green boundary that reads as sawteeth marching
 // down the screen, which is exactly what it was reported as.
 //
-// A second, separate thing this panel does, recorded here so it is not
-// investigated from scratch again (2026-09-14):
+// A second, separate thing, recorded here so it is not investigated from
+// scratch again (2026-09-14):
 //
-// During a project install the picture rolls and repeats, like an old
-// television losing sync. It is the same scan as ever, starved. The
-// framebuffer lives in PSRAM and the LCD peripheral reads it through a
-// 16KB bounce buffer, ten lines at 16MHz; writing flash suspends the cache
-// on this chip, so whatever the refill path needs from flash stops arriving
-// and the scan runs on without it.
+// During a test run the picture rolls and repeats, like an old television
+// losing sync. It is this panel starting up. A project install ends with a
+// deliberate reboot - TestInterfaceServer.cpp restarts so the new
+// project.json is picked up fresh rather than rebuilt live - and a
+// conformance run installs thirteen times, so the panel is brought up
+// thirteen times, each with a framebuffer that is not yet what anyone
+// intends.
 //
-// Reported as "only ever during the tests, never in operation", which is
-// exactly what this explanation predicts: nothing writes flash in normal
-// operation. It renders, it listens to MQTT, and that is all. The one case
-// outside a test run is a deploy - someone sending a new project to a device
-// in use would see the same thing, for as long as the install lasts.
+// Caught by uptime rather than by argument. At the moment the flicker was
+// reported the device answered "uptime 122 s", and polling it through the
+// rest of the run showed the same thing repeatedly: 10s, then 97s, 112s,
+// then 5s again - a reboot every couple of minutes, matching the install
+// cadence exactly.
 //
-// Deliberately not mitigated. The known remedy moves code and constants into
-// PSRAM so the refill path no longer depends on the flash cache, which costs
-// execution speed and puts more traffic on the very bus this panel is
-// already short of. That is a real risk to a verified firmware, traded
-// against a cosmetic flicker during an operation that happens once per
-// project change.
+// This replaces an earlier note here, written the day before, which blamed
+// flash writes suspending the cache and starving the bounce buffer. That is
+// a real mechanism and it may well contribute, but nothing measured it and
+// the reboots explain the whole of what was reported: "only ever during the
+// tests, never in operation" is exactly true of installs, which are the only
+// thing that reboots a running device.
 //
-// The same flash work also makes the device stop answering HTTP for over a
-// minute after an upload's own response has returned - see the measurement
-// in the designer repo's hil/conformance/run.js, which is where a failing
-// test run sends people looking.
+// Nothing to fix, therefore. A panel coming up looks like a panel coming up.
+// The one case outside a test run is a deploy, which reboots for the same
+// reason and will look the same for a second or two.
 
 // Nothing about the writing can fix that. The only fix is to never show a
 // half-written frame: build it in a buffer nobody is looking at, and hand it
