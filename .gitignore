@@ -6,3 +6,6 @@
 
 # Local verification artefacts (snapshots, DDF zips pulled off the device)
 .scratch/
+
+# Generated before every build by tools/pre_build_firmware_build.py
+src/FirmwareBuild.h

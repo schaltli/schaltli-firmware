@@ -1,5 +1,6 @@
 #include "TestInterfaceServer.h"
 #include <Update.h>
+#include "FirmwareImage.h"
 #include "ddf_zip.h"
 #include "DeviceInfo.h"
 #include "DeviceSettingsEndpoint.h"
@@ -406,11 +407,19 @@ void TestInterfaceServer::handleProjectUploadComplete() {
 // anyone who can reach it can already install a project, clear the WiFi and
 // read the screen. The trust boundary is the network, and saying so is
 // better than a password that would make it look otherwise.
+//
+// And refuses an image built for another board, which Update cannot see: the
+// knob's firmware has a perfectly valid ESP32-S3 header. The stream has to
+// have carried this board's marker by the end, or the upload is aborted
+// before end() - see FirmwareImage.h.
+static FirmwareImage::IdentityScanner s_uploadIdentity;
+
 void TestInterfaceServer::handleFirmwareUploadChunk() {
   HTTPUpload& upload = webServer_->upload();
 
   if (upload.status == UPLOAD_FILE_START) {
     firmwareError_ = "";
+    s_uploadIdentity.reset();
     Serial.printf("[TestInterface] firmware upload: %s\n", upload.filename.c_str());
     // UPDATE_SIZE_UNKNOWN: a multipart upload does not announce its length,
     // and the image header carries it anyway.
@@ -420,12 +429,19 @@ void TestInterfaceServer::handleFirmwareUploadChunk() {
     }
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!firmwareError_.isEmpty()) return;
+    s_uploadIdentity.feed(upload.buf, upload.currentSize);
     if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
       firmwareError_ = String("write failed: ") + Update.errorString();
       Serial.printf("[TestInterface] %s\n", firmwareError_.c_str());
     }
   } else if (upload.status == UPLOAD_FILE_END) {
     if (!firmwareError_.isEmpty()) {
+      Update.abort();
+      return;
+    }
+    if (!s_uploadIdentity.found()) {
+      firmwareError_ = String("not a firmware image for ") + DEVICE_ID + " - refused, nothing installed";
+      Serial.printf("[TestInterface] %s\n", firmwareError_.c_str());
       Update.abort();
       return;
     }

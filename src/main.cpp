@@ -2053,6 +2053,9 @@ static void publishHello() {
   JsonDocument doc;
   doc["deviceId"] = DEVICE_ID;
   doc["firmwareVersion"] = FIRMWARE_VERSION;
+  // The build's identity, which the designer compares with the firmware its
+  // release carries - DeviceProtocol.h publishes the same for the other boards.
+  doc["firmwareBuild"] = FIRMWARE_BUILD;
   // What this firmware can read, as one major.minor (DeviceInfo.h). The
   // designer's deploy dialog checks it *before* uploading, so a device on
   // an older major says so in the dialog rather than refusing the download

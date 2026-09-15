@@ -75,6 +75,7 @@
 #include "../../TestInterfaceServer.h"
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
+#include "../../FirmwareImage.h"
 #include "../../TaskLoad.h"
 #include "RgbPanel.h"
 #include "PanelBenchmark.h"
@@ -746,6 +747,7 @@ static void setupNetworking()
     out += "firmware " + ESP.getSketchMD5() + ", " + String(ESP.getSketchSize() / 1024) +
            " KB, built " + String(__DATE__) + " " + String(__TIME__) + "\n";
     out += BootReport::line();
+    out += FirmwareImage::debugLine();
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
     out += "  last feedback: " + lastFeedback + "\n";

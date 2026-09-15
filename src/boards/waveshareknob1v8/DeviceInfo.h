@@ -9,9 +9,19 @@
 // device id is an unconditional hard block, never a version relationship.
 #define DEVICE_ID "waveshare-knob-1v8"
 
-// Freeform, only used in the MQTT "hello" payload for humans/tooling to
-// see what's running - not parsed or compared against anything.
-#define FIRMWARE_VERSION "0.1.0"
+// The identity of the source this firmware was built from: a release tag
+// (fw-2026.09.15.1), git's distance from one, "-dirty" for uncommitted
+// changes. Generated before every build by tools/pre_build_firmware_build.py,
+// which explains why it replaced a hand-kept "0.1.0" that never changed.
+// Announced in hello as firmwareBuild, which the designer compares with the
+// firmware a release carries.
+#if __has_include("../../FirmwareBuild.h")
+#include "../../FirmwareBuild.h"
+#else
+#define FIRMWARE_BUILD "unknown"
+#endif
+// hello's freeform firmwareVersion, for humans - the same identity.
+#define FIRMWARE_VERSION FIRMWARE_BUILD
 
 // Must match ddf-source/device.json's own "ddfVersion" exactly;
 // tools/generate-ddf-header.js keeps them in sync and its --check mode
