@@ -40,6 +40,7 @@
 #include "NvsConfigStorage.h"
 #include "TestInterfaceServer.h"
 #include "FirmwareUpdater.h"
+#include "BootReport.h"
 #include "WiFiSetupServer.h"
 #include "MqttClient.h"
 #include "DeviceSettings.h"
@@ -1690,6 +1691,18 @@ static bool signalModeHaveSample = false;
 // microsecond deltas.
 static String buildDebugJson() {
   String out = "{\"uptimeMs\":" + String(millis());
+  // The firmware facts the 4.3B and PaperS3 print as text lines (BootReport.h,
+  // FirmwareImage.h), as fields here: which image runs, from which slot, why
+  // the board last started, and which images it installs. hil/firmware-*.js
+  // read them to tell an update that landed from one that did not.
+  out += ",\"firmwareMd5\":\"" + ESP.getSketchMD5() + "\"";
+  out += ",\"lastReset\":\"" + String(BootReport::resetReason()) + "\"";
+  {
+    const esp_partition_t *runningSlot = esp_ota_get_running_partition();
+    out += ",\"runningFrom\":\"" + String(runningSlot ? runningSlot->label : "?") + "\"";
+  }
+  out += ",\"firmwareBuild\":\"" FIRMWARE_BUILD "\"";
+  out += ",\"installsOnlyFor\":\"" DEVICE_ID "\"";
   out += ",\"edgeCountGpio7\":" + String(edgeCountGpio7);
   out += ",\"edgeCountGpio8\":" + String(edgeCountGpio8);
   out += ",\"dispatchedRight\":" + String(dispatchedRight);
@@ -2239,7 +2252,12 @@ static void setupMqtt(const WiFiCredentials &creds) {
   // project deploy.
   firmwareUpdater.setPublishStatusHandler(publishDeployStatus);
   firmwareUpdater.setClearTriggerHandler([]() { mqttClient.publish(deviceTopic("firmware"), "", true); });
-  firmwareUpdater.setStartHandler([]() { displayAdapter.showLines({"Firmware-Update", "bitte nicht ausschalten"}); });
+  // Lit first: the display goes dark after inactivity, and a notice nobody can
+  // see does not stop anyone pulling the plug.
+  firmwareUpdater.setStartHandler([]() {
+    wakeDisplay();
+    displayAdapter.showLines({"Firmware-Update", "bitte nicht ausschalten"});
+  });
   firmwareUpdater.setFailedHandler([]() { renderScreenIndex(currentScreenIndex); });
   mqttClient.subscribe(deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() { publishHello(); });
