@@ -18,7 +18,7 @@
 // that each image carries the marker for the device it is filed under
 // (FirmwareImage.h), before anything is written.
 //
-// Without --publish it is a dry run: the tag is set locally, everything is
+// Without --publish it is a dry run: a "-dryrun" tag is set locally, everything is
 // built and checked, the images and manifest land in dist/<tag>/, and the
 // tag is removed again. Nothing leaves this machine. With --publish it keeps
 // and pushes the tag, creates the release in the designer repo with the
@@ -113,8 +113,14 @@ if (publish) {
   if (!fs.existsSync(path.join(designer, "package.json"))) fail(`no designer checkout at ${designer}`)
 }
 
-const headTags = git("tag", "--points-at", "HEAD", "-l", "fw-*").split(/\r?\n/).filter(Boolean)
-const tag = headTags[0] || nextTag()
+// A dry run tags "-dryrun" onto the name. Its images announce that build, and
+// the designer places no such build (lib/firmware-build.ts), so it counts as
+// older than every release - otherwise a board flashed with a dry-run image
+// would announce exactly the name the real release of the same day then
+// gets, and the designer would call it up to date (2026-09-15, both test
+// boards).
+const headTags = git("tag", "--points-at", "HEAD", "-l", "fw-*").split(/\r?\n/).filter((t) => t && !t.endsWith("-dryrun"))
+const tag = headTags[0] || (publish ? nextTag() : `${nextTag()}-dryrun`)
 const createdTag = headTags.length === 0
 const commit = git("rev-parse", "HEAD")
 console.log(`[release] ${tag} from ${commit.slice(0, 10)}${publish ? "" : " (dry run - nothing is published)"}`)
