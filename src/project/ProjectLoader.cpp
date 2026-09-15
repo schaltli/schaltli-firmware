@@ -195,11 +195,13 @@ void ProjectLoader::parseTopics(JsonArray topicsArray) {
       for (JsonVariant ex : examples) {
         topic.examples.push_back(ex.as<String>());
       }
-      // Use first example as initial value
-      if (topic.examples.size() > 0) {
-        topic.currentValue = topic.examples[0];
-      }
     }
+    // currentValue stays empty until a real value arrives. Examples are for
+    // designing a screen, not for showing it: a panel that started on the
+    // first example showed a tank as full, or a relay as on, before it had
+    // heard anything - and never said so. What each type draws for "no value"
+    // is the designer's own table (docs/2026-09-15-live-data.md, decision 6);
+    // conformance checks it before publishing anything to a fresh install.
 
     // Only present when type == "json" - absent for every other topic and
     // for any project.json predating this feature (additive field).

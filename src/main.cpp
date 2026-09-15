@@ -2013,8 +2013,8 @@ static String stripJsonPath(const String &topicOrPath) {
 // meant this board never subscribed to it at all. The marker then sat on
 // whatever the project's first example said and never moved again, for the
 // life of the device, with no error anywhere: the topic exists, the value
-// reads back, it is simply the initial one (ProjectLoader seeds currentValue
-// from examples[0]).
+// reads back, it is simply the initial one (ProjectLoader seeded currentValue
+// from examples[0] until 2026-09-15; topics now start empty).
 //
 // Found 2026-09-10 by the generated type-coverage run, which publishes a
 // different setpoint per combination and noticed the device never reported

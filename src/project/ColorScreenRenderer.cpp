@@ -397,6 +397,11 @@ bool ColorScreenRenderer::renderMqttDataLine(const ScreenObject& obj) {
   }
 
   String rawValue = projectLoader_.getTopicValue(obj.properties.topic);
+  // No value yet, no line - not the thinnest one, which would read as
+  // "nothing flowing" (render-mqtt-data-line.ts, the same rule).
+  String trimmedValue = rawValue;
+  trimmedValue.trim();
+  if (trimmedValue.isEmpty()) return true;
   float numericValue = rawValue.toFloat();
 
   // abs() - magnitude drives width, sign drives direction (the arrow
@@ -691,7 +696,9 @@ bool ColorScreenRenderer::renderMQTTDataField(const ScreenObject& obj) {
     formattedValue = formatNumber(valueStr, obj.properties.numberOfDecimals, obj.properties.thousandsSeparator);
   }
 
-  String displayText = obj.properties.prefix + formattedValue + obj.properties.postfix;
+  // No value, nothing of it - not a prefix and a unit around an empty number
+  // (render-mqtt-field.ts, the same rule).
+  String displayText = isBlank ? String("") : obj.properties.prefix + formattedValue + obj.properties.postfix;
   drawTextBox(obj, displayText, true);
   return true;
 }
@@ -729,6 +736,12 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   if (!borderTransparent) {
     canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, borderColor);
   }
+
+  // No value yet: the frame, and neither bar nor text - an empty bar would
+  // claim an empty tank (render-level-indicator.ts, the same rule).
+  String trimmedValue = valueStr;
+  trimmedValue.trim();
+  if (trimmedValue.isEmpty()) return true;
 
   const int padding = 4;
   int innerX = obj.x + padding;
@@ -841,15 +854,20 @@ String ColorScreenRenderer::getIconPathForValue(const ScreenObject& obj, const S
 // it is.
 bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixInto) {
   String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
-  float value = valueStr.isEmpty() ? 0.0f : valueStr.toFloat();
-  float fillPercent = interpolateCalibration(value, obj.properties.calibrationPoints);
+  // No value yet: the track alone - no fill (not even what the calibration
+  // makes of 0), no marker, no number (render-arc-level.ts, the same rule).
+  String trimmedValue = valueStr;
+  trimmedValue.trim();
+  const bool noValue = trimmedValue.isEmpty();
+  float value = noValue ? 0.0f : valueStr.toFloat();
+  float fillPercent = noValue ? 0.0f : interpolateCalibration(value, obj.properties.calibrationPoints);
   if (fillPercent < 0.0f) fillPercent = 0.0f;
   if (fillPercent > 100.0f) fillPercent = 100.0f;
 
   // No setpoint topic, no marker - a tank level has nothing to aim at.
   bool hasSetpoint = false;
   float setpointPercent = 0.0f;
-  if (!obj.properties.setpointTopic.isEmpty()) {
+  if (!obj.properties.setpointTopic.isEmpty() && !noValue) {
     String setpointStr = projectLoader_.getTopicValue(obj.properties.setpointTopic);
     if (!setpointStr.isEmpty()) {
       hasSetpoint = true;
@@ -1025,7 +1043,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     RenderProfile::add("  arc: uniform x" + String(pr.uniformCalls), pr.uniformCycles / 240);
   }
 
-  if (obj.properties.displayValue == "none") return true;
+  if (obj.properties.displayValue == "none" || noValue) return true;
 
   String displayText;
   if (obj.properties.displayValue == "percentage") {
@@ -1109,6 +1127,8 @@ int ColorScreenRenderer::getActiveSwitchStateIndex(const ScreenObject& obj) cons
   if (obj.properties.topic.isEmpty()) return -1;
   String topicValue = projectLoader_.getTopicValue(obj.properties.topic);
   topicValue.trim();
+  // No value, no active segment - not even one whose readValue is empty.
+  if (topicValue.isEmpty()) return -1;
   for (size_t i = 0; i < obj.properties.states.size(); i++) {
     String readValue = obj.properties.states[i].readValue;
     readValue.trim();
@@ -1475,6 +1495,16 @@ const ScreenObject* ColorScreenRenderer::getActivePanel(const ScreenObject& tabC
   }
   std::sort(sortedPanels.begin(), sortedPanels.end(),
     [](const ScreenObject* a, const ScreenObject* b) { return zOrderLess(*a, *b); });
+
+  // No value yet: the first panel, so a screen built from tabs is usable
+  // before anything has arrived - and no condition gets to match an empty
+  // value by accident ("< 5" would, an empty value reads as 0). Same as
+  // getActivePanel() in the designer's lib/render-screen.ts.
+  String trimmedValue = topicValue;
+  trimmedValue.trim();
+  if (!tabControl.properties.topic.isEmpty() && trimmedValue.isEmpty()) {
+    return sortedPanels.empty() ? nullptr : sortedPanels[0];
+  }
 
   for (const ScreenObject* panel : sortedPanels) {
     if (evaluateVisibilityCondition(topicValue, panel->properties.comparisonOperator, panel->properties.comparisonValue)) {
