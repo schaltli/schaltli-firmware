@@ -85,6 +85,16 @@ public:
   // wear and tear.
   void forceFullNext() { forceFull_ = true; }
 
+  // For a caller that knows its partials left more behind than their count
+  // says - the setup hold's countdown, whose black box is drawn over the
+  // project up to seven times and then taken away again. The clean-up then
+  // comes by the rule below, once nobody has touched the panel for ten
+  // seconds, however few partials went before.
+  void noteHeavyGhosting()
+  {
+    if (partialsSinceFull_ < PARTIALS_BEFORE_CLEANUP) partialsSinceFull_ = PARTIALS_BEFORE_CLEANUP;
+  }
+
   // Every touch sample, glass or injected, restarts the idle clock. A finger
   // resting on the panel is someone using it, so a hold never gets flashed.
   void noteTouch()

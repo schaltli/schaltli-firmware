@@ -86,9 +86,18 @@ static bool injectLiftOnce = false;
 // quadrant. Long on purpose - 0.3s of feedback latency trains people to
 // press longer, so the 4.3B's two seconds would fire here by accident.
 static const uint32_t SETUP_HOLD_MS = 10000;
+// When the countdown box appears. Not at once like the 4.3B's second: this
+// panel answers a press late, so people press longer, and a button held for
+// two seconds in the top left should not throw a box over the screen. Three
+// seconds, the user's choice (2026-09-15).
+static const uint32_t SETUP_HOLD_FEEDBACK_MS = 3000;
 static bool holdActive = false;
 static uint32_t holdStartMs = 0;
 static int holdLastSecondShown = -1;
+// Set once the countdown box is on the glass. From then on the contact is
+// the setup hold and nothing else: its release presses nothing and swipes
+// nothing, and puts the project back instead.
+static bool holdCountdownShown = false;
 // Where the contact began and where it is now. A tap acts on the first, a
 // swipe on the difference, and a hold needs to know it has not become either.
 static int16_t contactStartX = 0, contactStartY = 0;
@@ -338,6 +347,7 @@ static void serviceTouch()
     if (held >= SETUP_HOLD_MS)
     {
       holdActive = false;
+      holdCountdownShown = false;
       enterSetupMode();
       return;
     }
@@ -346,10 +356,16 @@ static void serviceTouch()
     if (second != holdLastSecondShown && second > 0)
     {
       holdLastSecondShown = second;
-      // Log only, nothing drawn yet. Whatever draws a countdown here later
-      // cannot trigger a clean-up flash mid-hold: the finger resting on the
-      // glass keeps the panel from ever counting as idle (EpdPanel.h).
       Serial.printf("[papers3] setup hold %d/%d s\n", second, (int)(SETUP_HOLD_MS / 1000));
+      // Until 2026-09-15 this was all there was, and ten seconds with nothing
+      // on the glass read as a gesture that did not work. The box cannot
+      // trigger a clean-up flash mid-hold: the finger resting on the glass
+      // keeps the panel from ever counting as idle (EpdPanel.h).
+      if (held >= SETUP_HOLD_FEEDBACK_MS && displayAdapter)
+      {
+        holdCountdownShown = true;
+        displayAdapter->showHoldCountdown((int)((SETUP_HOLD_MS - held + 999) / 1000));
+      }
     }
     return;
   }
@@ -359,6 +375,19 @@ static void serviceTouch()
     holdActive = false;
     const int dx = contactLastX - contactStartX;
     const int dy = contactLastY - contactStartY;
+
+    // A hold that got as far as its countdown was the setup hold, let go of.
+    // It presses nothing and swipes nothing - the 4.3B's rule - and the
+    // project goes back over the box, partially like every other redraw.
+    // The box leaves more of a trace than one partial's worth, so the panel
+    // is told to clean itself once nobody has touched it for ten seconds.
+    if (holdCountdownShown)
+    {
+      holdCountdownShown = false;
+      renderAndPresent("hold released");
+      panel.noteHeavyGhosting();
+      return;
+    }
 
     // A travelled gesture is a swipe and never also a tap on whatever it
     // started over. A still one is a tap, provided it was not the setup
@@ -592,12 +621,24 @@ static void setupNetworking()
     // the QR code back out of it. POST /api/screen puts the project back.
     if (setting.startsWith("setupscreen="))
       wifiSetupServer->showSetupScreenAP(setting.substring(12).toInt(), false);
+    // ?set=holdcountdown=<seconds left> draws the setup hold's countdown box
+    // over the current screen, so hil/papers3/hold-countdown.js can check
+    // where it lands. Needed because a snapshot takes longer than an
+    // injected touch lasts, so none can be taken during a real hold.
+    // ?set=repaint=1 puts the screen back.
+    if (setting.startsWith("holdcountdown=") && displayAdapter)
+      displayAdapter->showHoldCountdown(setting.substring(14).toInt());
     out += "partials since last full refresh: " + String(panel.partialsSinceFull()) + " of " +
            String(EpdPanel::PARTIALS_BEFORE_CLEANUP) + ", last paint was " +
            String(panel.lastWasFull() ? "full" : "partial") + "\n";
     out += "last touch: " +
            (panel.touchedSinceBoot() ? String(panel.msSinceTouch()) + " ms ago" : String("never")) +
            ", clean-up after " + String(EpdPanel::IDLE_AFTER_TOUCH_MS) + " ms without one\n";
+    // For hil/papers3/hold-countdown.js, which holds through POST /api/touch
+    // and has to know when the box is up without reading it off a snapshot.
+    out += "setup hold: " +
+           (holdActive ? String(millis() - holdStartMs) + " ms held" : String("no contact")) +
+           ", countdown " + (holdCountdownShown ? "showing" : "not showing") + "\n";
     return out;
   });
 
@@ -699,7 +740,11 @@ void loop()
   mqttClient.loop();
   subscribeToProjectTopics();
 
-  if (renderPending) renderAndPresent("topic value");
+  // Not while the hold's countdown is up: a value would paint the project
+  // over the box, and the next second's tick would paint the box back - two
+  // partials a second on e-ink, for a box nobody should lose sight of. The
+  // value is stored already and is drawn when the finger lets go.
+  if (renderPending && !holdCountdownShown) renderAndPresent("topic value");
 
   // The quiet-moment clean-up (decision 6). The canvas still holds the screen
   // the last paint showed, so this is the same picture, painted clean.

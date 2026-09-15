@@ -150,6 +150,46 @@ public:
     lastPaint_ = panel_.paints();
   }
 
+  // The setup hold's countdown: a box in the middle of whatever the canvas
+  // already shows, painted partially.
+  //
+  // Not a full screen like the 4.3B's, and not through showLines(), because
+  // on e-ink both ways of replacing the whole picture cost something the
+  // person holding cannot want: a clean paint flashes the panel black and
+  // white a moment into the hold, a partial one leaves the project's ghost
+  // under the text. A box over the project changes only its own pixels, and
+  // from one second to the next only the digit. Chosen on 2026-09-15 by the
+  // user, after holding this board for ten seconds with nothing on the glass
+  // and concluding the gesture did not work.
+  //
+  // Same words as the 4.3B's countdown, so the two boards say the same thing.
+  // The caller puts the project back when the hold ends.
+  void showHoldCountdown(int secondsLeft)
+  {
+    const int16_t boxW = 600;
+    const int16_t boxH = 220;
+    const int16_t boxX = (int16_t)((width_ - boxW) / 2);
+    const int16_t boxY = (int16_t)((height_ - boxH) / 2);
+    const int16_t border = 4;
+    canvas_->fillRect(boxX, boxY, boxW, boxH, FOREGROUND);
+    canvas_->fillRect((int16_t)(boxX + border), (int16_t)(boxY + border), (int16_t)(boxW - 2 * border),
+                      (int16_t)(boxH - 2 * border), BACKGROUND);
+
+    const String first = "Setup in " + String(secondsLeft) + "s";
+    const String second = "loslassen zum Abbrechen";
+    selectFont(0); // fur42
+    u8g2_.setCursor((int16_t)(boxX + (boxW - (int16_t)u8g2_.getUTF8Width(first.c_str())) / 2),
+                    (int16_t)(boxY + 95));
+    u8g2_.print(first);
+    selectFont(3); // fur25
+    u8g2_.setCursor((int16_t)(boxX + (boxW - (int16_t)u8g2_.getUTF8Width(second.c_str())) / 2),
+                    (int16_t)(boxY + 165));
+    u8g2_.print(second);
+
+    lastWasQr_ = false;
+    present(false);
+  }
+
   void setCanvas(ClippedCanvas16 &canvas)
   {
     canvas_ = &canvas;
