@@ -76,6 +76,7 @@
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
+#include "../../FirmwareUpdater.h"
 #include "../../TaskLoad.h"
 #include "RgbPanel.h"
 #include "PanelBenchmark.h"
@@ -299,6 +300,7 @@ static PanelDisplayAdapter *displayAdapter = nullptr;
 static WiFiSetupServer *wifiSetupServer = nullptr;
 static MqttClient mqttClient;
 static DeployManager deployManager;
+static FirmwareUpdater firmwareUpdater;
 static TestInterfaceServer testInterface;
 static DeviceProtocol protocol(mqttClient);
 static bool topicsSubscribed = false;
@@ -1027,11 +1029,31 @@ static void setupNetworking()
   // replays its subscription list on every reconnect, so queueing it once
   // covers every later connection too.
   mqttClient.subscribe(protocol.deviceTopic("deploy"));
+
+  // Firmware over the air (FirmwareUpdater.h). The screen says what is
+  // happening, lit even if it had gone dark, and the project comes back if
+  // the update does not happen.
+  firmwareUpdater.setPublishStatusHandler(
+      [](const String &id, const String &state, const String &error, int percent) {
+        protocol.publishDeployStatus(id, state, error, percent);
+      });
+  firmwareUpdater.setClearTriggerHandler([]() { protocol.clearFirmwareTrigger(); });
+  firmwareUpdater.setStartHandler([]() {
+    wakeDisplay();
+    if (displayAdapter) displayAdapter->showLines({"Firmware-Update", "bitte nicht ausschalten"});
+  });
+  firmwareUpdater.setFailedHandler([]() { renderAndPresent("firmware update failed"); });
+  mqttClient.subscribe(protocol.deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
     Serial.println("[4v3b] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
+    if (topic == protocol.deviceTopic("firmware"))
+    {
+      firmwareUpdater.onMessage(payload);
+      return;
+    }
     if (topic == protocol.deviceTopic("deploy"))
     {
       deployManager.handleDeployMessage(payload);
@@ -1931,6 +1953,7 @@ void loop()
   const uint32_t mqttT0 = micros();
   mqttClient.loop();
   subscribeToProjectTopics();
+  firmwareUpdater.service();
   {
     const uint32_t d = micros() - mqttT0;
     mqttUs += d;

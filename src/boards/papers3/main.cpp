@@ -32,6 +32,7 @@
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
+#include "../../FirmwareUpdater.h"
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/ProjectLoader.h"
@@ -58,6 +59,7 @@ static bool setupModeActive = false;
 static MqttClient mqttClient;
 static DeviceProtocol protocol(mqttClient);
 static DeployManager deployManager;
+static FirmwareUpdater firmwareUpdater;
 static TestInterfaceServer testInterface;
 static bool topicsSubscribed = false;
 
@@ -664,11 +666,34 @@ static void setupNetworking()
   // replays its subscription list on every reconnect, so queueing it once
   // covers every later connection too.
   mqttClient.subscribe(protocol.deviceTopic("deploy"));
+
+  // Firmware over the air (FirmwareUpdater.h). The notice is one clean
+  // paint, nothing more during the download - each progress step would be a
+  // refresh of its own on this panel. A failed update puts the project back,
+  // clean too, since the notice replaced the whole picture.
+  firmwareUpdater.setPublishStatusHandler(
+      [](const String &id, const String &state, const String &error, int percent) {
+        protocol.publishDeployStatus(id, state, error, percent);
+      });
+  firmwareUpdater.setClearTriggerHandler([]() { protocol.clearFirmwareTrigger(); });
+  firmwareUpdater.setStartHandler([]() {
+    if (displayAdapter) displayAdapter->showLines({"Firmware-Update", "bitte nicht ausschalten"});
+  });
+  firmwareUpdater.setFailedHandler([]() {
+    panel.forceFullNext();
+    renderAndPresent("firmware update failed");
+  });
+  mqttClient.subscribe(protocol.deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
     Serial.println("[papers3] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
+    if (topic == protocol.deviceTopic("firmware"))
+    {
+      firmwareUpdater.onMessage(payload);
+      return;
+    }
     if (topic == protocol.deviceTopic("deploy"))
     {
       deployManager.handleDeployMessage(payload);
@@ -743,6 +768,7 @@ void loop()
   testInterface.handleClient();
   mqttClient.loop();
   subscribeToProjectTopics();
+  firmwareUpdater.service();
 
   // Not while the hold's countdown is up: a value would paint the project
   // over the box, and the next second's tick would paint the box back - two

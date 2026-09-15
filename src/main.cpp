@@ -39,6 +39,7 @@
 #include "CanvasDisplayAdapter.h"
 #include "NvsConfigStorage.h"
 #include "TestInterfaceServer.h"
+#include "FirmwareUpdater.h"
 #include "WiFiSetupServer.h"
 #include "MqttClient.h"
 #include "DeviceSettings.h"
@@ -102,6 +103,7 @@ static ProjectLoader projectLoader;
 static ColorScreenRenderer *screenRenderer = nullptr;
 static MqttClient mqttClient;
 static DeployManager deployManager;
+static FirmwareUpdater firmwareUpdater;
 
 // Constructed in setup(), not here: it needs the canvas, which does not
 // exist until CanvasPresenter::begin() has allocated it.
@@ -2178,6 +2180,11 @@ static void onMqttMessage(const String &topic, const String &payload) {
   // status ~100 times. PubSubClient shares one buffer between publishing and
   // incoming parsing, so those publishes look fine locally while nothing
   // watching the broker ever sees them.
+  // Firmware over the air: stored here, run from loop(), for the same reason.
+  if (topic == deviceTopic("firmware")) {
+    firmwareUpdater.onMessage(payload);
+    return;
+  }
   if (topic == deviceTopic("deploy")) {
     pendingDeployPayload = payload;
     pendingDeploy = true;
@@ -2228,6 +2235,13 @@ static void setupMqtt(const WiFiCredentials &creds) {
   // replays its own subscription list on every reconnect, so queueing it once
   // up front covers every later connection too.
   mqttClient.subscribe(deviceTopic("deploy"));
+  // Firmware over the air (FirmwareUpdater.h), reporting on deploy-status like a
+  // project deploy.
+  firmwareUpdater.setPublishStatusHandler(publishDeployStatus);
+  firmwareUpdater.setClearTriggerHandler([]() { mqttClient.publish(deviceTopic("firmware"), "", true); });
+  firmwareUpdater.setStartHandler([]() { displayAdapter.showLines({"Firmware-Update", "bitte nicht ausschalten"}); });
+  firmwareUpdater.setFailedHandler([]() { renderScreenIndex(currentScreenIndex); });
+  mqttClient.subscribe(deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() { publishHello(); });
   mqttClient.setCallback(onMqttMessage);
   mqttClient.connect();
@@ -2819,6 +2833,7 @@ void loop() {
     pendingDeployPayload = "";
     deployManager.handleDeployMessage(payload);
   }
+  firmwareUpdater.service();
 
   delay(5);
 #if INPUT_DEBUG

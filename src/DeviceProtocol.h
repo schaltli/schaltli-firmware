@@ -87,6 +87,10 @@ public:
   // and before any download.
   void clearDeployTrigger() { client_.publish(deviceTopic("deploy"), "", true); }
 
+  // The firmware trigger is retained, and loops the same way if it is not
+  // cleared (FirmwareUpdater.h).
+  void clearFirmwareTrigger() { client_.publish(deviceTopic("firmware"), "", true); }
+
 private:
   MqttClient &client_;
 };
