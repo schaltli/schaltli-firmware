@@ -82,8 +82,8 @@ public:
   //
   // The generator is the one M5GFX already carries for its own qrcode()
   // (lgfx_qrcode), called directly because this screen draws into the
-  // shared canvas rather than onto the panel. No new dependency - the 4.3B
-  // lacks a QR code precisely because its only candidate was LVGL's.
+  // shared canvas rather than onto the panel. No new dependency. (The 4.3B,
+  // which has no M5GFX, uses ESP-IDF's esp_qrcode from the Arduino core.)
   void showQrScreen(const String &qrData, const String &caption,
                     std::initializer_list<String> lines) override
   {

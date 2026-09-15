@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 #include <U8g2_for_Adafruit_GFX.h>
+#include <qrcode.h>
+#include <vector>
 #include "RgbPanel.h"
 #include "../../interfaces/IDisplay.h"
 #include "../../ClippedCanvas16.h"
@@ -21,11 +23,12 @@
 // the same distance as everything else and 2.8mm was the problem this
 // board's font work set out to fix.
 //
-// showQrScreen is left to the interface's own default, which falls back to
-// text. That is a real gap, not a design choice: a QR carrying the WIFI:
-// URI is the difference between joining the AP in one tap and transcribing
-// a password. The generator LVGL ships is what the knob uses, and pulling
-// LVGL into this build for one file is not worth it before the rest works.
+// Until 2026-09-15 showQrScreen was left to the interface's text-only
+// default, because the only generator anyone had looked for was LVGL's, and
+// this build has no LVGL. The Arduino core had one all along: ESP-IDF's
+// qrcode component (esp_qrcode_generate), already on the include path and
+// linked into every S3 build. Same Nayuki encoder the knob gets through
+// LVGL, no new dependency.
 class PanelDisplayAdapter : public IDisplay {
 public:
   PanelDisplayAdapter(ClippedCanvas16 &canvas, RgbPanel &panel, int16_t w, int16_t h)
@@ -69,6 +72,64 @@ public:
     present();
   }
 
+  // The AP setup screen: a WIFI: QR code on the left, what it encodes in
+  // readable text on the right - the PaperS3's layout, in this panel's
+  // white on black. The code itself sits on a white square with its quiet
+  // zone, because a phone reads dark modules on light and not the reverse.
+  //
+  // WiFiSetupServer calls this once a second for its countdown. The QR code
+  // and the layout are worked out on the first call for a given code and
+  // caption and then reused, so only the status line changes from one
+  // second to the next and nothing else on the screen moves.
+  void showQrScreen(const String &qrData, const String &caption,
+                    std::initializer_list<String> lines) override
+  {
+    std::vector<String> text;
+    text.push_back(caption);
+    text.push_back("");
+    // Every line keeps its slot even when empty - the status line is blank
+    // in some states - so the block does not jump when it fills in.
+    for (const String &line : lines) text.push_back(line);
+
+    if (qrData != qrData_ || caption != caption_)
+    {
+      qrData_ = qrData;
+      caption_ = caption;
+      encodeQr(qrData);
+      fitLayout(text);
+    }
+    if (qrSize_ == 0)
+    {
+      showLines(lines);
+      return;
+    }
+
+    canvas_->fillRect(0, 0, width_, height_, BACKGROUND);
+
+    const int16_t modulesWithQuiet = (int16_t)(qrSize_ + 2 * QUIET_ZONE);
+    const int16_t qrPixels = (int16_t)(modulesWithQuiet * scale_);
+    const int16_t qrX = MARGIN;
+    const int16_t qrY = (int16_t)((height_ - qrPixels) / 2);
+    canvas_->fillRect(qrX, qrY, qrPixels, qrPixels, FOREGROUND);
+    for (int my = 0; my < qrSize_; my++)
+      for (int mx = 0; mx < qrSize_; mx++)
+        if (qrModules_[my * qrSize_ + mx])
+          canvas_->fillRect((int16_t)(qrX + (QUIET_ZONE + mx) * scale_),
+                            (int16_t)(qrY + (QUIET_ZONE + my) * scale_), scale_, scale_, BACKGROUND);
+
+    selectFont(fontIndex_);
+    const int16_t textX = (int16_t)(qrX + qrPixels + MARGIN);
+    const int16_t lineHeight = currentLineHeight();
+    int16_t baseline = (int16_t)((height_ - (int16_t)text.size() * lineHeight) / 2 + u8g2_.getFontAscent());
+    for (const String &line : text)
+    {
+      u8g2_.setCursor(textX, baseline);
+      u8g2_.print(line);
+      baseline = (int16_t)(baseline + lineHeight);
+    }
+    present();
+  }
+
   // Follows the board when it swaps canvases.
   void setCanvas(ClippedCanvas16 &canvas)
   {
@@ -84,6 +145,94 @@ public:
 
 private:
   void present() { panel_.blit(canvas_->getBuffer()); }
+
+  // esp_qrcode_generate hands the finished code to a callback and frees it
+  // when that returns, with no context pointer on the way - hence the static
+  // target, which is only ever set for the length of one call.
+  void encodeQr(const String &qrData)
+  {
+    qrSize_ = 0;
+    qrModules_.clear();
+    encoding_ = this;
+    esp_qrcode_config_t cfg = ESP_QRCODE_CONFIG_DEFAULT();
+    cfg.display_func = &PanelDisplayAdapter::copyModules;
+    cfg.max_qrcode_version = 10;
+    cfg.qrcode_ecc_level = ESP_QRCODE_ECC_MED; // what the knob and the PaperS3 encode at
+    if (esp_qrcode_generate(&cfg, qrData.c_str()) != ESP_OK) qrSize_ = 0;
+    encoding_ = nullptr;
+  }
+
+  static void copyModules(esp_qrcode_handle_t qr)
+  {
+    if (!encoding_) return;
+    const int size = esp_qrcode_get_size(qr);
+    encoding_->qrModules_.assign((size_t)(size * size), 0);
+    for (int y = 0; y < size; y++)
+      for (int x = 0; x < size; x++)
+        encoding_->qrModules_[(size_t)(y * size + x)] = esp_qrcode_get_module(qr, x, y) ? 1 : 0;
+    encoding_->qrSize_ = size;
+  }
+
+  // The largest font at which every line fits beside the code, and then the
+  // largest code that still leaves the column that wide.
+  //
+  // Text before code, unlike the PaperS3, which simply takes the full height
+  // for its code: that panel is 960 wide, this one 800, and at full height
+  // the column beside it is too narrow for this board's SSID at any size
+  // anyone can read. A line silently too wide is the worst failure a setup
+  // screen can have - it looks fine and is missing the password. The code
+  // never goes below MIN_MODULE_PX, about 25mm across on this panel, which
+  // is still far larger than the knob's, and that one scans.
+  void fitLayout(const std::vector<String> &text)
+  {
+    if (qrSize_ == 0) return;
+    const int16_t modulesWithQuiet = (int16_t)(qrSize_ + 2 * QUIET_ZONE);
+    const int16_t tallest = (int16_t)((height_ - 2 * MARGIN) / modulesWithQuiet);
+    for (int i = 0; i < FONT_COUNT; i++)
+    {
+      selectFont(i);
+      if ((int16_t)text.size() * currentLineHeight() > height_ - 2 * MARGIN) continue;
+      int16_t widest = 0;
+      for (const String &line : text)
+        widest = (int16_t)max((int)widest, (int)u8g2_.getUTF8Width(line.c_str()));
+      const int16_t byWidth = (int16_t)((width_ - 3 * MARGIN - widest) / modulesWithQuiet);
+      const int16_t scale = (int16_t)min(tallest, byWidth);
+      if (scale >= MIN_MODULE_PX)
+      {
+        fontIndex_ = i;
+        scale_ = scale;
+        return;
+      }
+    }
+    fontIndex_ = FONT_COUNT - 1;
+    scale_ = (int16_t)max(1, min((int)tallest, (int)MIN_MODULE_PX));
+  }
+
+  void selectFont(int index)
+  {
+    static const uint8_t *const FONTS[FONT_COUNT] = {u8g2_font_fur35_tf, u8g2_font_fur30_tf,
+                                                     u8g2_font_fur25_tf, u8g2_font_fur20_tf,
+                                                     u8g2_font_fur17_tf};
+    u8g2_.setFont(FONTS[index]);
+    // After setFont(), for the reason showLines() gives.
+    u8g2_.setFontMode(1);
+    u8g2_.setForegroundColor(FOREGROUND);
+    u8g2_.setBackgroundColor(BACKGROUND);
+  }
+
+  int16_t currentLineHeight() { return (int16_t)(u8g2_.getFontAscent() - u8g2_.getFontDescent() + 14); }
+
+  static inline PanelDisplayAdapter *encoding_ = nullptr;
+  static const int FONT_COUNT = 5;
+  static const int16_t MARGIN = 32;
+  static const int16_t QUIET_ZONE = 4;
+  static const int16_t MIN_MODULE_PX = 5;
+  String qrData_;
+  String caption_;
+  std::vector<uint8_t> qrModules_;
+  int qrSize_ = 0;
+  int16_t scale_ = 1;
+  int fontIndex_ = 0;
 
   static const uint16_t BACKGROUND = 0x0000;
   static const uint16_t FOREGROUND = 0xFFFF;

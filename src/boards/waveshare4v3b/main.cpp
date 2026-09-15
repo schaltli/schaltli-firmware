@@ -972,6 +972,18 @@ static void setupNetworking()
       renderAndPresent("after the measuring square");
       out += "\nproject restored\n";
     }
+    else if (setArg.startsWith("setupscreen=") && wifiSetupServer)
+    {
+      // Draws the real AP setup screen, the one WiFiSetupServer draws in
+      // setup mode, into the canvas without bringing the AP up - setup mode
+      // stops this server, so /snapshot.bmp could otherwise never show it.
+      // hil/waveshare4v3b/setup-screen.js reads the QR code back out of it.
+      // Held like the measuring square, so an arriving value cannot paint
+      // the project back over it before the snapshot is taken.
+      measuringPattern = true;
+      wifiSetupServer->showSetupScreenAP(setArg.substring(12).toInt(), false);
+      out += "\nsetup screen drawn, ?set=aspect=0 puts the project back\n";
+    }
     else if (setArg == "arcselftest=1")
     {
       // Needs no project, no broker and no fixture - it compares the
@@ -985,7 +997,8 @@ static void setupNetworking()
       out += "?set=arcselftest=1 to prove the arc short cut, ";
       out += "?set=swipes=1 for the gesture log (?set=swipes=clear to reset it), ";
       out += "?set=topicrender=off to judge a gesture with nothing else drawing, ";
-      out += "?set=aspect=1 for a 400x400 measuring square, ?set=circle=1 for a closed 400px ring ";
+      out += "?set=aspect=1 for a 400x400 measuring square, ?set=circle=1 for a closed 400px ring, ";
+      out += "?set=setupscreen=<seconds> for the AP setup screen ";
       out += "(?set=aspect=0 puts the project back)\n";
     }
     return out;
@@ -1578,13 +1591,57 @@ void loop()
   if (setupModeActive)
   {
     wifiSetupServer->handleClient();
+
+    // "tap to cancel", which the screen has said since this board first drew
+    // it and which did nothing until 2026-09-15: this branch never read the
+    // touch panel. A tap anywhere counts, the PaperS3's rule, but only one
+    // that begins after setup mode did - the finger that just held the glass
+    // for five seconds is still on it, and its lift is not a tap.
+    //
+    // Initialised on the first pass through here, which is the moment setup
+    // mode began: from the hold, fingerDown is still true; from a boot with
+    // no credentials, nothing has touched the glass.
+    //
+    // A tap survives this loop being held elsewhere. The setup page's network
+    // scan holds it for about 3s, and a tap inside that window still arrived
+    // as a touch and then a lift (measured over serial, 2026-09-15): the
+    // GT911 keeps its first unread report until it is cleared, not its last.
+    static bool setupLiftSeen = !fingerDown;
+    static bool setupTapDown = false;
+    static unsigned long setupLastReportMs = millis();
+    bool tapToCancel = false;
+    {
+      int16_t tx = 0, ty = 0;
+      const Gt911::Status status = readTouch(tx, ty);
+      if (status == Gt911::Touched)
+      {
+        setupLastReportMs = millis();
+        if (setupLiftSeen) setupTapDown = true;
+      }
+      else if (status == Gt911::Lifted)
+      {
+        tapToCancel = setupTapDown;
+        setupLiftSeen = true;
+      }
+      else if (millis() - setupLastReportMs >= TOUCH_LOST_MS)
+      {
+        // Quiet for longer than any gap between reports, and the lift was
+        // never reported - the same fallback the normal loop uses. The
+        // entry finger is given a whole quiet second before it counts as
+        // gone, because ending that contact too early would turn its lift
+        // into a tap and cancel setup mode the moment it opened.
+        if (setupTapDown) tapToCancel = true;
+        else if (millis() - setupLastReportMs >= 1000) setupLiftSeen = true;
+      }
+    }
+
     // Leaving restarts rather than tearing the AP down and resuming in
     // place, the same choice the knob makes: a restart has one well-tested
     // path back into normal operation, unwinding AP mode by hand has none.
     // It also means setupModeActive never has to be cleared.
-    if (wifiSetupServer->tick() || wifiSetupServer->exitRequested())
+    if (wifiSetupServer->tick() || wifiSetupServer->exitRequested() || tapToCancel)
     {
-      Serial.println("[4v3b] leaving setup mode - restarting");
+      Serial.printf("[4v3b] leaving setup mode%s - restarting\n", tapToCancel ? " (tap to cancel)" : "");
       delay(200);
       ESP.restart();
     }
