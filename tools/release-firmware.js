@@ -28,8 +28,17 @@
 //   node tools/release-firmware.js                 # dry run
 //   node tools/release-firmware.js --publish       # the real thing
 //
+// A dry run also leaves dist/<tag>/CHANGES.txt: the commits since the previous
+// release. It is material, not release notes - this repo is private and the
+// release public, so nothing from its history is published unless a person
+// writes it into a file and passes it with --notes.
+//
+//   node tools/release-firmware.js                          # dry run, read CHANGES.txt
+//   node tools/release-firmware.js --publish --notes n.md   # publish with those notes
+//
 // Options: --designer <path> (default ../v0-screenman-editor-design),
 // --release-repo <owner/name> (default Matthias-Hess/screenbee-designer),
+// --notes <file> (markdown, placed in the release body),
 // --allow-dirty (dry run only - a release is never built from uncommitted
 // changes).
 
@@ -58,6 +67,11 @@ const publish = process.argv.includes("--publish")
 const allowDirty = process.argv.includes("--allow-dirty")
 const designer = path.resolve(arg("--designer", path.join(REPO, "..", "v0-screenman-editor-design")))
 const releaseRepo = arg("--release-repo", "Matthias-Hess/screenbee-designer")
+const notesFile = arg("--notes", null)
+if (notesFile && !fs.existsSync(notesFile)) {
+  console.error(`[release] ERROR: --notes ${notesFile} does not exist`)
+  process.exit(1)
+}
 
 function fail(message) {
   console.error(`[release] ERROR: ${message}`)
@@ -176,7 +190,18 @@ try {
 
   manifest = { release: tag, commit, repository: releaseRepo, devices }
   fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n")
-  console.log(`\n[release] images and manifest in ${outDir}`)
+
+  // What changed since the previous release, as material for --notes - kept
+  // in dist/, never published by itself: this repo is private and the release
+  // is public, so what its history says in public is written by a person.
+  const previous = git("tag", "-l", "fw-*", "--sort=-creatordate")
+    .split(/\r?\n/)
+    .filter((t) => t && t !== tag && !t.endsWith("-dryrun"))[0]
+  const range = previous ? `${previous}..${commit}` : commit
+  const changes = git("log", "--no-merges", "--format=- %s (%h)", range)
+  fs.writeFileSync(path.join(outDir, "CHANGES.txt"),
+    `Commits in ${tag}${previous ? ` since ${previous}` : " (first release: the whole history)"}:\n\n${changes}\n`)
+  console.log(`\n[release] images, manifest and CHANGES.txt in ${outDir}`)
 } catch (e) {
   removeTag()
   fail(e.message)
@@ -198,6 +223,9 @@ if (push.status !== 0) fail(`git push origin ${tag} failed`)
 const notes = [
   `Firmware ${tag}, built from screenbee-firmware ${commit.slice(0, 10)}.`,
   "",
+  // Hand-written, from --notes: what a user of the devices should know. The
+  // commit list the dry run leaves in dist/<tag>/CHANGES.txt is the material.
+  ...(notesFile ? [fs.readFileSync(notesFile, "utf8").trim(), ""] : []),
   ...Object.entries(manifest.devices).map(([id, d]) => `- ${id}: ${d.file}, ${d.size} bytes, sha256 ${d.sha256}`),
   "",
   "Installed by the designer: deploy/pekaway-install.sh downloads the images firmware/manifest.json names.",
