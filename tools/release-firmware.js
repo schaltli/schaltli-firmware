@@ -209,7 +209,7 @@ try {
 
 if (!publish) {
   removeTag()
-  console.log(`[release] dry run complete. --publish would push ${tag}, create the release in ${releaseRepo}` +
+  console.log(`[release] dry run complete. --publish would push ${tag.replace(/-dryrun$/, "")}, create the release in ${releaseRepo}` +
     ` with ${Object.keys(manifest.devices).length} images, and write firmware/manifest.json into ${designer}.`)
   process.exit(0)
 }
