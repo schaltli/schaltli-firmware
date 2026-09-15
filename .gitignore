@@ -9,3 +9,6 @@
 
 # Generated before every build by tools/pre_build_firmware_build.py
 src/FirmwareBuild.h
+
+# Firmware releases built by tools/release-firmware.js
+dist/
