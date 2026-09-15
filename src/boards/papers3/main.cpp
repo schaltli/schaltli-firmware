@@ -30,6 +30,7 @@
 #include "../../NvsConfigStorage.h"
 #include "../../TestInterfaceServer.h"
 #include "../../WiFiSupervisor.h"
+#include "../../BootReport.h"
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/ProjectLoader.h"
@@ -608,6 +609,7 @@ static void setupNetworking()
     }
     out += "firmware " + ESP.getSketchMD5() + ", built " + String(__DATE__) + " " +
            String(__TIME__) + "\n";
+    out += BootReport::line();
     // The refresh state, because decision 11 asks for this to be checked by
     // hand and no automated test can see it: the snapshot comes from the
     // canvas, not the glass.

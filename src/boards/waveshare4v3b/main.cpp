@@ -74,6 +74,7 @@
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
 #include "../../WiFiSupervisor.h"
+#include "../../BootReport.h"
 #include "../../TaskLoad.h"
 #include "RgbPanel.h"
 #include "PanelBenchmark.h"
@@ -744,6 +745,7 @@ static void setupNetworking()
     // file's last compile, which is close enough to say "that one".
     out += "firmware " + ESP.getSketchMD5() + ", " + String(ESP.getSketchSize() / 1024) +
            " KB, built " + String(__DATE__) + " " + String(__TIME__) + "\n";
+    out += BootReport::line();
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
