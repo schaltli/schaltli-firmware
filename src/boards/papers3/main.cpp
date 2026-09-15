@@ -60,6 +60,15 @@ static MqttClient mqttClient;
 static DeviceProtocol protocol(mqttClient);
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
+// A deploy trigger, held from the MQTT callback until loop() runs it.
+// DeployManager::handleDeployMessage() must not run inside the callback:
+// its status publishes share PubSubClient's buffer with the packet being
+// parsed (DeployManager.h). This board did exactly that until 2026-09-15.
+// hil/deploy-check.js passed against it all the same, with ~16 publishes
+// per deploy, but the M5 Dial lost status that way at ~100, and the rule
+// the class states is not one to keep only while it happens to hold.
+static bool pendingDeploy = false;
+static String pendingDeployPayload;
 static TestInterfaceServer testInterface;
 static bool topicsSubscribed = false;
 
@@ -696,7 +705,8 @@ static void setupNetworking()
     }
     if (topic == protocol.deviceTopic("deploy"))
     {
-      deployManager.handleDeployMessage(payload);
+      pendingDeployPayload = payload;
+      pendingDeploy = true;
       return;
     }
     projectLoader.setTopicValue(topic, payload);
@@ -769,6 +779,13 @@ void loop()
   mqttClient.loop();
   subscribeToProjectTopics();
   firmwareUpdater.service();
+  if (pendingDeploy)
+  {
+    pendingDeploy = false;
+    const String payload = pendingDeployPayload;
+    pendingDeployPayload = "";
+    deployManager.handleDeployMessage(payload);
+  }
 
   // Not while the hold's countdown is up: a value would paint the project
   // over the box, and the next second's tick would paint the box back - two

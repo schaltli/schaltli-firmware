@@ -301,6 +301,15 @@ static WiFiSetupServer *wifiSetupServer = nullptr;
 static MqttClient mqttClient;
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
+// A deploy trigger, held from the MQTT callback until loop() runs it.
+// DeployManager::handleDeployMessage() must not run inside the callback:
+// its status publishes share PubSubClient's buffer with the packet being
+// parsed (DeployManager.h). This board did exactly that until 2026-09-15.
+// hil/deploy-check.js passed against it all the same, with ~16 publishes
+// per deploy, but the M5 Dial lost status that way at ~100, and the rule
+// the class states is not one to keep only while it happens to hold.
+static bool pendingDeploy = false;
+static String pendingDeployPayload;
 static TestInterfaceServer testInterface;
 static DeviceProtocol protocol(mqttClient);
 static bool topicsSubscribed = false;
@@ -1056,7 +1065,8 @@ static void setupNetworking()
     }
     if (topic == protocol.deviceTopic("deploy"))
     {
-      deployManager.handleDeployMessage(payload);
+      pendingDeployPayload = payload;
+      pendingDeploy = true;
       return;
     }
     // Read before it is overwritten: the partial redraw needs the value the
@@ -1954,6 +1964,13 @@ void loop()
   mqttClient.loop();
   subscribeToProjectTopics();
   firmwareUpdater.service();
+  if (pendingDeploy)
+  {
+    pendingDeploy = false;
+    const String payload = pendingDeployPayload;
+    pendingDeployPayload = "";
+    deployManager.handleDeployMessage(payload);
+  }
   {
     const uint32_t d = micros() - mqttT0;
     mqttUs += d;
