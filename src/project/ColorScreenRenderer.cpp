@@ -237,6 +237,16 @@ float ColorScreenRenderer::calibrationValueForPercent(float percent, const std::
 // A level with somewhere to write to is one a finger can set; without one it
 // is exactly the read-only bar it has always been (decision 1). Only the bar
 // so far - the ring follows (decision 7).
+void ColorScreenRenderer::setAskedValue(const String& objectId, const String& value) {
+  askedObjectId_ = objectId;
+  askedValue_ = value;
+}
+
+void ColorScreenRenderer::clearAskedValue() {
+  askedObjectId_ = "";
+  askedValue_ = "";
+}
+
 bool ColorScreenRenderer::isSettableLevel(const ScreenObject& obj) {
   return obj.type == "level-indicator" && !obj.properties.writeTopic.isEmpty();
 }
@@ -855,8 +865,21 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     // Dieselbe Innenbox und dieselbe Abschneidung wie die Fuellung, damit ein
     // Marker auf demselben Wert auf deren Kante sitzt und nicht daneben -
     // wortgleich zu computeMarkerRect() in render-level-indicator.ts.
-    if (!obj.properties.setpointTopic.isEmpty()) {
-      String setpointStr = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+    // Der Marker zeigt, was angefordert wurde: das Sollwert-Topic, wo es eines
+    // gibt, sonst was ein Finger an diesem Objekt gerade gesetzt hat
+    // (Entscheidung 6c). Die Fuellung bleibt der gemessene Wert - laufen beide
+    // zusammen, ist der Befehl angekommen.
+    // Was ein Finger gerade angefordert hat, gewinnt: er bedient ja genau
+    // diesen Sollwert, und der alte Stand darf den Wunsch nicht ueberdecken.
+    // Verworfen wird die Anforderung, sobald die Anlage auf dem Sollwert-Topic
+    // antwortet - oder, wo es keines gibt, auf dem Lese-Topic (main.cpp).
+    String setpointStr = obj.properties.setpointTopic.isEmpty()
+                             ? String("")
+                             : projectLoader_.getTopicValue(obj.properties.setpointTopic);
+    if (!askedObjectId_.isEmpty() && obj.id == askedObjectId_ && !askedValue_.isEmpty()) {
+      setpointStr = askedValue_;
+    }
+    {
       String trimmedSetpoint = setpointStr;
       trimmedSetpoint.trim();
       if (!trimmedSetpoint.isEmpty()) {

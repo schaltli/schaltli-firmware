@@ -307,6 +307,8 @@ private:
   int16_t measureTrueTextWidth(const String& text, const BdfFont* font);
   String formatNumber(const String& valueStr, int decimals, const String& thousandsSeparator) const;
   float interpolateCalibration(float value, const std::vector<CalibrationPoint>& points) const;
+  String askedObjectId_;
+  String askedValue_;
   float calibrationValueForPercent(float percent, const std::vector<CalibrationPoint>& points) const;
 
  public:
@@ -326,6 +328,19 @@ private:
   // that has left the object it started on: a drag past the end of a bar
   // still means the end of that bar, not "nothing here".
   const ScreenObject* findObjectById(int screenIndex, const String& id, int16_t& objX, int16_t& objY) const;
+
+  // What a finger asked one object for, drawn as its setpoint marker until
+  // the installation answers (docs/2026-09-17-settable-level.md in the
+  // designer repo, decision 6c: the finger moves the marker, the fill keeps
+  // showing what is measured, and the two coincide once the command landed).
+  //
+  // Not a topic: a dimmer's level is one value on the broker with no second
+  // topic to hold "asked for", so the device remembers it - and forgets it
+  // the moment a value arrives on that object's read topic, which is where
+  // each board's main.cpp clears it. A setpoint topic, where there is one,
+  // simply wins: the installation's own word about the target beats this.
+  void setAskedValue(const String& objectId, const String& value);
+  void clearAskedValue();
 
  private:
 

@@ -349,6 +349,10 @@ static String levelDragObjId;
 static String levelDragTopic;
 static String levelDragWriteTopic;
 static String levelDragPayload;
+// The topic whose next message ends the request - the setpoint topic where
+// there is one, else the read topic. Separate from levelDragTopic because the
+// request outlives the finger.
+static String levelAskedTopic;
 static int16_t levelDragX = 0, levelDragY = 0, levelDragW = 0, levelDragH = 0;
 static unsigned long levelDragLastPublishMs = 0;
 // A drag must not put thirty messages on the broker - the same coalescing the
@@ -1079,10 +1083,13 @@ static void setupNetworking()
       pendingDeploy = true;
       return;
     }
-    // While a finger is setting this value, the finger wins (decision 2).
-    if (!levelDragObjId.isEmpty() && topic == levelDragTopic)
+    // The installation's word ends the request: the marker goes, and the fill
+    // shows what was reported - even when that is not what was asked for
+    // (decision 6c).
+    if (renderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
     {
-      return;
+      renderer->clearAskedValue();
+      levelAskedTopic = "";
     }
 
     // Read before it is overwritten: the partial redraw needs the value the
@@ -1550,11 +1557,14 @@ static void dispatchSwipeAtRelease(int dx, int dy)
 // docs/2026-09-17-settable-level.md): the press sets the value under the
 // finger, the drag follows it, the release publishes what it settled on.
 //
-// While the finger is down the finger wins - the value is set locally and the
-// object's own rectangle is redrawn, and values arriving for that topic are
-// ignored, or every round of the bridge would fight the hand. Afterwards what
-// was set stays until the read topic says something; no timeout, because the
-// bridge asks again every two seconds.
+// The finger moves the MARKER, not the fill (decision 6c): the fill keeps
+// showing what the installation reports, the marker what was asked for, and
+// the two coincide once the command has landed. The asked-for value lives in
+// the renderer (setAskedValue) and is dropped as soon as the installation
+// speaks about that same setpoint.
+//
+// Until 2026-09-17 the finger set the reading itself, which looked quicker
+// and was a claim: it showed a wish as a measurement.
 //
 // The rectangle is redrawn rather than the screen: this panel is 800x480, and
 // a full render per touch sample would make the bar crawl behind the finger.
@@ -1574,9 +1584,9 @@ static void applyLevelDragValue(const String &payload, bool force)
   if (changed)
   {
     levelDragPayload = payload;
-    if (!levelDragTopic.isEmpty())
+    if (renderer != nullptr)
     {
-      projectLoader.setTopicValue(levelDragTopic, payload);
+      renderer->setAskedValue(levelDragObjId, payload);
       renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
     }
   }
@@ -1602,6 +1612,8 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   levelDragObjId = hit->id;
   levelDragTopic = hit->properties.topic;
   levelDragWriteTopic = hit->properties.writeTopic;
+  levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic
+                                                            : hit->properties.setpointTopic;
   levelDragX = objX;
   levelDragY = objY;
   levelDragW = hit->width;

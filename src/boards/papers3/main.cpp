@@ -113,6 +113,9 @@ static int holdLastSecondShown = -1;
 static bool holdCountdownShown = false;
 // Where the contact began and where it is now. A tap acts on the first, a
 // swipe on the difference, and a hold needs to know it has not become either.
+// Das Topic, dessen naechste Nachricht eine Anforderung beendet - das
+// Sollwert-Topic, wo es eines gibt, sonst das Lese-Topic (Entscheidung 6c).
+static String levelAskedTopic;
 static int16_t contactStartX = 0, contactStartY = 0;
 static int16_t contactLastX = 0, contactLastY = 0;
 static bool contactMoved = false;
@@ -245,11 +248,13 @@ static bool handleTap(int16_t x, int16_t y)
     return true;
   }
 
-  // A settable level: the tap sets the value at the point it landed and sends
-  // it (designer docs/2026-09-17-settable-level.md). A tap, not a drag - on
-  // e-ink every intermediate frame is a full refresh of about a second, which
-  // is why this board follows no finger anywhere. Nothing is drawn here: what
-  // comes back on the read topic redraws the object, like every other value.
+  // A settable level: the tap sets the value at the point it landed, sends it,
+  // and shows it as the object's marker (designer
+  // docs/2026-09-17-settable-level.md, decision 6c) - the fill keeps showing
+  // what the installation reports, so the two coincide once the command has
+  // landed. A tap, not a drag: on e-ink every intermediate frame is a full
+  // refresh of about a second, which is why this board follows no finger
+  // anywhere.
   if (ColorScreenRenderer::isSettableLevel(*hit))
   {
     const float value = renderer->settableLevelValueAt(*hit, x, y, objX, objY);
@@ -268,6 +273,12 @@ static bool handleTap(int16_t x, int16_t y)
                   hit->properties.writeTopic.c_str(), payload.c_str());
     // Not retained: a command, not a state.
     mqttClient.publish(hit->properties.writeTopic, payload, false);
+    // One refresh for the marker, and the request ends when the installation
+    // speaks about that same setpoint (onMqttMessage).
+    renderer->setAskedValue(hit->id, payload);
+    levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic
+                                                              : hit->properties.setpointTopic;
+    renderAndPresent("level asked");
     return true;
   }
 
@@ -756,6 +767,13 @@ static void setupNetworking()
       pendingDeployPayload = payload;
       pendingDeploy = true;
       return;
+    }
+    // Was die Anlage meldet, beendet die Anforderung: der Marker geht, die
+    // Fuellung zeigt den gemeldeten Wert (Entscheidung 6c).
+    if (renderer && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
+    {
+      renderer->clearAskedValue();
+      levelAskedTopic = "";
     }
     projectLoader.setTopicValue(topic, payload);
     renderPending = true;

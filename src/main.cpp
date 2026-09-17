@@ -1342,16 +1342,25 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
 // Wert unter dem Finger, das Ziehen folgt ihm, das Loslassen schickt, worauf
 // er stehen geblieben ist.
 //
-// Solange gehalten wird, gilt der Finger: der Wert wird lokal gesetzt und
-// gezeichnet, und eintreffende Werte fuer dieses Topic werden ignoriert
-// (onMqttMessage), sonst kaempft jede Nachricht der Bruecke gegen die Hand.
-// Nach dem Loslassen bleibt stehen, was gesetzt wurde, bis das Lese-Topic
-// etwas sagt - kein Zeitablauf noetig, weil die Bruecke alle zwei Sekunden
-// nachfragt und ein verlorener Befehl sich damit selbst korrigiert.
+// Der Finger bewegt den MARKER, nicht die Fuellung (Entscheidung 6c): die
+// Fuellung zeigt weiter, was die Anlage meldet, der Marker, was angefordert
+// wurde. Sind beide gleich, ist der Befehl angekommen - dieselbe Anzeige, die
+// ein Thermostatknopf hat.
+//
+// Vorher setzte der Finger hier den Istwert lokal. Das sah schneller aus, war
+// aber eine Behauptung: es zeigte den Wunsch als Messung. Am Geraet gemerkt
+// (2026-09-17: "ich verschiebe den Balken und nicht den Marker").
+//
+// Der angeforderte Wert lebt im Renderer (setAskedValue) und wird verworfen,
+// sobald auf dem Lese-Topic etwas ankommt - dann gilt wieder, was die Anlage
+// sagt, auch wenn sie widerspricht.
 static String levelDragObjId;
 static String levelDragTopic;
 static String levelDragWriteTopic;
 static String levelDragPayload;
+// Das Lese-Topic, dessen naechste Nachricht die Anforderung beendet. Getrennt
+// von levelDragTopic, weil die Anforderung den Finger ueberlebt.
+static String levelAskedTopic;
 static unsigned long levelDragLastPublishMs = 0;
 // Ein Zug soll nicht dreissig Nachrichten schicken - dieselbe Sammelzeit wie
 // der Schrittbefehl der Luefterseite im Fahrzeug.
@@ -1372,9 +1381,9 @@ static void applyLevelDragValue(const String &payload, bool force) {
   const bool changed = payload != levelDragPayload;
   if (changed) {
     levelDragPayload = payload;
-    if (!levelDragTopic.isEmpty()) {
-      projectLoader.setTopicValue(levelDragTopic, payload);
-      // Andere Bildschirme zeigen denselben Wert - ihre vorgerenderten
+    if (screenRenderer != nullptr) {
+      screenRenderer->setAskedValue(levelDragObjId, payload);
+      // Andere Bildschirme zeigen dasselbe Objekt - ihre vorgerenderten
       // Nachbarn sind damit veraltet.
       canvasPresenter.invalidateSlots();
       menuBackdropReady = false;
@@ -1406,6 +1415,10 @@ static bool beginLevelDrag(int16_t x, int16_t y) {
   levelDragObjId = treffer->id;
   levelDragTopic = treffer->properties.topic;
   levelDragWriteTopic = treffer->properties.writeTopic;
+  // Die Anforderung endet, wenn die Anlage ueber DIESEN Sollwert spricht - das
+  // Sollwert-Topic, wo es eines gibt, sonst das Lese-Topic.
+  levelAskedTopic = treffer->properties.setpointTopic.isEmpty() ? treffer->properties.topic
+                                                                : treffer->properties.setpointTopic;
   levelDragLastPublishMs = 0;
   Serial.printf("[level] \"%s\" am Finger -> %s\n", treffer->id.c_str(), levelDragWriteTopic.c_str());
   applyLevelDragValue(formatLevelPayload(screenRenderer->settableLevelValueAt(*treffer, x, y, objX, objY)), true);
@@ -2330,10 +2343,13 @@ static void onMqttMessage(const String &topic, const String &payload) {
   latMark("rx", payload.c_str());
   // Vor dem Ueberschreiben merken - der Ausschnitt ergibt sich aus der
   // Differenz zwischen altem und neuem Wert.
-  // Solange ein Finger diesen Wert setzt, gilt der Finger (Entscheidung 2).
-  if (!levelDragObjId.isEmpty() && topic == levelDragTopic) {
-    latMark("rx", "held");
-    return;
+  // Was die Anlage meldet, beendet die Anforderung: der Marker verschwindet,
+  // die Fuellung zeigt den gemeldeten Wert - auch wenn er nicht der
+  // angeforderte ist (Entscheidung 6c). Waehrend der Finger noch liegt,
+  // bleibt der Marker, wo er ist: er haengt am Objekt, nicht am Topic.
+  if (screenRenderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic) {
+    screenRenderer->clearAskedValue();
+    levelAskedTopic = "";
   }
 
   const String oldValue = projectLoader.getTopicValue(topic);
