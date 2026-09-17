@@ -210,9 +210,16 @@ struct ObjectProperties {
   String activeBackgroundColor;
   std::vector<SwitchState> states;
 
+  // A settable level (docs/2026-09-17-settable-level.md in the designer
+  // repo): `writeTopic` above, shared with the Switch, is what makes a
+  // level-indicator or arc-level operable, and `step` is what a value set by
+  // a finger snaps to - so a drag reports 35 and 40 rather than 37 and then
+  // 38. Default 1; anything <= 0 means no snapping.
+  float step;
+
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
-      arrowStart(false), arrowEnd(false),
+      step(1.0f), arrowStart(false), arrowEnd(false),
       mode("segmented"), activeBackgroundColor("#2563eb") {}
 };
 

@@ -450,6 +450,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
 
   // Switch properties - see ProjectTypes.h's ObjectProperties comment.
   props.writeTopic = propsJson["writeTopic"] | "";
+  props.step = propsJson["step"] | 1.0f;
   // Anything that is not "single" is segmented, including the key being
   // absent entirely - which is what every project exported before
   // 2026-08-25 looks like.

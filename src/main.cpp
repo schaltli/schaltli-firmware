@@ -1335,6 +1335,111 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   return true;
 }
 
+// ------------------------------------------- bedienbarer Balken am Finger
+//
+// Ein level-indicator mit Schreibtopic ist bedienbar
+// (docs/2026-09-17-settable-level.md im Designer-Repo). Der Druck setzt den
+// Wert unter dem Finger, das Ziehen folgt ihm, das Loslassen schickt, worauf
+// er stehen geblieben ist.
+//
+// Solange gehalten wird, gilt der Finger: der Wert wird lokal gesetzt und
+// gezeichnet, und eintreffende Werte fuer dieses Topic werden ignoriert
+// (onMqttMessage), sonst kaempft jede Nachricht der Bruecke gegen die Hand.
+// Nach dem Loslassen bleibt stehen, was gesetzt wurde, bis das Lese-Topic
+// etwas sagt - kein Zeitablauf noetig, weil die Bruecke alle zwei Sekunden
+// nachfragt und ein verlorener Befehl sich damit selbst korrigiert.
+static String levelDragObjId;
+static String levelDragTopic;
+static String levelDragWriteTopic;
+static String levelDragPayload;
+static unsigned long levelDragLastPublishMs = 0;
+// Ein Zug soll nicht dreissig Nachrichten schicken - dieselbe Sammelzeit wie
+// der Schrittbefehl der Luefterseite im Fahrzeug.
+static const unsigned long LEVEL_PUBLISH_MIN_MS = 250;
+
+// Ganze Zahlen ohne Komma, wie der Designer sie schreibt; eine Stufe von 0,5
+// braucht die Stelle dahinter.
+static String formatLevelPayload(float value) {
+  if (fabsf(value - roundf(value)) < 0.001f) return String((long)roundf(value));
+  String out = String(value, 2);
+  while (out.endsWith("0")) out.remove(out.length() - 1);
+  if (out.endsWith(".")) out.remove(out.length() - 1);
+  return out;
+}
+
+static void applyLevelDragValue(const String &payload, bool force) {
+  if (payload.isEmpty()) return;
+  const bool changed = payload != levelDragPayload;
+  if (changed) {
+    levelDragPayload = payload;
+    if (!levelDragTopic.isEmpty()) {
+      projectLoader.setTopicValue(levelDragTopic, payload);
+      // Andere Bildschirme zeigen denselben Wert - ihre vorgerenderten
+      // Nachbarn sind damit veraltet.
+      canvasPresenter.invalidateSlots();
+      menuBackdropReady = false;
+      renderScreenIndex(currentScreenIndex);
+    }
+  }
+  const unsigned long now = millis();
+  if (!force && now - levelDragLastPublishMs < LEVEL_PUBLISH_MIN_MS) return;
+  if (!force && !changed) return;
+  levelDragLastPublishMs = now;
+  // Nicht retained: ein Befehl, kein Zustand - genau wie beim Switch.
+  mqttClient.publish(levelDragWriteTopic, payload, false);
+}
+
+// Faengt dieser Druck einen bedienbaren Balken? Dann gehoert ihm die Geste,
+// und das Blaettern faengt nicht an (Entscheidung 8).
+static bool beginLevelDrag(int16_t x, int16_t y) {
+  levelDragObjId = "";
+  levelDragTopic = "";
+  levelDragWriteTopic = "";
+  levelDragPayload = "";
+  if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
+
+  int16_t objX = 0;
+  int16_t objY = 0;
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
+  if (treffer == nullptr || !ColorScreenRenderer::isSettableLevel(*treffer)) return false;
+
+  levelDragObjId = treffer->id;
+  levelDragTopic = treffer->properties.topic;
+  levelDragWriteTopic = treffer->properties.writeTopic;
+  levelDragLastPublishMs = 0;
+  Serial.printf("[level] \"%s\" am Finger -> %s\n", treffer->id.c_str(), levelDragWriteTopic.c_str());
+  applyLevelDragValue(formatLevelPayload(screenRenderer->settableLevelValueAt(*treffer, x, y, objX, objY)), true);
+  return true;
+}
+
+static void updateLevelDrag(int16_t x, int16_t y) {
+  if (levelDragObjId.isEmpty() || screenRenderer == nullptr) return;
+  int16_t objX = 0;
+  int16_t objY = 0;
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
+  // Der Finger darf ueber den Rand hinaus - er setzt dann den Endwert, statt
+  // die Kontrolle abzugeben. Deshalb wird der Wert am gemerkten Objekt
+  // gerechnet, nicht an dem unter dem Finger.
+  if (treffer == nullptr || treffer->id != levelDragObjId) {
+    const ScreenObject *held = screenRenderer->findObjectById(currentScreenIndex, levelDragObjId, objX, objY);
+    if (held == nullptr) return;
+    applyLevelDragValue(formatLevelPayload(screenRenderer->settableLevelValueAt(*held, x, y, objX, objY)), false);
+    return;
+  }
+  applyLevelDragValue(formatLevelPayload(screenRenderer->settableLevelValueAt(*treffer, x, y, objX, objY)), false);
+}
+
+// Loslassen: was stehen geblieben ist, geht raus - auch wenn die Sammelzeit
+// es gerade schon geschickt hat (Entscheidung 3).
+static void endLevelDrag() {
+  if (levelDragObjId.isEmpty()) return;
+  if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty()) {
+    mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
+    Serial.printf("[level] losgelassen auf %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
+  }
+  levelDragObjId = "";
+}
+
 static void pollTouchGesturesInner() {
   if (touchIsDown) {
 #if INPUT_DEBUG
@@ -1343,6 +1448,7 @@ static void pollTouchGesturesInner() {
     lastTouchSampleX = touchX;
     lastTouchSampleY = touchY;
 #endif
+    const bool justWentDown = !touchDown;
     if (!touchDown) {
       touchDown = true;
       touchStartX = touchX;
@@ -1369,6 +1475,11 @@ static void pollTouchGesturesInner() {
     // dark. A wake swallows the rest of this contact - see wakeDisplay.
     const bool wasOff = displayIsOff;
     wakeDisplay();
+    if (!wasOff && justWentDown) {
+      // Vor allem anderen: ein bedienbarer Balken nimmt den Druck sofort an,
+      // damit ein Tipp auf drei Viertel auch drei Viertel bedeutet.
+      if (beginLevelDrag(touchX, touchY)) dragDecided = true;
+    }
     if (wasOff) {
       // Marking dragDecided alone was not enough - that only stops the
       // interactive drag from starting, while the release classifier still
@@ -1407,6 +1518,11 @@ static void pollTouchGesturesInner() {
       // was told a countdown was running.
       setupHoldConsumed = true;
     }
+    // Der Balken hat die Geste: dem Finger folgen und sonst nichts.
+    if (!levelDragObjId.isEmpty()) {
+      updateLevelDrag(touchX, touchY);
+      return;
+    }
     // Offered once per gesture, at the first movement worth calling a drag.
     // Once refused - unbound direction, single-screen project, no second
     // canvas - it is not reconsidered, so the decision cannot flip halfway
@@ -1428,6 +1544,12 @@ static void pollTouchGesturesInner() {
   // is a real release (see RELEASE_DEBOUNCE_MS).
   if (millis() - touchLastDownMs < RELEASE_DEBOUNCE_MS) return;
   touchDown = false;
+
+  // Ein Zug am Balken ist weder Tipp noch Wisch - er endet hier.
+  if (!levelDragObjId.isEmpty()) {
+    endLevelDrag();
+    return;
+  }
 
   int dx = touchLastX - touchStartX;
   int dy = touchLastY - touchStartY;
@@ -2208,6 +2330,12 @@ static void onMqttMessage(const String &topic, const String &payload) {
   latMark("rx", payload.c_str());
   // Vor dem Ueberschreiben merken - der Ausschnitt ergibt sich aus der
   // Differenz zwischen altem und neuem Wert.
+  // Solange ein Finger diesen Wert setzt, gilt der Finger (Entscheidung 2).
+  if (!levelDragObjId.isEmpty() && topic == levelDragTopic) {
+    latMark("rx", "held");
+    return;
+  }
+
   const String oldValue = projectLoader.getTopicValue(topic);
   projectLoader.setTopicValue(topic, payload);
   // Any screen may show this value, so every pre-rendered neighbour is now

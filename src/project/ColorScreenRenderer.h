@@ -307,6 +307,27 @@ private:
   int16_t measureTrueTextWidth(const String& text, const BdfFont* font);
   String formatNumber(const String& valueStr, int decimals, const String& thousandsSeparator) const;
   float interpolateCalibration(float value, const std::vector<CalibrationPoint>& points) const;
+  float calibrationValueForPercent(float percent, const std::vector<CalibrationPoint>& points) const;
+
+ public:
+  // A level a finger can set: one with somewhere to write to
+  // (docs/2026-09-17-settable-level.md in the designer repo, decision 1).
+  // Only the bar so far - the ring's own sector arithmetic follows.
+  static bool isSettableLevel(const ScreenObject& obj);
+
+  // What a finger at this point means for that bar: the position as a
+  // percentage of the bar, through the calibration read backwards, snapped
+  // to the object's step. x/y are absolute screen coordinates, objX/objY the
+  // object's own corner as hitTestTappable reports it.
+  float settableLevelValueAt(const ScreenObject& obj, int16_t x, int16_t y, int16_t objX, int16_t objY) const;
+
+  // The object with this id on that screen, with its absolute corner - the
+  // same walk and the same coordinates hitTestTappable reports, for a finger
+  // that has left the object it started on: a drag past the end of a bar
+  // still means the end of that bar, not "nothing here".
+  const ScreenObject* findObjectById(int screenIndex, const String& id, int16_t& objX, int16_t& objY) const;
+
+ private:
 
   // Parses "#rrggbb" (or "#rrggbbaa", alpha ignored except to detect
   // full transparency) into a real RGB565 value - unlike the e-paper

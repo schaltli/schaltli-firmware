@@ -196,6 +196,87 @@ float ColorScreenRenderer::interpolateCalibration(float value, const std::vector
   return 0;
 }
 
+// The same interpolation read the other way: a finger has a position, which
+// is a percentage of the bar, and what has to be published is the value that
+// percentage stands for (docs/2026-09-17-settable-level.md in the designer
+// repo, decision 5, mirrored from levelValueFromFill() in
+// render-level-indicator.ts).
+//
+// Sorted by value like the forward direction, so a calibration whose
+// percentages fall as the value rises inverts too. A segment whose two
+// percentages are equal has no value to give - a range of positions all mean
+// the same reading - so its lower value is taken rather than dividing by
+// zero.
+float ColorScreenRenderer::calibrationValueForPercent(float percent, const std::vector<CalibrationPoint>& points) const {
+  if (points.empty()) return 0.0f;
+  if (points.size() == 1) return points[0].value;
+
+  std::vector<CalibrationPoint> sortedPoints = points;
+  std::sort(sortedPoints.begin(), sortedPoints.end(),
+            [](const CalibrationPoint& a, const CalibrationPoint& b) { return a.value < b.value; });
+
+  const CalibrationPoint& first = sortedPoints[0];
+  const CalibrationPoint& last = sortedPoints[sortedPoints.size() - 1];
+  const bool rising = last.barSizePercent >= first.barSizePercent;
+  if (rising ? percent <= first.barSizePercent : percent >= first.barSizePercent) return first.value;
+  if (rising ? percent >= last.barSizePercent : percent <= last.barSizePercent) return last.value;
+
+  for (size_t i = 0; i + 1 < sortedPoints.size(); i++) {
+    const CalibrationPoint& p1 = sortedPoints[i];
+    const CalibrationPoint& p2 = sortedPoints[i + 1];
+    const float low = fminf(p1.barSizePercent, p2.barSizePercent);
+    const float high = fmaxf(p1.barSizePercent, p2.barSizePercent);
+    if (percent < low || percent > high) continue;
+    if (p2.barSizePercent == p1.barSizePercent) return p1.value;
+    const float ratio = (percent - p1.barSizePercent) / (p2.barSizePercent - p1.barSizePercent);
+    return p1.value + ratio * (p2.value - p1.value);
+  }
+  return first.value;
+}
+
+// A level with somewhere to write to is one a finger can set; without one it
+// is exactly the read-only bar it has always been (decision 1). Only the bar
+// so far - the ring follows (decision 7).
+bool ColorScreenRenderer::isSettableLevel(const ScreenObject& obj) {
+  return obj.type == "level-indicator" && !obj.properties.writeTopic.isEmpty();
+}
+
+// The value a finger at this point stands for. The same padding of 4 and the
+// same four directions renderLevelIndicator() fills with, read backwards, so
+// the bar fills to where the finger is - and snapped to the object's step.
+float ColorScreenRenderer::settableLevelValueAt(const ScreenObject& obj, int16_t x, int16_t y,
+                                                 int16_t objX, int16_t objY) const {
+  const int padding = 4;
+  const float innerX = objX + padding;
+  const float innerY = objY + padding;
+  const float innerWidth = fmaxf(1.0f, obj.width - padding * 2);
+  const float innerHeight = fmaxf(1.0f, obj.height - padding * 2);
+
+  float along;
+  if (obj.properties.barDirection == "right-to-left") {
+    along = (innerX + innerWidth - x) / innerWidth;
+  } else if (obj.properties.barDirection == "bottom-to-top") {
+    along = (innerY + innerHeight - y) / innerHeight;
+  } else if (obj.properties.barDirection == "top-to-bottom") {
+    along = (y - innerY) / innerHeight;
+  } else {
+    along = (x - innerX) / innerWidth;
+  }
+
+  float percent = along * 100.0f;
+  if (percent < 0.0f) percent = 0.0f;
+  if (percent > 100.0f) percent = 100.0f;
+
+  std::vector<CalibrationPoint> points = obj.properties.calibrationPoints;
+  if (points.empty()) {
+    points = {{0.0f, 0.0f}, {100.0f, 100.0f}};
+  }
+  const float value = calibrationValueForPercent(percent, points);
+  const float step = obj.properties.step;
+  if (step <= 0.0f) return value;
+  return roundf(value / step) * step;
+}
+
 // Sums the glyphs' own advances, which is what the designer's
 // BDFFont.measureText() does - so alignment lands on the same pixel. The
 // old version drew the string into a zero-sized clip and read u8g2's cursor
@@ -1595,7 +1676,12 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     }
     // Ein Panel ausserhalb eines tab-control zeichnet nichts (siehe
     // renderObject), also faengt es auch nichts.
-    if (o->type != "Switch" && o->type != "SoftwareButton") continue;
+    //
+    // Ein Level mit Schreibtopic faengt ebenfalls: es ist bedienbar
+    // (docs/2026-09-17-settable-level.md im Designer-Repo). Ohne Schreibtopic
+    // nicht - ein Tank, den man nur liest, soll einen Finger nicht abfangen,
+    // der in Wahrheit die Seite blaettern wollte.
+    if (o->type != "Switch" && o->type != "SoftwareButton" && !isSettableLevel(*o)) continue;
 
     const int16_t ox = dx + o->x;
     const int16_t oy = dy + o->y;
@@ -1605,6 +1691,42 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     objX = ox;
     objY = oy;
   }
+}
+
+namespace {
+// Derselbe Gang wie hitTestWalk, nur nach Id statt nach Punkt: durch das
+// sichtbare Panel eines tab-control hinein, mit aufaddiertem Versatz.
+const ScreenObject* findByIdWalk(const std::vector<ScreenObject>& objects, const String& id, int16_t dx, int16_t dy,
+                                  int16_t& objX, int16_t& objY,
+                                  const std::function<const ScreenObject*(const ScreenObject&)>& activePanelOf) {
+  for (const auto& o : objects) {
+    if (o.id == id) {
+      objX = dx + o.x;
+      objY = dy + o.y;
+      return &o;
+    }
+    if (o.type == "tab-control") {
+      const ScreenObject* panel = activePanelOf(o);
+      if (panel != nullptr) {
+        const ScreenObject* found =
+            findByIdWalk(panel->children, id, dx + o.x, dy + o.y, objX, objY, activePanelOf);
+        if (found != nullptr) return found;
+      }
+    }
+  }
+  return nullptr;
+}
+}  // namespace
+
+const ScreenObject* ColorScreenRenderer::findObjectById(int screenIndex, const String& id, int16_t& objX,
+                                                         int16_t& objY) const {
+  if (!projectLoader_.isLoaded() || id.isEmpty()) return nullptr;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return nullptr;
+  objX = 0;
+  objY = 0;
+  return findByIdWalk(project.screens[screenIndex].objects, id, 0, 0, objX, objY,
+                      [this](const ScreenObject& tabControl) { return getActivePanel(tabControl); });
 }
 
 const ScreenObject* ColorScreenRenderer::hitTestTappable(int screenIndex, int16_t x, int16_t y,
