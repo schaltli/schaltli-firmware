@@ -248,14 +248,64 @@ void ColorScreenRenderer::clearAskedValue() {
 }
 
 bool ColorScreenRenderer::isSettableLevel(const ScreenObject& obj) {
-  return obj.type == "level-indicator" && !obj.properties.writeTopic.isEmpty();
+  return (obj.type == "level-indicator" || obj.type == "arc-level") && !obj.properties.writeTopic.isEmpty();
 }
 
-// The value a finger at this point stands for. The same padding of 4 and the
-// same four directions renderLevelIndicator() fills with, read backwards, so
-// the bar fills to where the finger is - and snapped to the object's step.
+// Wo ein Finger auf dem Ring liegt, als Prozent seiner eigenen Bahn - die
+// Umkehrung von ArcRaster::sweepForPercent(), wortgleich zu
+// arcPercentFromPoint() in render-arc-level.ts. Zwoelf Uhr ist oben, die Grade
+// laufen im Uhrzeigersinn; ein Punkt in der Luecke unten am Thermostatbogen
+// bekommt das naehere Ende, weil das gemeint ist, wenn man ueber das Ende
+// einer Skala hinausgreift.
+static float arcPercentFromPoint(const ScreenObject& obj, int16_t x, int16_t y, int16_t objX, int16_t objY) {
+  const int32_t size = min(obj.width, obj.height) < 1 ? 1 : min(obj.width, obj.height);
+  const float cx = objX + size / 2.0f;
+  const float cy = objY + size / 2.0f;
+  const float dx = x - cx;
+  const float dy = y - cy;
+  if (dx == 0.0f && dy == 0.0f) return 0.0f;
+
+  const int32_t minA = ((obj.properties.minAngle % 360) + 360) % 360;
+  const int32_t maxA = ((obj.properties.maxAngle % 360) + 360) % 360;
+  const bool counterClockwise = obj.properties.arcDirection == "ccw";
+  const int32_t startDeg = counterClockwise ? maxA : minA;
+  int32_t spanDeg = counterClockwise ? ((minA - maxA + 360) % 360) : ((maxA - minA + 360) % 360);
+  if (spanDeg == 0) spanDeg = 360;
+
+  float deg = atan2f(dx, -dy) * 180.0f / (float)M_PI;
+  if (deg < 0.0f) deg += 360.0f;
+
+  float rel = fmodf(deg - (float)startDeg + 360.0f, 360.0f);
+  if (rel > (float)spanDeg) {
+    const float pastEnd = rel - (float)spanDeg;
+    const float beforeStart = 360.0f - rel;
+    rel = pastEnd <= beforeStart ? (float)spanDeg : 0.0f;
+  }
+
+  float percent = (rel / (float)spanDeg) * 100.0f;
+  if (counterClockwise) percent = 100.0f - percent;
+  if (percent < 0.0f) percent = 0.0f;
+  if (percent > 100.0f) percent = 100.0f;
+  return percent;
+}
+
+// The value a finger at this point stands for. For the bar: the same padding
+// of 4 and the same four directions renderLevelIndicator() fills with, read
+// backwards, so it fills to where the finger is. For the ring: its sector,
+// read the same way round. Both snapped to the object's step.
 float ColorScreenRenderer::settableLevelValueAt(const ScreenObject& obj, int16_t x, int16_t y,
                                                  int16_t objX, int16_t objY) const {
+  if (obj.type == "arc-level") {
+    std::vector<CalibrationPoint> arcPoints = obj.properties.calibrationPoints;
+    if (arcPoints.empty()) {
+      arcPoints = {{0.0f, 0.0f}, {100.0f, 100.0f}};
+    }
+    const float arcValue = calibrationValueForPercent(arcPercentFromPoint(obj, x, y, objX, objY), arcPoints);
+    const float arcStep = obj.properties.step;
+    if (arcStep <= 0.0f) return arcValue;
+    return roundf(arcValue / arcStep) * arcStep;
+  }
+
   const int padding = 4;
   const float innerX = objX + padding;
   const float innerY = objY + padding;
@@ -1037,10 +1087,19 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   if (fillPercent > 100.0f) fillPercent = 100.0f;
 
   // No setpoint topic, no marker - a tank level has nothing to aim at.
+  //
+  // Was ein Finger gerade angefordert hat, gewinnt aber auch hier, und braucht
+  // dafuer kein Sollwert-Topic: ein Dimmer hat nur einen Wert am Broker
+  // (Entscheidung 6c, dieselbe Regel wie im Balken oben).
   bool hasSetpoint = false;
   float setpointPercent = 0.0f;
-  if (!obj.properties.setpointTopic.isEmpty() && !noValue) {
-    String setpointStr = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+  if (!noValue) {
+    String setpointStr = obj.properties.setpointTopic.isEmpty()
+                             ? String("")
+                             : projectLoader_.getTopicValue(obj.properties.setpointTopic);
+    if (!askedObjectId_.isEmpty() && obj.id == askedObjectId_ && !askedValue_.isEmpty()) {
+      setpointStr = askedValue_;
+    }
     if (!setpointStr.isEmpty()) {
       hasSetpoint = true;
       setpointPercent = interpolateCalibration(setpointStr.toFloat(), obj.properties.calibrationPoints);
