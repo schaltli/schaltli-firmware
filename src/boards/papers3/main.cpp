@@ -245,6 +245,32 @@ static bool handleTap(int16_t x, int16_t y)
     return true;
   }
 
+  // A settable level: the tap sets the value at the point it landed and sends
+  // it (designer docs/2026-09-17-settable-level.md). A tap, not a drag - on
+  // e-ink every intermediate frame is a full refresh of about a second, which
+  // is why this board follows no finger anywhere. Nothing is drawn here: what
+  // comes back on the read topic redraws the object, like every other value.
+  if (ColorScreenRenderer::isSettableLevel(*hit))
+  {
+    const float value = renderer->settableLevelValueAt(*hit, x, y, objX, objY);
+    String payload;
+    if (fabsf(value - roundf(value)) < 0.001f)
+    {
+      payload = String((long)roundf(value));
+    }
+    else
+    {
+      payload = String(value, 2);
+      while (payload.endsWith("0")) payload.remove(payload.length() - 1);
+      if (payload.endsWith(".")) payload.remove(payload.length() - 1);
+    }
+    Serial.printf("[papers3] tap: level \"%s\" -> %s = %s\n", hit->id.c_str(),
+                  hit->properties.writeTopic.c_str(), payload.c_str());
+    // Not retained: a command, not a state.
+    mqttClient.publish(hit->properties.writeTopic, payload, false);
+    return true;
+  }
+
   const int states = (int)hit->properties.states.size();
   if (states <= 0 || hit->properties.writeTopic.isEmpty()) return false;
 
@@ -325,6 +351,17 @@ static bool readTouch(int16_t &x, int16_t &y)
 //
 // Acting on release rather than on contact: a hold that becomes setup mode
 // must not also have fired whatever it was resting on.
+// Did this contact start on a level a finger can set? Asked at release, from
+// the point the finger went down, so a drag across such an object is not read
+// as a swipe (decision 8).
+static bool startedOnSettableLevel()
+{
+  if (!renderer || !projectLoader.isLoaded()) return false;
+  int16_t objX = 0, objY = 0;
+  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, contactStartX, contactStartY, objX, objY);
+  return hit != nullptr && ColorScreenRenderer::isSettableLevel(*hit);
+}
+
 static void serviceTouch()
 {
   int16_t x = 0, y = 0;
@@ -399,6 +436,17 @@ static void serviceTouch()
       holdCountdownShown = false;
       renderAndPresent("hold released");
       panel.noteHeavyGhosting();
+      return;
+    }
+
+    // A gesture that began on a settable level belongs to it, however far it
+    // travelled (designer docs/2026-09-17-settable-level.md, decisions 8 and
+    // 9): this board follows no finger, so it takes the position the finger
+    // lifted at - which is what someone dragging across a bar means by it -
+    // and publishes once.
+    if (startedOnSettableLevel())
+    {
+      handleTap(contactLastX, contactLastY);
       return;
     }
 

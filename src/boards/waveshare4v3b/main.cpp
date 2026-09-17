@@ -345,6 +345,16 @@ static String lastFeedback = "none since boot";
 // as it had a moment earlier. On a vehicle, where the answer comes back
 // from a broker over a link that may be down, "nothing happened" and "I
 // have your tap and I am waiting" have to look different.
+static String levelDragObjId;
+static String levelDragTopic;
+static String levelDragWriteTopic;
+static String levelDragPayload;
+static int16_t levelDragX = 0, levelDragY = 0, levelDragW = 0, levelDragH = 0;
+static unsigned long levelDragLastPublishMs = 0;
+// A drag must not put thirty messages on the broker - the same coalescing the
+// van's fan step uses.
+static const unsigned long LEVEL_PUBLISH_MIN_MS = 250;
+
 static String pressedButtonId;
 static String pressedSwitchId;
 static int pressedSwitchIndex = -1;
@@ -1069,6 +1079,12 @@ static void setupNetworking()
       pendingDeploy = true;
       return;
     }
+    // While a finger is setting this value, the finger wins (decision 2).
+    if (!levelDragObjId.isEmpty() && topic == levelDragTopic)
+    {
+      return;
+    }
+
     // Read before it is overwritten: the partial redraw needs the value the
     // screen is still showing.
     const String previous = projectLoader.getTopicValue(topic);
@@ -1528,6 +1544,98 @@ static void dispatchSwipeAtRelease(int dx, int dy)
   dispatchButtonAction(action);
 }
 
+// ------------------------------------------- a level a finger can set
+//
+// A level indicator with a write topic is operable (designer
+// docs/2026-09-17-settable-level.md): the press sets the value under the
+// finger, the drag follows it, the release publishes what it settled on.
+//
+// While the finger is down the finger wins - the value is set locally and the
+// object's own rectangle is redrawn, and values arriving for that topic are
+// ignored, or every round of the bridge would fight the hand. Afterwards what
+// was set stays until the read topic says something; no timeout, because the
+// bridge asks again every two seconds.
+//
+// The rectangle is redrawn rather than the screen: this panel is 800x480, and
+// a full render per touch sample would make the bar crawl behind the finger.
+static String formatLevelPayload(float value)
+{
+  if (fabsf(value - roundf(value)) < 0.001f) return String((long)roundf(value));
+  String out = String(value, 2);
+  while (out.endsWith("0")) out.remove(out.length() - 1);
+  if (out.endsWith(".")) out.remove(out.length() - 1);
+  return out;
+}
+
+static void applyLevelDragValue(const String &payload, bool force)
+{
+  if (payload.isEmpty()) return;
+  const bool changed = payload != levelDragPayload;
+  if (changed)
+  {
+    levelDragPayload = payload;
+    if (!levelDragTopic.isEmpty())
+    {
+      projectLoader.setTopicValue(levelDragTopic, payload);
+      renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
+    }
+  }
+  const unsigned long now = millis();
+  if (!force && (now - levelDragLastPublishMs < LEVEL_PUBLISH_MIN_MS || !changed)) return;
+  levelDragLastPublishMs = now;
+  // Not retained: a command, not a state - exactly as a Switch publishes.
+  mqttClient.publish(levelDragWriteTopic, payload, false);
+}
+
+static bool beginLevelDrag(int16_t x, int16_t y)
+{
+  levelDragObjId = "";
+  levelDragTopic = "";
+  levelDragWriteTopic = "";
+  levelDragPayload = "";
+  if (!projectLoader.isLoaded() || renderer == nullptr) return false;
+
+  int16_t objX = 0, objY = 0;
+  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  if (hit == nullptr || !ColorScreenRenderer::isSettableLevel(*hit)) return false;
+
+  levelDragObjId = hit->id;
+  levelDragTopic = hit->properties.topic;
+  levelDragWriteTopic = hit->properties.writeTopic;
+  levelDragX = objX;
+  levelDragY = objY;
+  levelDragW = hit->width;
+  levelDragH = hit->height;
+  levelDragLastPublishMs = 0;
+  Serial.printf("[level] \"%s\" under the finger -> %s\n", hit->id.c_str(), levelDragWriteTopic.c_str());
+  applyLevelDragValue(formatLevelPayload(renderer->settableLevelValueAt(*hit, x, y, objX, objY)), true);
+  return true;
+}
+
+static void updateLevelDrag(int16_t x, int16_t y)
+{
+  if (levelDragObjId.isEmpty() || renderer == nullptr) return;
+  int16_t objX = 0, objY = 0;
+  // The finger may leave the object - it then sets the end value rather than
+  // handing the gesture back, so the value is computed on the object it went
+  // down on.
+  const ScreenObject *held = renderer->findObjectById(currentScreen, levelDragObjId, objX, objY);
+  if (held == nullptr) return;
+  applyLevelDragValue(formatLevelPayload(renderer->settableLevelValueAt(*held, x, y, objX, objY)), false);
+}
+
+static void endLevelDrag()
+{
+  if (levelDragObjId.isEmpty()) return;
+  if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty())
+  {
+    mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
+    Serial.printf("[level] released on %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
+    lastTap = "level " + levelDragObjId + " -> " + levelDragPayload;
+  }
+  levelDragObjId = "";
+}
+
 static bool dispatchTapAt(int16_t x, int16_t y)
 {
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
@@ -1801,7 +1909,11 @@ void loop()
       // Before anything is decided about what this gesture will be. A press
       // that waits to find out is not a press - but a finger that arrived on
       // a dark panel is not pressing anything at all.
-      if (!contactOnlyWoke) beginPressFeedback(touchX, touchY);
+      //
+      // A settable level is offered the contact first and keeps it: it has no
+      // pressed look to show, because the value moving under the finger is
+      // the feedback (designer docs/2026-09-17-settable-level.md).
+      if (!contactOnlyWoke && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
     }
     lastHumanInputMs = millis();
     if (contactOnlyWoke)
@@ -1827,6 +1939,17 @@ void loop()
     if (drift > contactDrift) contactDrift = drift;
 
     if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
+
+    // The level owns this gesture: follow the finger and nothing else. Before
+    // the paging branch below, which a horizontal drag would otherwise turn
+    // into a page turn (decision 8).
+    if (!levelDragObjId.isEmpty())
+    {
+      updateLevelDrag(touchX, touchY);
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
 
     if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
         pagingTargetFor(dx) >= 0)
@@ -1904,6 +2027,18 @@ void loop()
   if (holdActive)
   {
     holdActive = false;
+
+    // A drag on a level is neither a tap nor a swipe: it ends with what the
+    // finger settled on (decision 3).
+    if (!levelDragObjId.isEmpty())
+    {
+      endLevelDrag();
+      contactOnlyWoke = false;
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
     // A contact that came and went without ever being read as a swipe.
     // How many samples it got, and how far it was seen to travel, say
     // which of the two explanations is the right one.
