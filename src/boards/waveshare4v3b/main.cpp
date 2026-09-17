@@ -1586,7 +1586,9 @@ static void applyLevelDragValue(const String &payload, bool force)
     levelDragPayload = payload;
     if (renderer != nullptr)
     {
-      renderer->setAskedValue(levelDragObjId, payload);
+      // Keyed by the topic the request is about (levelAskedTopic), not by the
+      // object that took it.
+      renderer->setAskedValue(levelAskedTopic, payload);
       renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
     }
   }
@@ -1618,6 +1620,17 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   levelDragY = objY;
   levelDragW = hit->width;
   levelDragH = hit->height;
+  // Every object showing this same value, as one rectangle: the request is
+  // about the value, so they all change, and redrawing only the one under the
+  // finger left the others showing the old marker.
+  int16_t boundsX = 0, boundsY = 0, boundsW = 0, boundsH = 0;
+  if (renderer->markerTopicBounds(currentScreen, levelAskedTopic, boundsX, boundsY, boundsW, boundsH))
+  {
+    levelDragX = boundsX;
+    levelDragY = boundsY;
+    levelDragW = boundsW;
+    levelDragH = boundsH;
+  }
   levelDragLastPublishMs = 0;
   Serial.printf("[level] \"%s\" under the finger -> %s\n", hit->id.c_str(), levelDragWriteTopic.c_str());
   applyLevelDragValue(formatLevelPayload(renderer->settableLevelValueAt(*hit, x, y, objX, objY)), true);

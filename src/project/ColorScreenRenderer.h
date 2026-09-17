@@ -307,7 +307,9 @@ private:
   int16_t measureTrueTextWidth(const String& text, const BdfFont* font);
   String formatNumber(const String& valueStr, int decimals, const String& thousandsSeparator) const;
   float interpolateCalibration(float value, const std::vector<CalibrationPoint>& points) const;
-  String askedObjectId_;
+  // Keyed by the topic the request is about, not by the object that took it:
+  // two bars on one dimmer are one value, and both show what was asked of it.
+  String askedTopic_;
   String askedValue_;
   float calibrationValueForPercent(float percent, const std::vector<CalibrationPoint>& points) const;
 
@@ -339,7 +341,15 @@ private:
   // the moment a value arrives on that object's read topic, which is where
   // each board's main.cpp clears it. A setpoint topic, where there is one,
   // simply wins: the installation's own word about the target beats this.
-  void setAskedValue(const String& objectId, const String& value);
+  void setAskedValue(const String& markerTopic, const String& value);
+
+  // The rectangle every object showing this marker topic lives in, as one box.
+  // A board that redraws regions rather than screens needs it: a request is
+  // about a value, so two bars on one dimmer both change, and redrawing only
+  // the one under the finger leaves the other showing the old marker (found on
+  // the 4.3B, 166 differing pixels in the conformance photograph).
+  bool markerTopicBounds(int screenIndex, const String& markerTopic, int16_t& x, int16_t& y, int16_t& w,
+                         int16_t& h) const;
   void clearAskedValue();
 
  private:

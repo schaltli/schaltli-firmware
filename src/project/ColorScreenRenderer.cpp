@@ -237,13 +237,56 @@ float ColorScreenRenderer::calibrationValueForPercent(float percent, const std::
 // A level with somewhere to write to is one a finger can set; without one it
 // is exactly the read-only bar it has always been (decision 1). Only the bar
 // so far - the ring follows (decision 7).
-void ColorScreenRenderer::setAskedValue(const String& objectId, const String& value) {
-  askedObjectId_ = objectId;
+void ColorScreenRenderer::setAskedValue(const String& markerTopic, const String& value) {
+  askedTopic_ = markerTopic;
   askedValue_ = value;
 }
 
+bool ColorScreenRenderer::markerTopicBounds(int screenIndex, const String& markerTopic, int16_t& x, int16_t& y,
+                                            int16_t& w, int16_t& h) const {
+  if (!projectLoader_.isLoaded() || markerTopic.isEmpty()) return false;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+
+  bool found = false;
+  int16_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  std::function<void(const std::vector<ScreenObject>&, int16_t, int16_t)> walk =
+      [&](const std::vector<ScreenObject>& objects, int16_t dx, int16_t dy) {
+        for (const auto& o : objects) {
+          const String topic = o.properties.setpointTopic.isEmpty() ? o.properties.topic : o.properties.setpointTopic;
+          if ((o.type == "level-indicator" || o.type == "arc-level") && topic == markerTopic) {
+            const int16_t ox = dx + o.x;
+            const int16_t oy = dy + o.y;
+            if (!found) {
+              x0 = ox;
+              y0 = oy;
+              x1 = ox + o.width;
+              y1 = oy + o.height;
+              found = true;
+            } else {
+              if (ox < x0) x0 = ox;
+              if (oy < y0) y0 = oy;
+              if (ox + o.width > x1) x1 = ox + o.width;
+              if (oy + o.height > y1) y1 = oy + o.height;
+            }
+          }
+          if (o.type == "tab-control") {
+            const ScreenObject* panel = getActivePanel(o);
+            if (panel != nullptr) walk(panel->children, dx + o.x, dy + o.y);
+          }
+        }
+      };
+  walk(project.screens[screenIndex].objects, 0, 0);
+  if (!found) return false;
+  x = x0;
+  y = y0;
+  w = x1 - x0;
+  h = y1 - y0;
+  return true;
+}
+
 void ColorScreenRenderer::clearAskedValue() {
-  askedObjectId_ = "";
+  askedTopic_ = "";
   askedValue_ = "";
 }
 
@@ -926,7 +969,11 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     String setpointStr = obj.properties.setpointTopic.isEmpty()
                              ? String("")
                              : projectLoader_.getTopicValue(obj.properties.setpointTopic);
-    if (!askedObjectId_.isEmpty() && obj.id == askedObjectId_ && !askedValue_.isEmpty()) {
+    // Am Topic, nicht am Objekt: zwei Balken auf einem Dimmer sind ein Wert,
+    // und beide zeigen, was von ihm verlangt wurde.
+    const String markerTopic =
+        obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
+    if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
       setpointStr = askedValue_;
     }
     {
@@ -947,24 +994,58 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
             obj.properties.markerColor.isEmpty() ? "#ffffff" : obj.properties.markerColor, &markerTransparent);
 
         if (!markerTransparent) {
+          // Die Linie ist die Grundform; Knubbel und Dreieck werden aus ihrer
+          // Mitte gebaut. Jede Form ist eine Menge ganzer Pixel aus
+          // Ganzzahlrechnung - wortgleich zu markerShapeRects() in
+          // render-level-indicator.ts, damit jeder Renderer dieselben Pixel
+          // setzt. Kein Pfad-Rasterizer und keine Kantenglaettung: genau das
+          // koennte keine der Seiten von der anderen nachmachen.
+          int lineX = innerX, lineY = innerY, lineW = innerWidth, lineH = innerHeight;
           if (vertical) {
             const int filled = (innerHeight * (int)setpointPercent) / 100;
             const int edge = obj.properties.barDirection == "bottom-to-top" ? innerY + innerHeight - filled
                                                                             : innerY + filled;
-            int markerY = edge - thickness / 2;
-            if (markerY < innerY) markerY = innerY;
-            if (markerY > innerY + innerHeight - thickness) markerY = innerY + innerHeight - thickness;
-            const int markerH = thickness < innerHeight ? thickness : innerHeight;
-            if (markerH > 0 && innerWidth > 0) canvas_->fillRect(innerX, markerY, innerWidth, markerH, markerColor);
+            lineY = edge - thickness / 2;
+            if (lineY < innerY) lineY = innerY;
+            if (lineY > innerY + innerHeight - thickness) lineY = innerY + innerHeight - thickness;
+            lineH = thickness < innerHeight ? thickness : innerHeight;
           } else {
             const int filled = (innerWidth * (int)setpointPercent) / 100;
             const int edge =
                 obj.properties.barDirection == "right-to-left" ? innerX + innerWidth - filled : innerX + filled;
-            int markerX = edge - thickness / 2;
-            if (markerX < innerX) markerX = innerX;
-            if (markerX > innerX + innerWidth - thickness) markerX = innerX + innerWidth - thickness;
-            const int markerW = thickness < innerWidth ? thickness : innerWidth;
-            if (markerW > 0 && innerHeight > 0) canvas_->fillRect(markerX, innerY, markerW, innerHeight, markerColor);
+            lineX = edge - thickness / 2;
+            if (lineX < innerX) lineX = innerX;
+            if (lineX > innerX + innerWidth - thickness) lineX = innerX + innerWidth - thickness;
+            lineW = thickness < innerWidth ? thickness : innerWidth;
+          }
+
+          const String style = obj.properties.markerStyle.isEmpty() ? String("line") : obj.properties.markerStyle;
+          const int centreX = lineX + lineW / 2;
+          const int centreY = lineY + lineH / 2;
+
+          if (style == "round") {
+            const int radius = thickness < 2 ? 2 : thickness;
+            for (int dy = -radius; dy <= radius; dy++) {
+              const int span = (int)sqrtf((float)(radius * radius - dy * dy));
+              if (span < 0) continue;
+              canvas_->fillRect(centreX - span, centreY + dy, span * 2 + 1, 1, markerColor);
+            }
+          } else if (style == "triangle") {
+            const int available = vertical ? lineW / 2 : lineH / 2;
+            int height = thickness * 2;
+            if (height > available) height = available;
+            if (height < 2) height = 2;
+            const int halfBase = thickness;
+            for (int i = 0; i < height; i++) {
+              const int half = (halfBase * (height - 1 - i)) / (height - 1);
+              if (vertical) {
+                canvas_->fillRect(lineX + i, centreY - half, 1, half * 2 + 1, markerColor);
+              } else {
+                canvas_->fillRect(centreX - half, lineY + i, half * 2 + 1, 1, markerColor);
+              }
+            }
+          } else if (lineW > 0 && lineH > 0) {
+            canvas_->fillRect(lineX, lineY, lineW, lineH, markerColor);
           }
         }
       }
@@ -1097,7 +1178,11 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     String setpointStr = obj.properties.setpointTopic.isEmpty()
                              ? String("")
                              : projectLoader_.getTopicValue(obj.properties.setpointTopic);
-    if (!askedObjectId_.isEmpty() && obj.id == askedObjectId_ && !askedValue_.isEmpty()) {
+    // Am Topic, nicht am Objekt: zwei Balken auf einem Dimmer sind ein Wert,
+    // und beide zeigen, was von ihm verlangt wurde.
+    const String markerTopic =
+        obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
+    if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
       setpointStr = askedValue_;
     }
     if (!setpointStr.isEmpty()) {

@@ -1382,7 +1382,9 @@ static void applyLevelDragValue(const String &payload, bool force) {
   if (changed) {
     levelDragPayload = payload;
     if (screenRenderer != nullptr) {
-      screenRenderer->setAskedValue(levelDragObjId, payload);
+      // Am Marker-Topic dieses Objekts: dem Sollwert-Topic, wo es eines gibt,
+      // sonst dem Lese-Topic (levelAskedTopic).
+      screenRenderer->setAskedValue(levelAskedTopic, payload);
       // Andere Bildschirme zeigen dasselbe Objekt - ihre vorgerenderten
       // Nachbarn sind damit veraltet.
       canvasPresenter.invalidateSlots();

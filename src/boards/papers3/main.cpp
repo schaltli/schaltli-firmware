@@ -275,9 +275,9 @@ static bool handleTap(int16_t x, int16_t y)
     mqttClient.publish(hit->properties.writeTopic, payload, false);
     // One refresh for the marker, and the request ends when the installation
     // speaks about that same setpoint (onMqttMessage).
-    renderer->setAskedValue(hit->id, payload);
     levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic
                                                               : hit->properties.setpointTopic;
+    renderer->setAskedValue(levelAskedTopic, payload);
     renderAndPresent("level asked");
     return true;
   }

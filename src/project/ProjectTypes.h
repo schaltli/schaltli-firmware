@@ -210,6 +210,10 @@ struct ObjectProperties {
   String activeBackgroundColor;
   std::vector<SwitchState> states;
 
+  // The marker's shape on a settable level: "line" (default, a line across
+  // the track), "round" (a knob on it) or "triangle" (pointing at it).
+  String markerStyle;
+
   // A settable level (docs/2026-09-17-settable-level.md in the designer
   // repo): `writeTopic` above, shared with the Switch, is what makes a
   // level-indicator or arc-level operable, and `step` is what a value set by
