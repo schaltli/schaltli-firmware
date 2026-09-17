@@ -844,7 +844,74 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   }
   int barX = fillX, barY = fillY, barWidth = fillWidth, barHeight = fillHeight;
 
-  if (obj.properties.displayValue == "none") return true;
+  // Der Sollwert-Marker, gezeichnet wie im Designer: ueber der Fuellung und
+  // unter dem zweiten Textdurchgang (render-level-indicator.ts). Vor dem Text
+  // gezeichnet lag er unter den Ziffern - 19 Pixel Unterschied im
+  // Conformance-Lauf, weil der Designer ihn darueber legt (2026-09-17).
+  auto drawSetpointMarker = [&]() {
+    // Der Sollwert-Marker: was angefordert wurde, neben dem, was gemessen wird -
+    // dieselbe zweite Bindung, die der Bogen schon immer hatte
+    // (docs/2026-09-17-settable-level.md im Designer-Repo, Entscheidung 6c).
+    // Dieselbe Innenbox und dieselbe Abschneidung wie die Fuellung, damit ein
+    // Marker auf demselben Wert auf deren Kante sitzt und nicht daneben -
+    // wortgleich zu computeMarkerRect() in render-level-indicator.ts.
+    if (!obj.properties.setpointTopic.isEmpty()) {
+      String setpointStr = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+      String trimmedSetpoint = setpointStr;
+      trimmedSetpoint.trim();
+      if (!trimmedSetpoint.isEmpty()) {
+        float setpointPercent = interpolateCalibration(setpointStr.toFloat(), obj.properties.calibrationPoints);
+        if (setpointPercent < 0.0f) setpointPercent = 0.0f;
+        if (setpointPercent > 100.0f) setpointPercent = 100.0f;
+
+        int thickness = (int)lroundf(obj.properties.markerWidth <= 0 ? 4.0f : (float)obj.properties.markerWidth);
+        if (thickness < 1) thickness = 1;
+        const bool vertical =
+            obj.properties.barDirection == "bottom-to-top" || obj.properties.barDirection == "top-to-bottom";
+
+        bool markerTransparent = false;
+        uint16_t markerColor = parseHexColor(
+            obj.properties.markerColor.isEmpty() ? "#ffffff" : obj.properties.markerColor, &markerTransparent);
+
+        if (!markerTransparent) {
+          if (vertical) {
+            const int filled = (innerHeight * (int)setpointPercent) / 100;
+            const int edge = obj.properties.barDirection == "bottom-to-top" ? innerY + innerHeight - filled
+                                                                            : innerY + filled;
+            int markerY = edge - thickness / 2;
+            if (markerY < innerY) markerY = innerY;
+            if (markerY > innerY + innerHeight - thickness) markerY = innerY + innerHeight - thickness;
+            const int markerH = thickness < innerHeight ? thickness : innerHeight;
+            if (markerH > 0 && innerWidth > 0) canvas_->fillRect(innerX, markerY, innerWidth, markerH, markerColor);
+          } else {
+            const int filled = (innerWidth * (int)setpointPercent) / 100;
+            const int edge =
+                obj.properties.barDirection == "right-to-left" ? innerX + innerWidth - filled : innerX + filled;
+            int markerX = edge - thickness / 2;
+            if (markerX < innerX) markerX = innerX;
+            if (markerX > innerX + innerWidth - thickness) markerX = innerX + innerWidth - thickness;
+            const int markerW = thickness < innerWidth ? thickness : innerWidth;
+            if (markerW > 0 && innerHeight > 0) canvas_->fillRect(markerX, innerY, markerW, innerHeight, markerColor);
+          }
+        }
+      }
+    }
+  };
+
+  // Der Balken selbst. Bis 2026-09-17 kehrte diese Funktion bei
+  // displayValue "none" zurueck, BEVOR sie ihn zeichnete - ein Balken ohne
+  // Zahl blieb auf dem Geraet leer, waehrend der Designer ihn zeichnet. Kein
+  // Conformance-Fall hat das gesehen, weil das Muster immer Prozent anzeigt.
+  auto drawBar = [&]() {
+    if (barWidth > 0 && barHeight > 0) canvas_->fillRect(barX, barY, barWidth, barHeight, fillColor);
+  };
+
+  if (obj.properties.displayValue == "none") {
+    drawBar();
+    drawSetpointMarker();
+    return true;
+  }
+
 
   String displayText;
   if (obj.properties.displayValue == "percentage") {
@@ -872,10 +939,11 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   if (font != nullptr) font->drawText(*canvas_, displayText, textX, textY, fillColor);
   canvas_->clearClip();
 
-  // Bar, painted solid over whatever text pass 1 drew there.
+  // Bar, painted solid over whatever text pass 1 drew there, then the marker
+  // over the bar - the designer's order.
+  drawBar();
+  drawSetpointMarker();
   if (barWidth > 0 && barHeight > 0) {
-    canvas_->fillRect(barX, barY, barWidth, barHeight, fillColor);
-
     // Pass 2: the same text again, clipped to just the bar, in bgColor - so
     // the digits stay readable where the bar has painted over them.
     canvas_->setClip(barX, barY, barWidth, barHeight);
