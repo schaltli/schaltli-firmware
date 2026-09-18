@@ -11,6 +11,15 @@
 // about 2 MB per board per release, a clone in a van would grow by hundreds of
 // megabytes.
 //
+// Two images per board leave here. The OTA image is the app alone, which is
+// what a running device pulls into its spare slot. The factory image is that
+// same app with the bootloader, the partition table and the OTA selector in
+// front of it, in one file written at 0x0 - what a brand-new board needs,
+// because it has none of those (designer repo,
+// docs/2026-09-18-factory-image.md). The byte layout is defined once, in the
+// designer's lib/factory-image.mjs, which the flasher page uses as well, so
+// what is built here and what is checked there cannot drift apart.
+//
 // A release is a tag, fw-YYYY.MM.DD.N. The tag goes on first and every board
 // is built from it, so each image's FIRMWARE_BUILD (pre_build_firmware_build.py)
 // is the tag itself - which is exactly what a device then announces in hello,
@@ -35,6 +44,9 @@
 //
 //   node tools/release-firmware.js                          # dry run, read CHANGES.txt
 //   node tools/release-firmware.js --publish --notes n.md   # publish with those notes
+//
+// The designer checkout is needed for every run, dry or not: the factory
+// layout lives there.
 //
 // Options: --designer <path> (default ../v0-screenman-editor-design),
 // --release-repo <owner/name> (default Matthias-Hess/screenbee-designer),
@@ -124,8 +136,21 @@ if (dirty && (publish || !allowDirty)) {
 if (publish) {
   const gh = run("gh", ["auth", "status"])
   if (gh.status !== 0) fail("gh is not logged in - run gh auth login")
-  if (!fs.existsSync(path.join(designer, "package.json"))) fail(`no designer checkout at ${designer}`)
 }
+if (!fs.existsSync(path.join(designer, "package.json"))) fail(`no designer checkout at ${designer}`)
+
+// The factory layout, from the designer - the same module the flasher page
+// imports in the browser.
+const layoutModule = path.join(designer, "lib", "factory-image.mjs")
+if (!fs.existsSync(layoutModule)) fail(`${layoutModule} is missing - the factory layout lives in the designer repo`)
+const { FACTORY_PARTS, FLASHER_URL, mergeFactoryImage, verifyFactoryImage } = require(layoutModule)
+
+// boot_app0.bin is not a build artifact: it ships with the Arduino core and is
+// the same for every board here. It holds ota_seq = 1, which points the
+// bootloader at the first app slot - the slot the app is written to.
+const pioCore = process.env.PLATFORMIO_CORE_DIR || path.join(os.homedir(), ".platformio")
+const bootApp0 = path.join(pioCore, "packages", "framework-arduinoespressif32", "tools", "partitions", "boot_app0.bin")
+if (!fs.existsSync(bootApp0)) fail(`boot_app0.bin not found at ${bootApp0}`)
 
 // A dry run tags "-dryrun" onto the name. Its images announce that build, and
 // the designer places no such build (lib/firmware-build.ts), so it counts as
@@ -177,6 +202,22 @@ try {
 
     const file = `${deviceId}-${tag}.bin`
     fs.writeFileSync(path.join(outDir, file), image)
+
+    // The factory image: the same app, with what a blank chip is missing in
+    // front of it. Its parts come from this board's build directory, except
+    // boot_app0.bin, which comes with the core.
+    const parts = {
+      bootloader: fs.readFileSync(path.join(REPO, ".pio", "build", board.env, "bootloader.bin")),
+      partitions: fs.readFileSync(path.join(REPO, ".pio", "build", board.env, "partitions.bin")),
+      otaSelect: fs.readFileSync(bootApp0),
+      app: image,
+    }
+    const factoryImage = Buffer.from(mergeFactoryImage(parts))
+    const problems = verifyFactoryImage(factoryImage, { deviceId, app: image })
+    if (problems.length) throw new Error(`${board.env}'s factory image is not sound:\n  ${problems.join("\n  ")}`)
+    const factoryFile = `${deviceId}-factory-${tag}.bin`
+    fs.writeFileSync(path.join(outDir, factoryFile), factoryImage)
+
     devices[deviceId] = {
       build: tag,
       file,
@@ -184,8 +225,18 @@ try {
       sha256: crypto.createHash("sha256").update(image).digest("hex"),
       systemGeneration,
       url: `https://github.com/${releaseRepo}/releases/download/${tag}/${file}`,
+      // Written at 0x0 over USB, never by OTA - OTA writes an app slot and can
+      // do nothing with a merged image.
+      factory: {
+        file: factoryFile,
+        size: factoryImage.length,
+        sha256: crypto.createHash("sha256").update(factoryImage).digest("hex"),
+        url: `https://github.com/${releaseRepo}/releases/download/${tag}/${factoryFile}`,
+      },
     }
     console.log(`[release] ${file}: ${image.length} bytes, sha256 ${devices[deviceId].sha256}`)
+    console.log(`[release] ${factoryFile}: ${factoryImage.length} bytes, sha256 ${devices[deviceId].factory.sha256}` +
+      ` (${FACTORY_PARTS.map((p) => `${p.label} 0x${p.offset.toString(16)}`).join(", ")})`)
   }
 
   manifest = { release: tag, commit, repository: releaseRepo, devices }
@@ -210,7 +261,8 @@ try {
 if (!publish) {
   removeTag()
   console.log(`[release] dry run complete. --publish would push ${tag.replace(/-dryrun$/, "")}, create the release in ${releaseRepo}` +
-    ` with ${Object.keys(manifest.devices).length} images, and write firmware/manifest.json into ${designer}.`)
+    ` with ${Object.keys(manifest.devices).length} OTA images, ${Object.keys(manifest.devices).length} factory images and the manifest,` +
+    ` and write firmware/manifest.json into ${designer}.`)
   process.exit(0)
 }
 
@@ -229,8 +281,20 @@ const notes = [
   ...Object.entries(manifest.devices).map(([id, d]) => `- ${id}: ${d.file}, ${d.size} bytes, sha256 ${d.sha256}`),
   "",
   "Installed by the designer: deploy/pekaway-install.sh downloads the images firmware/manifest.json names.",
+  "",
+  `A brand-new board has no ScreenBee to update, so it is flashed over USB instead: ${FLASHER_URL}`,
+  "(pick the board, pick this version, connect the cable - the factory images below are what that page writes,",
+  "one file at 0x0; nothing else needs installing.)",
+  "",
+  ...Object.entries(manifest.devices).map(([id, d]) => `- ${id}: ${d.factory.file}, ${d.factory.size} bytes, sha256 ${d.factory.sha256}`),
 ].join("\n")
-const assets = Object.values(manifest.devices).map((d) => path.join(outDir, d.file))
+// manifest.json goes along as an asset, not only into the designer checkout:
+// the flasher page offers the last three releases, and this is where it reads
+// what each one holds.
+const assets = [
+  ...Object.values(manifest.devices).flatMap((d) => [path.join(outDir, d.file), path.join(outDir, d.factory.file)]),
+  path.join(outDir, "manifest.json"),
+]
 const release = run("gh", ["release", "create", tag, "--repo", releaseRepo, "--title", `Firmware ${tag}`, "--notes", notes, ...assets],
   { stdio: "inherit" })
 if (release.status !== 0) fail(`gh release create failed - the tag is pushed; create the release by hand or re-run`)
