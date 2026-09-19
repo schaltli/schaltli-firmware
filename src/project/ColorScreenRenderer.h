@@ -7,6 +7,7 @@
 #include "ProjectTypes.h"
 #include "../ClippedCanvas16.h"
 #include "ColorAssetLoader.h"
+#include "LevelShape.h"
 #include <functional>
 
 // Color (RGB565) counterpart of MqttEPaperDisplay2's ScreenRenderer -
@@ -170,6 +171,15 @@ private:
   bool renderLabel(const ScreenObject& obj);
   bool renderMQTTDataField(const ScreenObject& obj);
   bool renderLevelIndicator(const ScreenObject& obj);
+  // One run of text inside a box of the level indicator's header, pushed
+  // against one of its edges and centred in its height. Mirrors
+  // drawLevelTextIn() in the designer's render-level-indicator.ts.
+  void drawLevelBoxText(const String& text, const LevelRect& box, bool alignRight, const String& fontId,
+                        uint16_t color);
+  // The smaller font the measured value is written in, out of the project's
+  // own list - a BDF font cannot be scaled, so "smaller" means another font.
+  // Mirrors levelSubFont() in lib/level-shape.ts.
+  String levelSubFontId(const ScreenObject& obj) const;
   // The round counterpart of the bar. `mixInto` is what its anti-aliased
   // edges blend against where the object's own background is transparent -
   // a declared colour rather than whatever happens to be on the canvas,

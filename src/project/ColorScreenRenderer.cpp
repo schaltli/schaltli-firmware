@@ -900,209 +900,217 @@ bool ColorScreenRenderer::renderMQTTDataField(const ScreenObject& obj) {
 // time but clipped to just the bar rect, in bgColor - same visual result
 // (fillColor text outside the bar, bgColor text inside it), no invert
 // needed.
-bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
-  String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
-  float value = valueStr.isEmpty() ? 0.0f : valueStr.toFloat();
+// One run of text inside a box, pushed against one of its edges and centred in
+// its height. Clipped to the box, so a font wider than the reserved column is
+// cut off rather than allowed to run into the bar - the column's width is
+// guessed from the font size (levelshape::digitWidth), and this is what keeps a
+// wrong guess harmless. Mirrors drawLevelTextIn() in the designer's
+// render-level-indicator.ts.
+void ColorScreenRenderer::drawLevelBoxText(const String& text, const LevelRect& box, bool alignRight,
+                                           const String& fontId, uint16_t color) {
+  if (text.isEmpty() || !box.valid()) return;
+  const BdfFont* font = fontFor(fontId);
+  if (font == nullptr) return;
 
-  float fillPercent = interpolateCalibration(value, obj.properties.calibrationPoints);
-  if (fillPercent < 0) fillPercent = 0;
-  if (fillPercent > 100) fillPercent = 100;
+  const int16_t textWidth = measureTrueTextWidth(text, font);
+  const int16_t ascent = getFontAscentById(fontId);
+  const int16_t descent = getFontDescentById(fontId);
+  const int16_t textX = alignRight ? (int16_t)(box.x + box.w - textWidth) : (int16_t)box.x;
+  const int16_t baselineY = (int16_t)(box.y + jsRound((box.h - (ascent + descent)) / 2.0f) + ascent);
+
+  canvas_->setClip(box.x, box.y, box.w, box.h);
+  font->drawText(*canvas_, text, textX, baselineY, color);
+  canvas_->clearClip();
+}
+
+// The smaller font the measured value is written in. A BDF font is a grid of
+// bitmaps and cannot be scaled, so "smaller" has to mean *another font*, picked
+// out of the project's own list: the same family first (font-helvR12 and
+// font-helvR08 share font-helvR), because mixing a bold face into a regular
+// line looks like a mistake; then any font small enough; and if the project has
+// nothing smaller, the object's own, which merely looks unremarkable.
+//
+// Line for line with levelSubFont() in the designer's lib/level-shape.ts.
+String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) const {
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (project.fonts.empty()) return obj.properties.fontId;
+
+  auto family = [](const String& id) {
+    int end = id.length();
+    while (end > 0 && isdigit((unsigned char)id[end - 1])) end--;
+    return id.substring(0, end);
+  };
+
+  const String ownFamily = family(obj.properties.fontId);
+  const int wanted = levelshape::subFontSize(obj);
+
+  const Font* bestInFamily = nullptr;
+  const Font* bestAny = nullptr;
+  for (const Font& font : project.fonts) {
+    if (font.size > wanted) continue;
+    if (bestAny == nullptr || font.size > bestAny->size) bestAny = &font;
+    if (family(font.id) != ownFamily) continue;
+    if (bestInFamily == nullptr || font.size > bestInFamily->size) bestInFamily = &font;
+  }
+  if (bestInFamily != nullptr) return bestInFamily->id;
+  if (bestAny != nullptr) return bestAny->id;
+  return obj.properties.fontId;
+}
+
+bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
+  const String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
 
   bool bgTransparent = false;
-  uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
-  uint16_t fillColor = parseHexColor(obj.properties.fillColor);
+  const uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
+  const uint16_t fillColor = parseHexColor(obj.properties.fillColor);
+  bool trackTransparent = false;
+  const uint16_t trackColor = parseHexColor(
+      obj.properties.trackColor.isEmpty() ? String("#E8DEF8") : obj.properties.trackColor, &trackTransparent);
   bool borderTransparent = false;
-  uint16_t borderColor = parseHexColor(obj.properties.borderColor, &borderTransparent);
+  const uint16_t borderColor = parseHexColor(obj.properties.borderColor, &borderTransparent);
+  const uint16_t textColor =
+      parseHexColor(obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor);
 
   if (!bgTransparent) {
     canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, bgColor);
   }
-  if (!borderTransparent) {
-    canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, borderColor);
+
+  const LevelLayout lay = levelshape::layout(obj);
+
+  // The header line first, because it does not depend on a value: a bar that
+  // has heard nothing still says what it is
+  // (docs/2026-09-19-slider-look.md, decision 9).
+  //
+  // The icon is its own baked bitmap, blitted here rather than left in the
+  // flattened background. No firmware reads that file; this renderer fills the
+  // object's rectangle before anything else; and a partial redraw refills the
+  // region with the screen colour. Only pixels an object paints itself survive
+  // a drag.
+  if (lay.hasIcon && lay.icon.valid()) {
+    if (!ColorAssetLoader::drawBMPToCanvas(canvas_, obj.path, lay.icon.x, lay.icon.y)) {
+      canvas_->drawRect(lay.icon.x, lay.icon.y, lay.icon.w, lay.icon.h, textColor);
+    }
+  }
+  if (lay.hasName) {
+    drawLevelBoxText(obj.properties.label, lay.name, false, obj.properties.fontId, textColor);
   }
 
-  // No value yet: the frame, and neither bar nor text - an empty bar would
-  // claim an empty tank (render-level-indicator.ts, the same rule).
+  // The frame outlines the track, as a pill one pixel larger than it - not the
+  // object's rectangle. On a 1-bit panel it is not decoration: the unfilled
+  // track is white on white there, so without an outline a bar that has heard
+  // no value yet would be invisible.
+  auto drawFrameUnder = [&](const LevelRect& r) {
+    if (borderTransparent || !r.valid()) return;
+    canvas_->fillRoundRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2, r.r + 1, borderColor);
+  };
+
   String trimmedValue = valueStr;
   trimmedValue.trim();
-  if (trimmedValue.isEmpty()) return true;
-
-  const int padding = 4;
-  int innerX = obj.x + padding;
-  int innerY = obj.y + padding;
-  int innerWidth = obj.width - padding * 2;
-  int innerHeight = obj.height - padding * 2;
-
-  int fillWidth = innerWidth, fillHeight = innerHeight, fillX = innerX, fillY = innerY;
-  if (obj.properties.barDirection == "left-to-right") {
-    fillWidth = (innerWidth * fillPercent) / 100;
-  } else if (obj.properties.barDirection == "right-to-left") {
-    fillWidth = (innerWidth * fillPercent) / 100;
-    fillX = innerX + innerWidth - fillWidth;
-  } else if (obj.properties.barDirection == "bottom-to-top") {
-    fillHeight = (innerHeight * fillPercent) / 100;
-    fillY = innerY + innerHeight - fillHeight;
-  } else if (obj.properties.barDirection == "top-to-bottom") {
-    fillHeight = (innerHeight * fillPercent) / 100;
-  }
-  int barX = fillX, barY = fillY, barWidth = fillWidth, barHeight = fillHeight;
-
-  // Der Sollwert-Marker, gezeichnet wie im Designer: ueber der Fuellung und
-  // unter dem zweiten Textdurchgang (render-level-indicator.ts). Vor dem Text
-  // gezeichnet lag er unter den Ziffern - 19 Pixel Unterschied im
-  // Conformance-Lauf, weil der Designer ihn darueber legt (2026-09-17).
-  auto drawSetpointMarker = [&]() {
-    // Der Sollwert-Marker: was angefordert wurde, neben dem, was gemessen wird -
-    // dieselbe zweite Bindung, die der Bogen schon immer hatte
-    // (docs/2026-09-17-settable-level.md im Designer-Repo, Entscheidung 6c).
-    // Dieselbe Innenbox und dieselbe Abschneidung wie die Fuellung, damit ein
-    // Marker auf demselben Wert auf deren Kante sitzt und nicht daneben -
-    // wortgleich zu computeMarkerRect() in render-level-indicator.ts.
-    // Der Marker zeigt, was angefordert wurde: das Sollwert-Topic, wo es eines
-    // gibt, sonst was ein Finger an diesem Objekt gerade gesetzt hat
-    // (Entscheidung 6c). Die Fuellung bleibt der gemessene Wert - laufen beide
-    // zusammen, ist der Befehl angekommen.
-    // Was ein Finger gerade angefordert hat, gewinnt: er bedient ja genau
-    // diesen Sollwert, und der alte Stand darf den Wunsch nicht ueberdecken.
-    // Verworfen wird die Anforderung, sobald die Anlage auf dem Sollwert-Topic
-    // antwortet - oder, wo es keines gibt, auf dem Lese-Topic (main.cpp).
-    String setpointStr = obj.properties.setpointTopic.isEmpty()
-                             ? String("")
-                             : projectLoader_.getTopicValue(obj.properties.setpointTopic);
-    // Am Topic, nicht am Objekt: zwei Balken auf einem Dimmer sind ein Wert,
-    // und beide zeigen, was von ihm verlangt wurde.
-    const String markerTopic =
-        obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
-    if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
-      setpointStr = askedValue_;
+  if (trimmedValue.isEmpty()) {
+    // Nothing has arrived: the empty track, and neither fill nor number. The
+    // track claims no value - it is the shape of the control - while an empty
+    // *fill* would claim an empty tank.
+    drawFrameUnder(lay.track);
+    if (!trackTransparent && lay.track.valid()) {
+      canvas_->fillRoundRect(lay.track.x, lay.track.y, lay.track.w, lay.track.h, lay.track.r, trackColor);
     }
-    {
-      String trimmedSetpoint = setpointStr;
-      trimmedSetpoint.trim();
-      if (!trimmedSetpoint.isEmpty()) {
-        float setpointPercent = interpolateCalibration(setpointStr.toFloat(), obj.properties.calibrationPoints);
-        if (setpointPercent < 0.0f) setpointPercent = 0.0f;
-        if (setpointPercent > 100.0f) setpointPercent = 100.0f;
-
-        int thickness = (int)lroundf(obj.properties.markerWidth <= 0 ? 4.0f : (float)obj.properties.markerWidth);
-        if (thickness < 1) thickness = 1;
-        const bool vertical =
-            obj.properties.barDirection == "bottom-to-top" || obj.properties.barDirection == "top-to-bottom";
-
-        bool markerTransparent = false;
-        uint16_t markerColor = parseHexColor(
-            obj.properties.markerColor.isEmpty() ? "#ffffff" : obj.properties.markerColor, &markerTransparent);
-
-        if (!markerTransparent) {
-          // Die Linie ist die Grundform; Knubbel und Dreieck werden aus ihrer
-          // Mitte gebaut. Jede Form ist eine Menge ganzer Pixel aus
-          // Ganzzahlrechnung - wortgleich zu markerShapeRects() in
-          // render-level-indicator.ts, damit jeder Renderer dieselben Pixel
-          // setzt. Kein Pfad-Rasterizer und keine Kantenglaettung: genau das
-          // koennte keine der Seiten von der anderen nachmachen.
-          int lineX = innerX, lineY = innerY, lineW = innerWidth, lineH = innerHeight;
-          if (vertical) {
-            const int filled = (innerHeight * (int)setpointPercent) / 100;
-            const int edge = obj.properties.barDirection == "bottom-to-top" ? innerY + innerHeight - filled
-                                                                            : innerY + filled;
-            lineY = edge - thickness / 2;
-            if (lineY < innerY) lineY = innerY;
-            if (lineY > innerY + innerHeight - thickness) lineY = innerY + innerHeight - thickness;
-            lineH = thickness < innerHeight ? thickness : innerHeight;
-          } else {
-            const int filled = (innerWidth * (int)setpointPercent) / 100;
-            const int edge =
-                obj.properties.barDirection == "right-to-left" ? innerX + innerWidth - filled : innerX + filled;
-            lineX = edge - thickness / 2;
-            if (lineX < innerX) lineX = innerX;
-            if (lineX > innerX + innerWidth - thickness) lineX = innerX + innerWidth - thickness;
-            lineW = thickness < innerWidth ? thickness : innerWidth;
-          }
-
-          const String style = obj.properties.markerStyle.isEmpty() ? String("line") : obj.properties.markerStyle;
-          const int centreX = lineX + lineW / 2;
-          const int centreY = lineY + lineH / 2;
-
-          if (style == "round") {
-            const int radius = thickness < 2 ? 2 : thickness;
-            for (int dy = -radius; dy <= radius; dy++) {
-              const int span = (int)sqrtf((float)(radius * radius - dy * dy));
-              if (span < 0) continue;
-              canvas_->fillRect(centreX - span, centreY + dy, span * 2 + 1, 1, markerColor);
-            }
-          } else if (style == "triangle") {
-            const int available = vertical ? lineW / 2 : lineH / 2;
-            int height = thickness * 2;
-            if (height > available) height = available;
-            if (height < 2) height = 2;
-            const int halfBase = thickness;
-            for (int i = 0; i < height; i++) {
-              const int half = (halfBase * (height - 1 - i)) / (height - 1);
-              if (vertical) {
-                canvas_->fillRect(lineX + i, centreY - half, 1, half * 2 + 1, markerColor);
-              } else {
-                canvas_->fillRect(centreX - half, lineY + i, half * 2 + 1, 1, markerColor);
-              }
-            }
-          } else if (lineW > 0 && lineH > 0) {
-            canvas_->fillRect(lineX, lineY, lineW, lineH, markerColor);
-          }
-        }
-      }
-    }
-  };
-
-  // Der Balken selbst. Bis 2026-09-17 kehrte diese Funktion bei
-  // displayValue "none" zurueck, BEVOR sie ihn zeichnete - ein Balken ohne
-  // Zahl blieb auf dem Geraet leer, waehrend der Designer ihn zeichnet. Kein
-  // Conformance-Fall hat das gesehen, weil das Muster immer Prozent anzeigt.
-  auto drawBar = [&]() {
-    if (barWidth > 0 && barHeight > 0) canvas_->fillRect(barX, barY, barWidth, barHeight, fillColor);
-  };
-
-  if (obj.properties.displayValue == "none") {
-    drawBar();
-    drawSetpointMarker();
     return true;
   }
 
+  float fillPercentF = interpolateCalibration(valueStr.toFloat(), obj.properties.calibrationPoints);
+  if (fillPercentF < 0.0f) fillPercentF = 0.0f;
+  if (fillPercentF > 100.0f) fillPercentF = 100.0f;
 
-  String displayText;
-  if (obj.properties.displayValue == "percentage") {
-    displayText = String((int)(fillPercent + 0.5f)) + "%";
-  } else if (obj.properties.displayValue == "value") {
-    displayText = valueStr;
+
+  // What was asked for, in this order: a request a finger just made here, then
+  // whatever the installation reports on a setpoint topic, and failing both -
+  // for a settable bar only - the reported value itself. That last one is what
+  // makes the handle an affordance rather than only a pending-command light:
+  // sitting on the fill's edge it says "this can be moved", displaced from it
+  // that a command is still on its way.
+  const String markerTopic =
+      obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
+  String rawMarker;
+  if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
+    rawMarker = askedValue_;
+  } else if (!obj.properties.setpointTopic.isEmpty()) {
+    rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+  } else if (!obj.properties.writeTopic.isEmpty()) {
+    rawMarker = valueStr;
   }
-  if (displayText.isEmpty()) return true;
+  String trimmedMarker = rawMarker;
+  trimmedMarker.trim();
 
-  const BdfFont* font = fontFor(obj.properties.fontId);
+  bool hasMarker = !trimmedMarker.isEmpty();
+  float markerPercent = 0.0f;
+  if (hasMarker) {
+    markerPercent = interpolateCalibration(rawMarker.toFloat(), obj.properties.calibrationPoints);
+    if (markerPercent < 0.0f) markerPercent = 0.0f;
+    if (markerPercent > 100.0f) markerPercent = 100.0f;
+  }
 
-  int16_t textWidth = measureTrueTextWidth(displayText, font);
-  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
-  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
+  // One stroke or none, and the stroke is always this one shape: overhanging,
+  // with the gap. There is no second form for a setpoint that cannot be
+  // dragged - a stroke that means "settable" has to look the same wherever it
+  // appears (decision 4).
+  LevelRect handle;
+  const bool hasHandle = hasMarker && lay.track.valid();
+  if (hasHandle) handle = levelshape::handleRect(obj, lay, markerPercent);
 
-  int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
-  int16_t fontHeight = fontAscent + fontDescent;
-  int16_t verticalCenterOffset = jsRound((obj.height - fontHeight) / 2.0f);
-  int16_t textY = obj.y + verticalCenterOffset + fontAscent;
+  std::vector<LevelSegment> runs;
+  levelshape::segments(obj, lay, fillPercentF, hasHandle ? &handle : nullptr, runs);
 
-  // Pass 1: text in fillColor across the whole object. Clipped to the
-  // object's own box, which is taller than the text - no ink overhang to
-  // allow for here, unlike a label's font-sized box.
-  canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-  if (font != nullptr) font->drawText(*canvas_, displayText, textX, textY, fillColor);
-  canvas_->clearClip();
+  const bool vertical = levelshape::isVertical(obj);
+  for (const LevelSegment& seg : runs) {
+    // The frame goes behind each run rather than behind the whole track. As one
+    // pill behind everything it showed through the handle's gap - a grey halo -
+    // and the gap has to show the background or it says nothing at all.
+    drawFrameUnder(seg);
+    const bool isFill = seg.isFill;
+    if (!isFill && trackTransparent) continue;
+    const uint16_t colour = isFill ? fillColor : trackColor;
+    canvas_->fillRoundRect(seg.x, seg.y, seg.w, seg.h, seg.r, colour);
+    // Square off the ends that are not the track's own, so two runs meet flush
+    // instead of curving away from each other.
+    int r = seg.r;
+    const int half = (seg.w < seg.h ? seg.w : seg.h) / 2;
+    if (r > half) r = half;
+    if (r > 0) {
+      if (!seg.roundStart) {
+        if (vertical) canvas_->fillRect(seg.x, seg.y, seg.w, r, colour);
+        else canvas_->fillRect(seg.x, seg.y, r, seg.h, colour);
+      }
+      if (!seg.roundEnd) {
+        if (vertical) canvas_->fillRect(seg.x, seg.y + seg.h - r, seg.w, r, colour);
+        else canvas_->fillRect(seg.x + seg.w - r, seg.y, r, seg.h, colour);
+      }
+    }
+  }
 
-  // Bar, painted solid over whatever text pass 1 drew there, then the marker
-  // over the bar - the designer's order.
-  drawBar();
-  drawSetpointMarker();
-  if (barWidth > 0 && barHeight > 0) {
-    // Pass 2: the same text again, clipped to just the bar, in bgColor - so
-    // the digits stay readable where the bar has painted over them.
-    canvas_->setClip(barX, barY, barWidth, barHeight);
-    if (font != nullptr) font->drawText(*canvas_, displayText, textX, textY, bgColor);
-    canvas_->clearClip();
+  if (hasHandle && handle.valid()) {
+    // The fill's own colour, and deliberately not markerColor: handle and
+    // active track are one object that the gap separates.
+    canvas_->fillRoundRect(handle.x, handle.y, handle.w, handle.h, handle.r, fillColor);
+  }
+
+  // The numbers, in their own column - never over the bar any more. This used
+  // to be two passes of one number straddling the fill's edge, so it stayed
+  // readable on both sides; with a 16 px track no number fits inside the bar at
+  // all and the trick has nothing left to do (decision 10).
+  if (!lay.hasValue || !lay.value.valid()) return true;
+
+  const bool asPercent = obj.properties.displayValue == "percentage";
+  const String measured = asPercent ? String((int)(fillPercentF + 0.5f)) + "%" : valueStr;
+  const String commanded =
+      hasMarker ? (asPercent ? String((int)(markerPercent + 0.5f)) + "%" : rawMarker) : measured;
+  // rawMarker carries the installation's own spelling ("21", "18.5") and is
+  // shown verbatim, exactly as the designer shows the raw value.
+
+  drawLevelBoxText(commanded, lay.value, true, obj.properties.fontId, textColor);
+  if (lay.hasSub && lay.sub.valid() && measured != commanded) {
+    // In brackets rather than behind a word: the designer's own interface is
+    // English, the projects on it are not, and a bracket needs no language.
+    drawLevelBoxText("(" + measured + ")", lay.sub, true, levelSubFontId(obj), textColor);
   }
 
   return true;

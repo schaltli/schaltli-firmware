@@ -393,6 +393,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // level-indicator properties
   props.barDirection = propsJson["barDirection"] | "left-to-right";
   props.displayValue = propsJson["displayValue"] | "none";
+  props.label = propsJson["label"] | "";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
   
   if (propsJson["calibrationPoints"].is<JsonArray>()) {
