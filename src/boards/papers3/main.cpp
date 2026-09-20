@@ -37,6 +37,7 @@
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
 #include "../../project/ProjectLoader.h"
+#include "project/ObjectTypes.h"
 
 // The panel's own size, read back at boot and checked against what the DDF
 // declares. A mismatch means the designer is laying out screens for a panel
@@ -240,9 +241,9 @@ static bool handleTap(int16_t x, int16_t y)
   const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
   if (hit == nullptr) return false;
 
-  if (hit->type == "SoftwareButton")
+  if (hit->type == "button")
   {
-    Serial.printf("[papers3] tap: SoftwareButton \"%s\"\n", hit->id.c_str());
+    Serial.printf("[papers3] tap: button \"%s\"\n", hit->id.c_str());
     dispatchButtonAction(hit->properties.action);
     return true;
   }

@@ -328,7 +328,7 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
     obj.properties = parseObjectProperties(objJson["properties"]);
   }
 
-  // Recursive: only "tab-control" and "panel" objects carry children in
+  // Recursive: only "switcher" and "panel" objects carry children in
   // practice, but parsing is generic (matches the designer's ScreenmanObject
   // - any object type is technically allowed to have children). Absent for
   // every existing project (additive JSON field), so old projects parse
@@ -456,10 +456,9 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.writeTopic = propsJson["writeTopic"] | "";
   props.step = propsJson["step"] | 1.0f;
   props.markerStyle = propsJson["markerStyle"] | "";
-  // Anything that is not "single" is segmented, including the key being
-  // absent entirely - which is what every project exported before
-  // 2026-08-25 looks like.
-  props.mode = propsJson["mode"] | "segmented";
+  // No `mode` here any more: since 2026-09-20 the form is the object's own
+  // type, "switch" or "button-group". A project still carrying the old key
+  // is migrated by the designer before it is ever exported.
   props.activeBackgroundColor = propsJson["activeBackgroundColor"] | "#2563eb";
   if (propsJson["states"].is<JsonArray>()) {
     props.states = parseSwitchStates(propsJson["states"]);

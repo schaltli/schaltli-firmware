@@ -89,6 +89,7 @@
 #include "../../project/ProjectLoader.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
+#include "project/ObjectTypes.h"
 
 // --- panel geometry -------------------------------------------------------
 static const int16_t PANEL_W = 800;
@@ -1234,8 +1235,8 @@ static void beginPressFeedback(int16_t x, int16_t y)
   const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
   if (hit == nullptr) return;
 
-  if (hit->type == "SoftwareButton") pressedButtonId = hit->id;
-  else if (hit->type == "Switch")
+  if (hit->type == "button") pressedButtonId = hit->id;
+  else if (objecttypes::isSwitch(hit->type))
   {
     pressedSwitchId = hit->id;
     pressedSwitchIndex = switchSegmentFor(hit, x, objX);
@@ -1361,7 +1362,7 @@ static bool renderValueChangesPartial()
     if (oldValue == nullptr) continue;
     if (oldValue->isEmpty()) return false;  // nothing to compare a sweep against
 
-    if (obj.type == "arc-level")
+    if (objecttypes::isArc(obj.type))
     {
       const String newValue = projectLoader.getTopicValue(obj.properties.topic);
       if (newValue.isEmpty() || newValue == *oldValue) return false;
@@ -1667,9 +1668,9 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     return false;
   }
 
-  if (hit->type == "SoftwareButton")
+  if (hit->type == "button")
   {
-    Serial.printf("[tap] SoftwareButton \"%s\"\n", hit->id.c_str());
+    Serial.printf("[tap] button \"%s\"\n", hit->id.c_str());
     lastTap = "(" + String(x) + "," + String(y) + ") SoftwareButton \"" + hit->id + "\" action " +
               (hit->properties.action.type.isEmpty() ? String("(none)") : hit->properties.action.type);
     dispatchButtonAction(hit->properties.action);

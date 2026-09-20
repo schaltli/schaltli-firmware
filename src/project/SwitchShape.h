@@ -73,7 +73,10 @@ constexpr int kGap = 8;
 // How much bigger the knob gets while a finger is on it.
 constexpr int kKnobPress = 2;
 
-inline bool isKnobForm(const ScreenObject& obj) { return obj.properties.mode == "single"; }
+// The form is the type since 2026-09-20: "switch" is the knob in a
+// track, "button-group" the connected strip. It was a `mode` property
+// beside them until then (docs/2026-09-20-control-split.md).
+inline bool isKnobForm(const ScreenObject& obj) { return obj.type == "switch"; }
 
 inline bool isTonal(const ScreenObject& obj) { return obj.properties.switchStyle == "tonal"; }
 

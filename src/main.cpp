@@ -49,6 +49,7 @@
 #include "DeviceInfo.h"
 #include "project/ProjectLoader.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
 #include "project/ColorAssetLoader.h"
 #include "ScreenNavigatorOverlay.h"
@@ -1291,8 +1292,8 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
   if (treffer == nullptr) return false;
 
-  if (treffer->type == "SoftwareButton") {
-    Serial.printf("[tap] SoftwareButton \"%s\"\n", treffer->id.c_str());
+  if (treffer->type == "button") {
+    Serial.printf("[tap] button \"%s\"\n", treffer->id.c_str());
     dispatchButtonAction(treffer->properties.action);
     return true;
   }
@@ -2279,7 +2280,7 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
     if (obj.properties.topic.isEmpty()) continue;
     if (stripJsonPath(obj.properties.topic) != topic) continue;
 
-    if (obj.type == "arc-level") {
+    if (objecttypes::isArc(obj.type)) {
       const String newValue = projectLoader.getTopicValue(obj.properties.topic);
       if (newValue.isEmpty() || newValue == oldValue) return false;
       if (anzahl + 2 > MAX_RECHTECKE) return false;

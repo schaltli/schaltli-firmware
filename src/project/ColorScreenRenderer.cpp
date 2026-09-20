@@ -1,5 +1,7 @@
 #include "ColorScreenRenderer.h"
 
+#include "ObjectTypes.h"
+
 #include "SwitchShape.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
@@ -256,7 +258,7 @@ bool ColorScreenRenderer::markerTopicBounds(int screenIndex, const String& marke
       [&](const std::vector<ScreenObject>& objects, int16_t dx, int16_t dy) {
         for (const auto& o : objects) {
           const String topic = o.properties.setpointTopic.isEmpty() ? o.properties.topic : o.properties.setpointTopic;
-          if ((o.type == "level-indicator" || o.type == "arc-level") && topic == markerTopic) {
+          if (objecttypes::isAnyLevel(o.type) && topic == markerTopic) {
             const int16_t ox = dx + o.x;
             const int16_t oy = dy + o.y;
             if (!found) {
@@ -272,7 +274,7 @@ bool ColorScreenRenderer::markerTopicBounds(int screenIndex, const String& marke
               if (oy + o.height > y1) y1 = oy + o.height;
             }
           }
-          if (o.type == "tab-control") {
+          if (o.type == "switcher") {
             const ScreenObject* panel = getActivePanel(o);
             if (panel != nullptr) walk(panel->children, dx + o.x, dy + o.y);
           }
@@ -293,7 +295,10 @@ void ColorScreenRenderer::clearAskedValue() {
 }
 
 bool ColorScreenRenderer::isSettableLevel(const ScreenObject& obj) {
-  return (obj.type == "level-indicator" || obj.type == "arc-level") && !obj.properties.writeTopic.isEmpty();
+  // The type says it now, and only the type: a bar shows a target it
+  // cannot move, a slider can move it (docs/2026-09-20-control-split.md
+  // in the designer repo).
+  return objecttypes::isSettable(obj.type);
 }
 
 // Wo ein Finger auf dem Ring liegt, als Prozent seiner eigenen Bahn - die
@@ -340,7 +345,7 @@ static float arcPercentFromPoint(const ScreenObject& obj, int16_t x, int16_t y, 
 // read the same way round. Both snapped to the object's step.
 float ColorScreenRenderer::settableLevelValueAt(const ScreenObject& obj, int16_t x, int16_t y,
                                                  int16_t objX, int16_t objY) const {
-  if (obj.type == "arc-level") {
+  if (objecttypes::isArc(obj.type)) {
     std::vector<CalibrationPoint> arcPoints = obj.properties.calibrationPoints;
     if (arcPoints.empty()) {
       arcPoints = {{0.0f, 0.0f}, {100.0f, 100.0f}};
@@ -1739,21 +1744,23 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
                                         const String& pendingSwitchId, int pendingSwitchStateIndex,
                                         const String& pressedSwitchId, int pressedSwitchStateIndex) {
   if (obj.type == "box") return renderBox(obj);
-  if (obj.type == "line") return renderLine(obj);
-  if (obj.type == "label") return renderLabel(obj);
-  if (obj.type == "MqttDataField" || obj.type == "field") return renderMQTTDataField(obj);
-  if (obj.type == "level-indicator") return renderLevelIndicator(obj);
-  if (obj.type == "arc-level") return renderArcLevel(obj, currentScreenBg_);
-  if (obj.type == "MQTTIconField") return renderMQTTIconField(obj);
+  if (objecttypes::isLine(obj.type)) return obj.type == "live-line" ? renderMqttDataLine(obj) : renderLine(obj);
+  if (obj.type == "text") return renderLabel(obj);
+  if (obj.type == "live-text") return renderMQTTDataField(obj);
+  // A slider is a bar with a handle and a dial a gauge with one: the same
+  // renderer draws both, and the handle appears because the type says a
+  // finger can move it.
+  if (objecttypes::isLevel(obj.type)) return renderLevelIndicator(obj);
+  if (objecttypes::isArc(obj.type)) return renderArcLevel(obj, currentScreenBg_);
+  if (obj.type == "live-icon") return renderMQTTIconField(obj);
   if (obj.type == "icon") return renderIcon(obj);
-  if (obj.type == "SoftwareButton") return renderSoftwareButton(obj, !pressedButtonId.isEmpty() && obj.id == pressedButtonId);
-  if (obj.type == "Switch") {
+  if (obj.type == "button") return renderSoftwareButton(obj, !pressedButtonId.isEmpty() && obj.id == pressedButtonId);
+  if (objecttypes::isSwitch(obj.type)) {
     int pendingIndex = obj.id == pendingSwitchId ? pendingSwitchStateIndex : -1;
     int pressedIndex = obj.id == pressedSwitchId ? pressedSwitchStateIndex : -1;
     return renderSwitch(obj, pendingIndex, pressedIndex);
   }
-  if (obj.type == "MqttDataLine") return renderMqttDataLine(obj);
-  if (obj.type == "tab-control") {
+  if (obj.type == "switcher") {
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
   if (obj.type == "panel") {
@@ -1780,7 +1787,7 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
             [](const ScreenObject* a, const ScreenObject* b) { return zOrderLess(*a, *b); });
 
   for (const ScreenObject* o : sorted) {
-    if (o->type == "tab-control") {
+    if (o->type == "switcher") {
       // Nur das sichtbare Panel. Wuerde hier ueber alle Panels gesucht,
       // traefe der Finger Schalter, die gar nicht auf dem Glas stehen.
       const ScreenObject* activePanel = getActivePanel(*o);
@@ -1796,7 +1803,7 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     // (docs/2026-09-17-settable-level.md im Designer-Repo). Ohne Schreibtopic
     // nicht - ein Tank, den man nur liest, soll einen Finger nicht abfangen,
     // der in Wahrheit die Seite blaettern wollte.
-    if (o->type != "Switch" && o->type != "SoftwareButton" && !isSettableLevel(*o)) continue;
+    if (!objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
 
     const int16_t ox = dx + o->x;
     const int16_t oy = dy + o->y;
@@ -1820,7 +1827,7 @@ const ScreenObject* findByIdWalk(const std::vector<ScreenObject>& objects, const
       objY = dy + o.y;
       return &o;
     }
-    if (o.type == "tab-control") {
+    if (o.type == "switcher") {
       const ScreenObject* panel = activePanelOf(o);
       if (panel != nullptr) {
         const ScreenObject* found =
@@ -1985,7 +1992,7 @@ bool ColorScreenRenderer::arcLevelTextRect(const ScreenObject& obj, const String
 
 bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
                                             int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
-  if (obj.type != "arc-level") return false;
+  if (!objecttypes::isArc(obj.type)) return false;
   if (oldValue.isEmpty() || newValue.isEmpty()) return false;
 
   const int32_t size = obj.width < obj.height ? obj.width : obj.height;

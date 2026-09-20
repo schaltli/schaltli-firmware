@@ -200,8 +200,10 @@ struct ObjectProperties {
   // topic (retained); `writeTopic` is the command destination a tapped
   // segment's writeValue gets published to (not retained).
   //
-  // `mode` is "segmented" (default, n segments side by side) or "single"
-  // (one surface showing the active state, a tap advancing to the next).
+  // Which form it takes is the object's own type - "button-group" for the
+  // n segments side by side, "switch" for the knob in a track. It was a
+  // `mode` property here until 2026-09-20; see the designer repo's
+  // docs/2026-09-20-control-split.md.
   //
   // `activeBackgroundColor` is the marker bar's colour, solid and hollow
   // alike. It kept its name through the 2026-08-25 change from a filled
@@ -211,7 +213,6 @@ struct ObjectProperties {
   // activeTextColor any more - with no fill, a label never sits on a
   // different background than its neighbours.
   String writeTopic;
-  String mode;
   String activeBackgroundColor;
   std::vector<SwitchState> states;
 
@@ -243,12 +244,12 @@ struct ObjectProperties {
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
       step(1.0f), barThickness(0), arrowStart(false), arrowEnd(false),
-      mode("segmented"), activeBackgroundColor("#2563eb") {}
+      activeBackgroundColor("#2563eb") {}
 };
 
-// Screen object (can be MQTTIconField, MqttDataField, tab-control, panel, etc.)
+// Screen object (can be live-icon, live-text, switcher, panel, etc.)
 struct ScreenObject {
-  String type;                // "MQTTIconField", "MqttDataField", "tab-control", "panel", etc.
+  String type;                // "live-icon", "live-text", "switcher", "panel", etc.
   String id;
   int x;
   int y;
@@ -258,14 +259,14 @@ struct ScreenObject {
   ObjectProperties properties;
   // Bitmap paths the designer's export flattens onto the object itself
   // (not nested in `properties`) - see lib/project-zip.ts: an "icon"
-  // object gets `path`, a "SoftwareButton" gets `pathNormal`/`pathActive`.
+  // object gets `path`, a "button" gets `pathNormal`/`pathActive`.
   // Not present in MqttEPaperDisplay2's ProjectTypes.h - that firmware
   // never implemented either object type (no touchscreen, e-paper icons
   // were never wired up either), so these are new here for M5 Dial.
   String path;
   String pathNormal;
   String pathActive;
-  // Only meaningful for "tab-control" (children must all be "panel") and
+  // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own
   // (x, y) origin, not absolute screen coordinates - the renderer

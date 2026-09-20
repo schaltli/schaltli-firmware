@@ -11,7 +11,9 @@
     "height": 480,
     "colorDepth": "24bit"
   },
-  "deviceActions": ["displayOff"],
+  "deviceActions": [
+    "displayOff"
+  ],
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",
     "uploadMethod": "POST",
@@ -129,18 +131,21 @@
     }
   ],
   "supportedObjectTypes": [
-    "MqttDataField",
-    "MQTTIconField",
-    "label",
-    "level-indicator",
-    "arc-level",
+    "live-text",
+    "live-icon",
+    "text",
     "icon",
+    "bar",
+    "slider",
+    "gauge",
+    "dial",
+    "switch",
+    "button-group",
+    "button",
     "line",
+    "live-line",
     "box",
-    "SoftwareButton",
-    "Switch",
-    "MqttDataLine",
-    "tab-control",
+    "switcher",
     "panel"
   ],
   "supportsSoftwareButtons": true

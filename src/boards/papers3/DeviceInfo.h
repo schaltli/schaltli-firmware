@@ -28,7 +28,7 @@
 // about to write into ddf_zip.h - do not hand-edit. The designer verifies
 // this hash against what it downloads and refuses the fetch on a mismatch,
 // so a stale value does not degrade auto-discovery, it ends it.
-#define DDF_HASH "b123ddc088646d9e"
+#define DDF_HASH "649b4c88a0bf6206"
 
 // The system generation this firmware understands. Only MAJOR gates
 // anything: a newer minor is additive by definition, so a device on 1.0
