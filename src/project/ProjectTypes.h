@@ -215,9 +215,23 @@ struct ObjectProperties {
   String activeBackgroundColor;
   std::vector<SwitchState> states;
 
-  // The marker's shape on a settable level: "line" (default, a line across
-  // the track), "round" (a knob on it) or "triangle" (pointing at it).
+  // The marker's shape on a settable level. Not read since 2026-09-19: a
+  // stroke always means a settable value and always looks the same (designer
+  // docs/2026-09-19-slider-look.md, decision 4). Old projects still carry it.
   String markerStyle;
+
+  // How thick a level indicator's track is, across the bar, in pixels. Set by
+  // the author rather than derived from the object, since a vertical tank made
+  // wide enough for its name got a track as wide as the name (designer
+  // docs/2026-09-19-slider-look.md, decision 14). 0 means "unset": Material's
+  // 16.
+  int barThickness;
+
+  // A Switch since 2026-09-20 (designer docs/2026-09-20-switch-look.md): one
+  // colour, and how loud the chosen state is - "filled" (default) or "tonal".
+  // The container, every label and the quiet track follow from them.
+  String switchStyle;
+  String switchColor;
 
   // A settable level (docs/2026-09-17-settable-level.md in the designer
   // repo): `writeTopic` above, shared with the Switch, is what makes a
@@ -228,7 +242,7 @@ struct ObjectProperties {
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
-      step(1.0f), arrowStart(false), arrowEnd(false),
+      step(1.0f), barThickness(0), arrowStart(false), arrowEnd(false),
       mode("segmented"), activeBackgroundColor("#2563eb") {}
 };
 

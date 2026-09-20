@@ -395,6 +395,9 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.displayValue = propsJson["displayValue"] | "none";
   props.label = propsJson["label"] | "";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
+  props.barThickness = propsJson["barThickness"] | 0;
+  props.switchStyle = propsJson["switchStyle"] | "filled";
+  props.switchColor = propsJson["switchColor"] | "";
   
   if (propsJson["calibrationPoints"].is<JsonArray>()) {
     props.calibrationPoints = parseCalibrationPoints(propsJson["calibrationPoints"]);
@@ -476,7 +479,11 @@ std::vector<SwitchState> ProjectLoader::parseSwitchStates(JsonArray statesArray)
     state.writeValue = stateJson["writeValue"] | "";
     state.iconPath = resolveAssetPath(stateJson["path"] | "");
     state.iconPathActive = resolveAssetPath(stateJson["pathActive"] | "");
-    state.showMarker = stateJson["showMarker"] | false;
+    // "Show this state as switched on", which decides whether a switch
+    // showing it is drawn in colour. Renamed from showMarker on 2026-09-20
+    // (designer docs/2026-09-20-switch-look.md, decision 4); every project
+    // written before it says the old name, so both are read.
+    state.showMarker = stateJson["showAsOn"] | (stateJson["showMarker"] | false);
     states.push_back(state);
   }
 

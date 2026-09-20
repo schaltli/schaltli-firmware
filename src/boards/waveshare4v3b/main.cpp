@@ -88,6 +88,7 @@
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
 #include "../../project/ColorScreenRenderer.h"
+#include "../../project/SwitchShape.h"
 
 // --- panel geometry -------------------------------------------------------
 static const int16_t PANEL_W = 800;
@@ -1171,29 +1172,20 @@ void setup()
 // commands another.
 static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
 {
+  // One rule, in switchshape::stateIndexForTap - the designer's own
+  // switchStateIndexForTap, mirrored. In the switch form two states toggle
+  // wherever they are hit, more take the slot under the finger (or advance,
+  // beside the track); a group takes the segment. A second copy here would
+  // drift, and a finger would hit something other than what it points at.
   const int states = (int)hit->properties.states.size();
   if (states <= 0) return -1;
-
-  if (hit->properties.mode == "single")
-  {
-    // One area, one target: a tap moves to the next state and wraps. Two
-    // states make a toggle, three a cycle, so there is no special case.
-    // The active index comes from the renderer rather than from a second
-    // copy of the same rule here - what is drawn and what is tapped have
-    // to agree about the state.
-    const int active = renderer->getActiveSwitchStateIndex(*hit);
-    // No retained value yet: the tile shows "?" and a tap starts at the
-    // beginning instead of doing nothing.
-    return (active < 0) ? 0 : (active + 1) % states;
-  }
-
-  // Equal segments across the object's width, the same division
-  // ColorScreenRenderer::renderSwitch() draws. If this differs, the finger
-  // hits a segment other than the one it is pointing at.
-  int index = ((int)(x - objX) * states) / hit->width;
-  if (index < 0) index = 0;
-  if (index >= states) index = states - 1;
-  return index;
+  const int active = renderer == nullptr ? -1 : renderer->getActiveSwitchStateIndex(*hit);
+  // In the object's own coordinates: a Switch inside a panel carries
+  // coordinates relative to its tab-control, while the finger is in screen
+  // ones. objX is where the hit test found the object, so this is the offset
+  // between the two.
+  const int localX = x - objX + hit->x;
+  return switchshape::stateIndexForTap(*hit, localX, active);
 }
 
 // Redraws only the rectangle the feedback lives in, then shows it.

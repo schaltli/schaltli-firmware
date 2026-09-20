@@ -174,12 +174,16 @@ private:
   // One run of text inside a box of the level indicator's header, pushed
   // against one of its edges and centred in its height. Mirrors
   // drawLevelTextIn() in the designer's render-level-indicator.ts.
-  void drawLevelBoxText(const String& text, const LevelRect& box, bool alignRight, const String& fontId,
-                        uint16_t color);
+  // The object's font, as the header line's measure - ascent, descent and the
+  // height of a capital (which is what an icon beside a label is).
+  LevelFontMetrics levelMetrics(const ScreenObject& obj);
+
+  void drawLevelText(const String& text, const LevelRect& clip, int x, int baseline, const String& fontId,
+                     uint16_t color);
   // The smaller font the measured value is written in, out of the project's
   // own list - a BDF font cannot be scaled, so "smaller" means another font.
   // Mirrors levelSubFont() in lib/level-shape.ts.
-  String levelSubFontId(const ScreenObject& obj) const;
+  String levelSubFontId(const ScreenObject& obj);
   // The round counterpart of the bar. `mixInto` is what its anti-aliased
   // edges blend against where the object's own background is transparent -
   // a declared colour rather than whatever happens to be on the canvas,
@@ -190,6 +194,10 @@ private:
 
   // The background renderScreen() filled before drawing any object.
   uint16_t currentScreenBg_ = 0xFFFF;
+  // The same colour as the author wrote it, which is what a derived colour has
+  // to be mixed from: going through 565 first and back would land a step away
+  // from the designer's own mix (src/project/MaterialColors.h).
+  String currentScreenBgHex_ = "#ffffff";
   bool renderMQTTIconField(const ScreenObject& obj);
   bool renderIcon(const ScreenObject& obj);
   bool renderSoftwareButton(const ScreenObject& obj, bool isPressed);
@@ -197,15 +205,6 @@ private:
   // Switch marker bar - solid for a confirmed marked state, hollow while a
   // write is unconfirmed. Geometry constants live next to the definition in
   // ColorScreenRenderer.cpp, mirroring render-switch.ts.
-  void drawSwitchBar(int x, int y, int width, uint16_t color, bool hollow);
-  // One Switch state's icon + label inside the content band, shared by both
-  // modes so a state cannot look different depending on which drew it.
-  // x/width are floats because a switch segment's own boundaries need not
-  // be whole pixels - see renderSwitch()'s segment loop.
-  void drawSwitchStateContent(const SwitchState& state, const String& iconPath,
-                              float x, float width, int bandTop, int bandHeight,
-                              uint16_t textColor, const BdfFont* font,
-                              int16_t fontAscent, int16_t fontDescent);
   bool renderMqttDataLine(const ScreenObject& obj);
 
   // Recurses into the active panel's children (offset-copies with

@@ -165,6 +165,13 @@ bool BdfFont::parse(const char* text, size_t length) {
       } else if (startsWith(line, len, "FONT_DESCENT")) {
         long v[1];
         if (readInts(line + 12, len - 12, v, 1) == 1) fontDescent_ = (int16_t)v[0];
+      } else if (startsWith(line, len, "CAP_HEIGHT")) {
+        // How tall a capital stands on the baseline, which is what every
+        // control here draws an icon at (designer lib/level-shape.ts,
+        // fontMetricsOf). In every font shipped it is exactly the H's own
+        // bitmap height, so a reader of glyph boxes gets the same number.
+        long v[1];
+        if (readInts(line + 10, len - 10, v, 1) == 1) capHeight_ = (int16_t)v[0];
       }
       continue;
     }

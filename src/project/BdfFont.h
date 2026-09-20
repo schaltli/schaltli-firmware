@@ -55,6 +55,9 @@ public:
   // metrics, not ink extents - see inkAscentOf().
   int16_t fontAscent() const { return fontAscent_; }
   int16_t fontDescent() const { return fontDescent_; }
+  // The font's CAP_HEIGHT, or its ascent where the file does not say - the
+  // same fallback the designer takes.
+  int16_t capHeight() const { return capHeight_ > 0 ? capHeight_ : fontAscent_; }
 
   // How far above the baseline the glyphs of *this string* actually reach.
   //
@@ -112,4 +115,5 @@ private:
   uint32_t rowCount_ = 0;
   int16_t fontAscent_ = 0;
   int16_t fontDescent_ = 0;
+  int16_t capHeight_ = 0;
 };

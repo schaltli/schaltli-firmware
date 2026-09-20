@@ -1,4 +1,6 @@
 #include "ColorScreenRenderer.h"
+
+#include "SwitchShape.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
 #include "ArcRaster.h"
@@ -906,32 +908,39 @@ bool ColorScreenRenderer::renderMQTTDataField(const ScreenObject& obj) {
 // guessed from the font size (levelshape::digitWidth), and this is what keeps a
 // wrong guess harmless. Mirrors drawLevelTextIn() in the designer's
 // render-level-indicator.ts.
-void ColorScreenRenderer::drawLevelBoxText(const String& text, const LevelRect& box, bool alignRight,
-                                           const String& fontId, uint16_t color) {
-  if (text.isEmpty() || !box.valid()) return;
+// The vertical measure of the object's font - never properties.fontSize, which
+// the font picker does not keep in step with the font (designer
+// docs/2026-09-19-slider-look.md, decision 13).
+LevelFontMetrics ColorScreenRenderer::levelMetrics(const ScreenObject& obj) {
+  LevelFontMetrics m;
+  const BdfFont* font = fontStore_.get(obj.properties.fontId);
+  if (font != nullptr && font->isLoaded()) {
+    m.ascent = font->fontAscent();
+    m.descent = font->fontDescent();
+    m.capHeight = font->capHeight();
+    return m;
+  }
+  const int size = levelshape::fontSize(obj);
+  m.ascent = (size * 4) / 5;
+  m.descent = size - m.ascent > 0 ? size - m.ascent : 1;
+  m.capHeight = (size * 7) / 10;
+  return m;
+}
+
+// One piece of text, its left end at `x` and standing on `baseline`, clipped to
+// `clip`. Every piece on a header line stands on the one baseline, whatever
+// font it is in.
+void ColorScreenRenderer::drawLevelText(const String& text, const LevelRect& clip, int x, int baseline,
+                                        const String& fontId, uint16_t color) {
+  if (text.isEmpty() || !clip.valid()) return;
   const BdfFont* font = fontFor(fontId);
   if (font == nullptr) return;
-
-  const int16_t textWidth = measureTrueTextWidth(text, font);
-  const int16_t ascent = getFontAscentById(fontId);
-  const int16_t descent = getFontDescentById(fontId);
-  const int16_t textX = alignRight ? (int16_t)(box.x + box.w - textWidth) : (int16_t)box.x;
-  const int16_t baselineY = (int16_t)(box.y + jsRound((box.h - (ascent + descent)) / 2.0f) + ascent);
-
-  canvas_->setClip(box.x, box.y, box.w, box.h);
-  font->drawText(*canvas_, text, textX, baselineY, color);
+  canvas_->setClip(clip.x, clip.y, clip.w, clip.h);
+  font->drawText(*canvas_, text, (int16_t)x, (int16_t)baseline, color);
   canvas_->clearClip();
 }
 
-// The smaller font the measured value is written in. A BDF font is a grid of
-// bitmaps and cannot be scaled, so "smaller" has to mean *another font*, picked
-// out of the project's own list: the same family first (font-helvR12 and
-// font-helvR08 share font-helvR), because mixing a bold face into a regular
-// line looks like a mistake; then any font small enough; and if the project has
-// nothing smaller, the object's own, which merely looks unremarkable.
-//
-// Line for line with levelSubFont() in the designer's lib/level-shape.ts.
-String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) const {
+String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) {
   const ProjectConfig& project = projectLoader_.getProject();
   if (project.fonts.empty()) return obj.properties.fontId;
 
@@ -942,7 +951,10 @@ String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) const {
   };
 
   const String ownFamily = family(obj.properties.fontId);
-  const int wanted = levelshape::subFontSize(obj);
+  // Two thirds of the object's own line, in the unit a project font's size is
+  // in (ascent plus descent). It was two thirds of fontSize until 2026-09-19,
+  // which nothing keeps in step with the font.
+  const int wanted = (levelshape::lineHeight(levelMetrics(obj)) * 2) / 3;
 
   const Font* bestInFamily = nullptr;
   const Font* bestAny = nullptr;
@@ -960,60 +972,93 @@ String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) const {
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   const String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
 
-  bool bgTransparent = false;
-  const uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
-  const uint16_t fillColor = parseHexColor(obj.properties.fillColor);
-  bool trackTransparent = false;
-  const uint16_t trackColor = parseHexColor(
-      obj.properties.trackColor.isEmpty() ? String("#E8DEF8") : obj.properties.trackColor, &trackTransparent);
-  bool borderTransparent = false;
-  const uint16_t borderColor = parseHexColor(obj.properties.borderColor, &borderTransparent);
+  // One colour: the bar's. The unfilled track is mixed from it and the screen
+  // behind it, and the object has no background, border or track colour of its
+  // own any more (designer docs/2026-09-19-slider-look.md, decision 12).
+  const String fillHex = materialcolors::applyDepth(
+      obj.properties.fillColor.isEmpty() ? String("#4CAF50") : obj.properties.fillColor);
+  const LevelTrackLook look = levelshape::trackLook(fillHex, currentScreenBgHex_);
+  const uint16_t fillColor = parseHexColor(fillHex);
+  const uint16_t trackColor = parseHexColor(look.track);
   const uint16_t textColor =
       parseHexColor(obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor);
 
-  if (!bgTransparent) {
-    canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, bgColor);
-  }
+  const LevelFontMetrics metrics = levelMetrics(obj);
+  const LevelLayout lay = levelshape::layout(obj, metrics);
+  const bool vertical = levelshape::isVertical(obj);
 
-  const LevelLayout lay = levelshape::layout(obj);
-
-  // The header line first, because it does not depend on a value: a bar that
-  // has heard nothing still says what it is
-  // (docs/2026-09-19-slider-look.md, decision 9).
-  //
-  // The icon is its own baked bitmap, blitted here rather than left in the
-  // flattened background. No firmware reads that file; this renderer fills the
-  // object's rectangle before anything else; and a partial redraw refills the
-  // region with the screen colour. Only pixels an object paints itself survive
-  // a drag.
   if (lay.hasIcon && lay.icon.valid()) {
     if (!ColorAssetLoader::drawBMPToCanvas(canvas_, obj.path, lay.icon.x, lay.icon.y)) {
       canvas_->drawRect(lay.icon.x, lay.icon.y, lay.icon.w, lay.icon.h, textColor);
     }
   }
-  if (lay.hasName) {
-    drawLevelBoxText(obj.properties.label, lay.name, false, obj.properties.fontId, textColor);
-  }
 
-  // The frame outlines the track, as a pill one pixel larger than it - not the
-  // object's rectangle. On a 1-bit panel it is not decoration: the unfilled
-  // track is white on white there, so without an outline a bar that has heard
-  // no value yet would be invisible.
-  auto drawFrameUnder = [&](const LevelRect& r) {
-    if (borderTransparent || !r.valid()) return;
-    canvas_->fillRoundRect(r.x - 1, r.y - 1, r.w + 2, r.h + 2, r.r + 1, borderColor);
+  // One run of track or fill, painted flush at the ends that are not the
+  // track's own, and - where the mixed colour cannot be told from the
+  // background - as an outline in the bar's colour with the background cut back
+  // into it. Cut rather than stroked: a stroke of one pixel breaks up on a
+  // panel that has no half tones.
+  auto drawRun = [&](const LevelSegment& seg, uint16_t colour) {
+    if (!seg.valid()) return;
+    canvas_->fillRoundRect(seg.x, seg.y, seg.w, seg.h, seg.r, colour);
+    int r = seg.r;
+    const int half = (seg.w < seg.h ? seg.w : seg.h) / 2;
+    if (r > half) r = half;
+    if (r <= 0) return;
+    if (!seg.roundStart) {
+      if (vertical) canvas_->fillRect(seg.x, seg.y, seg.w, r, colour);
+      else canvas_->fillRect(seg.x, seg.y, r, seg.h, colour);
+    }
+    if (!seg.roundEnd) {
+      if (vertical) canvas_->fillRect(seg.x, seg.y + seg.h - r, seg.w, r, colour);
+      else canvas_->fillRect(seg.x + seg.w - r, seg.y, r, seg.h, colour);
+    }
+  };
+  auto drawTrackRun = [&](const LevelSegment& seg) {
+    if (!look.framed) {
+      drawRun(seg, trackColor);
+      return;
+    }
+    drawRun(seg, fillColor);
+    LevelSegment inner;
+    if (levelshape::frameInner(seg, vertical, inner)) drawRun(inner, trackColor);
+  };
+
+  // The header's text: the numbers against the right edge at their measured
+  // width, the name into whatever is left. Nothing is reserved, so a number is
+  // never cut off; where the line is too short it is the name that gives way.
+  auto drawHeader = [&](const String& commanded, const String& measured, bool withNumbers) {
+    if (!lay.hasText || !lay.text.valid()) return;
+    const BdfFont* ownFont = fontFor(obj.properties.fontId);
+    int right = lay.text.x + lay.text.w;
+    if (withNumbers && levelshape::showsNumber(obj) && ownFont != nullptr) {
+      const int width = measureTrueTextWidth(commanded, ownFont);
+      drawLevelText(commanded, lay.text, right - width, lay.baseline, obj.properties.fontId, textColor);
+      right -= width + levelshape::kGap;
+      if (levelshape::showsSub(obj) && measured != commanded) {
+        const String subId = levelSubFontId(obj);
+        const BdfFont* subFont = fontFor(subId);
+        const String sub = "(" + measured + ")";
+        if (subFont != nullptr) {
+          const int subWidth = measureTrueTextWidth(sub, subFont);
+          drawLevelText(sub, lay.text, right - subWidth, lay.baseline, subId, textColor);
+          right -= subWidth + levelshape::kGap;
+        }
+      }
+    }
+    if (!levelshape::hasName(obj) || right <= lay.text.x) return;
+    LevelRect nameBox = lay.text;
+    nameBox.w = right - lay.text.x;
+    drawLevelText(obj.properties.label, nameBox, lay.text.x, lay.baseline, obj.properties.fontId, textColor);
   };
 
   String trimmedValue = valueStr;
   trimmedValue.trim();
   if (trimmedValue.isEmpty()) {
-    // Nothing has arrived: the empty track, and neither fill nor number. The
-    // track claims no value - it is the shape of the control - while an empty
-    // *fill* would claim an empty tank.
-    drawFrameUnder(lay.track);
-    if (!trackTransparent && lay.track.valid()) {
-      canvas_->fillRoundRect(lay.track.x, lay.track.y, lay.track.w, lay.track.h, lay.track.r, trackColor);
-    }
+    // Nothing has arrived: the empty track and the name, and neither fill nor
+    // number. An empty fill would claim an empty tank.
+    drawHeader("", "", false);
+    drawTrackRun(levelshape::emptyTrack(lay));
     return true;
   }
 
@@ -1021,13 +1066,6 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   if (fillPercentF < 0.0f) fillPercentF = 0.0f;
   if (fillPercentF > 100.0f) fillPercentF = 100.0f;
 
-
-  // What was asked for, in this order: a request a finger just made here, then
-  // whatever the installation reports on a setpoint topic, and failing both -
-  // for a settable bar only - the reported value itself. That last one is what
-  // makes the handle an affordance rather than only a pending-command light:
-  // sitting on the fill's edge it says "this can be moved", displaced from it
-  // that a command is still on its way.
   const String markerTopic =
       obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
   String rawMarker;
@@ -1049,68 +1087,39 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     if (markerPercent > 100.0f) markerPercent = 100.0f;
   }
 
-  // One stroke or none, and the stroke is always this one shape: overhanging,
-  // with the gap. There is no second form for a setpoint that cannot be
-  // dragged - a stroke that means "settable" has to look the same wherever it
-  // appears (decision 4).
   LevelRect handle;
   const bool hasHandle = hasMarker && lay.track.valid();
   if (hasHandle) handle = levelshape::handleRect(obj, lay, markerPercent);
 
   std::vector<LevelSegment> runs;
   levelshape::segments(obj, lay, fillPercentF, hasHandle ? &handle : nullptr, runs);
-
-  const bool vertical = levelshape::isVertical(obj);
   for (const LevelSegment& seg : runs) {
-    // The frame goes behind each run rather than behind the whole track. As one
-    // pill behind everything it showed through the handle's gap - a grey halo -
-    // and the gap has to show the background or it says nothing at all.
-    drawFrameUnder(seg);
-    const bool isFill = seg.isFill;
-    if (!isFill && trackTransparent) continue;
-    const uint16_t colour = isFill ? fillColor : trackColor;
-    canvas_->fillRoundRect(seg.x, seg.y, seg.w, seg.h, seg.r, colour);
-    // Square off the ends that are not the track's own, so two runs meet flush
-    // instead of curving away from each other.
-    int r = seg.r;
-    const int half = (seg.w < seg.h ? seg.w : seg.h) / 2;
-    if (r > half) r = half;
-    if (r > 0) {
-      if (!seg.roundStart) {
-        if (vertical) canvas_->fillRect(seg.x, seg.y, seg.w, r, colour);
-        else canvas_->fillRect(seg.x, seg.y, r, seg.h, colour);
-      }
-      if (!seg.roundEnd) {
-        if (vertical) canvas_->fillRect(seg.x, seg.y + seg.h - r, seg.w, r, colour);
-        else canvas_->fillRect(seg.x + seg.w - r, seg.y, r, seg.h, colour);
-      }
-    }
+    if (seg.isFill) drawRun(seg, fillColor);
+    else drawTrackRun(seg);
   }
 
   if (hasHandle && handle.valid()) {
-    // The fill's own colour, and deliberately not markerColor: handle and
-    // active track are one object that the gap separates.
     canvas_->fillRoundRect(handle.x, handle.y, handle.w, handle.h, handle.r, fillColor);
   }
-
-  // The numbers, in their own column - never over the bar any more. This used
-  // to be two passes of one number straddling the fill's edge, so it stayed
-  // readable on both sides; with a 16 px track no number fits inside the bar at
-  // all and the trick has nothing left to do (decision 10).
-  if (!lay.hasValue || !lay.value.valid()) return true;
 
   const bool asPercent = obj.properties.displayValue == "percentage";
   const String measured = asPercent ? String((int)(fillPercentF + 0.5f)) + "%" : valueStr;
   const String commanded =
       hasMarker ? (asPercent ? String((int)(markerPercent + 0.5f)) + "%" : rawMarker) : measured;
-  // rawMarker carries the installation's own spelling ("21", "18.5") and is
-  // shown verbatim, exactly as the designer shows the raw value.
 
-  drawLevelBoxText(commanded, lay.value, true, obj.properties.fontId, textColor);
-  if (lay.hasSub && lay.sub.valid() && measured != commanded) {
-    // In brackets rather than behind a word: the designer's own interface is
-    // English, the projects on it are not, and a bracket needs no language.
-    drawLevelBoxText("(" + measured + ")", lay.sub, true, levelSubFontId(obj), textColor);
+  if (lay.hasText) {
+    drawHeader(commanded, measured, true);
+    return true;
+  }
+
+  // No header: the number in its own column at the far end of the bar.
+  if (lay.hasValue && lay.value.valid() && levelshape::showsNumber(obj)) {
+    const BdfFont* ownFont = fontFor(obj.properties.fontId);
+    if (ownFont != nullptr) {
+      const int width = measureTrueTextWidth(commanded, ownFont);
+      drawLevelText(commanded, lay.value, lay.value.x + lay.value.w - width, lay.baseline,
+                    obj.properties.fontId, textColor);
+    }
   }
 
   return true;
@@ -1510,282 +1519,145 @@ static const int kSwitchBarBand = kSwitchBarTopInset + kSwitchBarHeight;
 // and 12 - 2*6 is zero - a control that silently says nothing about its own
 // state. One integer max() is cheaper than any amount of warning UI, and
 // render-switch.ts's drawBar() does exactly the same thing.
-void ColorScreenRenderer::drawSwitchBar(int x, int y, int width, uint16_t color, bool hollow) {
-  int barWidth = width - 2 * kSwitchBarSideInset;
-  if (barWidth < 4) barWidth = 4;
-  int barX = x + kSwitchBarSideInset;
-  int barY = y + kSwitchBarTopInset;
-
-  if (hollow) {
-    canvas_->drawRoundRect(barX, barY, barWidth, kSwitchBarHeight, kSwitchBarRadius, color);
-  } else {
-    canvas_->fillRoundRect(barX, barY, barWidth, kSwitchBarHeight, kSwitchBarRadius, color);
-  }
-}
-
-// One state's icon + label inside the content band. Shared by both modes so
-// a state cannot look different depending on which mode drew it - the same
-// reason render-switch.ts factors this out.
-void ColorScreenRenderer::drawSwitchStateContent(const SwitchState& state, const String& iconPath,
-                                                 float x, float width, int bandTop, int bandHeight,
-                                                 uint16_t textColor, const BdfFont* font,
-                                                 int16_t fontAscent, int16_t fontDescent) {
-  float centerX = x + width / 2.0f;
-  bool hasIcon = !iconPath.isEmpty();
-
-  int iconBottom = bandTop;
-  if (hasIcon) {
-    // Same expression, same rounding, as render-switch.ts and
-    // lib/asset-export.ts's exportSwitchStateIcon (which is what baked this
-    // bitmap at this exact size). 0.62 of a 32px band is 19.84 - truncating
-    // where the others round would be a one-pixel offset on every icon.
-    int iconSize = jsRound(fminf((float)(width - 8), bandHeight * 0.62f));
-    if (iconSize < 1) iconSize = 1;
-    int iconX = jsRound(centerX - iconSize / 2.0f);
-    int iconY = bandTop + 2;
-    iconBottom = iconY + iconSize + 2;
-    ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, iconX, iconY);
-  }
-
-  if (state.label.isEmpty() || font == nullptr) return;
-
-  int16_t fontHeight = fontAscent + fontDescent;
-  int16_t textWidth = measureTrueTextWidth(state.label, font);
-  // Float throughout, and rounded exactly once at the end - the same shape as
-  // render-switch.ts's Math.round(centerX - min(textWidth, maxWidth) / 2).
-  //
-  // Rounding the half-difference first and adding a fractional x afterwards
-  // is not the same sum: the assignment then truncates what the rounding
-  // already moved, and the label lands a pixel left of the designer's on any
-  // segment whose boundary is not a whole pixel. That was the last 170 pixels
-  // of the switch's disagreement after the boundaries themselves were fixed
-  // (2026-09-10).
-  float maxWidth = width - 4.0f;
-  float effectiveTextWidth = (float)textWidth;
-  if (maxWidth > 0.0f && effectiveTextWidth > maxWidth) effectiveTextWidth = maxWidth;
-  int16_t textX = jsRound(x + (width - effectiveTextWidth) / 2.0f);
-  int16_t textY;
-  if (hasIcon) {
-    // Below the icon, top-anchored - matches render-switch.ts's anchorTop
-    // path.
-    textY = iconBottom + fontAscent;
-  } else {
-    // Centered in the content band, not in the whole object: the band
-    // starts below the bar's reserved strip, so a label cannot land on top
-    // of a marker.
-    textY = bandTop + jsRound((bandHeight - fontHeight) / 2.0f) + fontAscent;
-  }
-  font->drawText(*canvas_, state.label, textX, textY, textColor);
-}
-
 bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex) {
-  bool bgTransparent = false;
-  uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
-  bool borderTransparent = false;
-  uint16_t borderColor = parseHexColor(obj.properties.borderColor, &borderTransparent);
-  uint16_t markerColor = parseHexColor(obj.properties.activeBackgroundColor);
-  uint16_t textColor = parseHexColor(obj.properties.textColor);
-
-  // Draw order, and why it is this one:
-  //
-  //   1 background, once over the whole object
-  //   2 outer border
-  //   3 dividers
-  //   4 marker bars
-  //   5 icons and labels
-  //
-  // Until 2026-08-25 the border was drawn first and then overpainted by the
-  // per-segment fills - every one of its pixels; only the dividers survived,
-  // because those came after their own segment's fill. Nobody noticed while
-  // a large coloured block made the control obvious anyway. With the fill
-  // gone the border is the only thing left that says where the object is.
-  //
-  // Filling once instead of per segment is what makes that free: no segment
-  // has a fill of its own any more, so there is nothing left to overpaint
-  // with. Content still comes last, matching ScreenRenderer's own order and
-  // the reason recorded on the designer side on 2026-07-20 - a border drawn
-  // after text erases glyph ink wherever a descender reaches the box edge.
-  // Rounded body, drawn the way renderBox draws one: the border is not a
-  // stroke but a slightly larger filled shape with the background filled on
-  // top of it. That is the only way to get a rounded border out of
-  // Adafruit's integer primitive, and it is what the designer's
-  // render-switch.ts does with the same port of the same algorithm - hard
-  // pixels, no anti-aliasing. Deliberately so: an anti-aliased edge is the
-  // one thing that provably cannot survive the trip into this 16-bit panel
-  // unchanged (2026-08-25, the SoftwareButton's baked corners).
-  //
-  // cornerRadius defaults to 0, so every project built before this looks
-  // exactly as it did.
-  int cornerRadius = obj.properties.cornerRadius;
-  if (cornerRadius < 0) cornerRadius = 0;
-
-  if (cornerRadius > 0) {
-    if (!borderTransparent) {
-      canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, cornerRadius, borderColor);
-      if (!bgTransparent && obj.width > 2 && obj.height > 2) {
-        int innerRadius = cornerRadius - 1;
-        if (innerRadius < 0) innerRadius = 0;
-        canvas_->fillRoundRect(obj.x + 1, obj.y + 1, obj.width - 2, obj.height - 2, innerRadius, bgColor);
-      }
-    } else if (!bgTransparent) {
-      canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, cornerRadius, bgColor);
-    }
-  } else {
-    if (!bgTransparent) {
-      canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, bgColor);
-    }
-    if (!borderTransparent) {
-      canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, borderColor);
-    }
-  }
-
-  size_t stateCount = obj.properties.states.size();
+  // The Switch in its two Material 3 forms, ported from the designer's
+  // lib/switch-shape.ts through src/project/SwitchShape.h
+  // (docs/2026-09-20-switch-look.md): a connected button group, or a track with
+  // a knob. No box, no border, no dividers and no marker bar - one colour, and
+  // how loud the chosen state is.
+  const std::vector<SwitchState>& states = obj.properties.states;
+  const int count = (int)states.size();
   const BdfFont* font = fontFor(obj.properties.fontId);
-  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
-  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
 
-  if (stateCount == 0) {
-    // Mirrors render-switch.ts's own "No states defined" placeholder - an
-    // empty/misconfigured Switch is still visible instead of a blank box.
-    // The DDF's own first font, not a hardcoded u8g2 array - this device
-    // may not publish helvR08 at all, and a placeholder is no reason to
-    // reach for a font the DDF does not declare.
+  if (count == 0) {
     const BdfFont* placeholderFont = fontStore_.get(fontStore_.defaultFontId());
-    String placeholder = "No states defined";
-    int16_t textWidth = measureTrueTextWidth(placeholder, placeholderFont);
-    int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
-    canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-    // Mid gray; empty-state only, with no designer-side default to match.
+    const String placeholder = "No states defined";
     if (placeholderFont != nullptr) {
+      const int16_t textWidth = measureTrueTextWidth(placeholder, placeholderFont);
+      const int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
+      canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
       placeholderFont->drawText(*canvas_, placeholder, textX, obj.y + obj.height / 2 + 4, 0x8410);
+      canvas_->clearClip();
     }
-    canvas_->clearClip();
     return true;
   }
 
-  int activeIndex = getActiveSwitchStateIndex(obj);
-  int bandTop = obj.y + kSwitchBarBand;
-  int bandHeight = obj.height - kSwitchBarBand;
+  LevelFontMetrics metrics = levelMetrics(obj);
+  const SwitchLook look = switchshape::look(obj, currentScreenBgHex_);
+  const int activeIndex = getActiveSwitchStateIndex(obj);
 
-  if (obj.properties.mode == "single") {
-    // One surface showing whichever state is active; main.cpp's tap handler
-    // advances to the next one.
-    bool unconfirmed = (pendingStateIndex >= 0 || pressedStateIndex >= 0);
-
-    if (activeIndex < 0) {
-      // Nothing matched, so there is no state - and every label belongs to
-      // a state, so showing one would be claiming a state nobody reported.
-      // "?" alone, which after a boot is what every tile shows until its
-      // retained value arrives. A tap still gets its hollow bar: the write
-      // went out even though the current value is unknown.
-      if (unconfirmed) drawSwitchBar(obj.x, obj.y, obj.width, markerColor, true);
-      if (font != nullptr) {
-        int16_t textWidth = measureTrueTextWidth("?", font);
-        int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
-        int16_t textY = bandTop + jsRound((bandHeight - (fontAscent + fontDescent)) / 2.0f) + fontAscent;
-        canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-        font->drawText(*canvas_, "?", textX, textY, textColor);
-        canvas_->clearClip();
-      }
-      return true;
+  // What a finger here asked this switch to become, keyed by the topic an
+  // answer would arrive on - the same bookkeeping a settable level's marker
+  // uses. The firmware's own pending/pressed indices say the same thing while
+  // a write is in flight.
+  int askedIndex = -1;
+  if (!askedTopic_.isEmpty() && askedTopic_ == obj.properties.topic && !askedValue_.isEmpty()) {
+    for (int i = 0; i < count; i++) {
+      String read = states[i].readValue;
+      read.trim();
+      String asked = askedValue_;
+      asked.trim();
+      if (read == asked) askedIndex = i;
     }
-
-    const SwitchState& state = obj.properties.states[activeIndex];
-    if (unconfirmed) {
-      drawSwitchBar(obj.x, obj.y, obj.width, markerColor, true);
-    } else if (state.showMarker) {
-      drawSwitchBar(obj.x, obj.y, obj.width, markerColor, false);
-    }
-
-    canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-    // No iconPathActive here: a state is only ever drawn in this mode while
-    // it is the active one, so its own icon already is its active picture.
-    // Reaching for the active variant would leave iconPath unreachable.
-    drawSwitchStateContent(state, state.iconPath, obj.x, obj.width, bandTop, bandHeight,
-                           textColor, font, fontAscent, fontDescent);
-    canvas_->clearClip();
-    return true;
   }
+  if (askedIndex < 0) askedIndex = pendingStateIndex;
 
-  // Float division, exactly as render-switch.ts does it, with rounding only
-  // where the designer rounds.
-  //
-  // This used to be integer division, with the last segment absorbing the
-  // remainder so the segments summed to obj.width - and a comment calling the
-  // difference from the designer's float division "close enough to never
-  // matter on a display this size". It matters whenever obj.width does not
-  // divide by the state count: at 555px across two states the boundary falls
-  // at 400.5, integer division put it at 400 and the designer's Math.round
-  // put it at 401, so every divider and every marker bar sat one pixel apart.
-  // Found 2026-09-10 by the generated type-coverage run, whose switch is a
-  // width the hand-written fixtures never used (theirs is 280 across two
-  // states, which divides exactly and hid this for as long as it existed).
-  const float segmentWidth = (float)obj.width / (float)stateCount;
-  // jsRound, not lroundf: the designer rounds with Math.round, which takes
-  // .5 upward rather than away from zero. Identical for positive values, and
-  // this is the file where "identical for the cases we tried" has already
-  // cost one bug.
-  auto boundary = [&](size_t index) {
-    return jsRound((float)obj.x + (float)index * segmentWidth);
+  auto colourOf = [&](const String& hex) { return parseHexColor(hex); };
+  auto fillRect = [&](const SwitchRect& r, const String& hex) {
+    if (!r.valid()) return;
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colourOf(hex));
+  };
+  // A ring cut out of a filled shape rather than stroked: a thin stroke breaks
+  // up wherever the picture is later cut to one bit, and cutting leaves what is
+  // behind the control visible.
+  auto ringRect = [&](const SwitchRect& r, int thickness, const String& hex) {
+    if (!r.valid()) return;
+    const uint16_t colour = colourOf(hex);
+    const uint16_t inside = colourOf(look.surfaceFramed ? currentScreenBgHex_ : look.surface);
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colour);
+    const int t = thickness > 0 ? thickness : 1;
+    if (r.w > 2 * t && r.h > 2 * t) {
+      const int innerR = r.r - t > 0 ? r.r - t : 0;
+      canvas_->fillRoundRect(r.x + t, r.y + t, r.w - 2 * t, r.h - 2 * t, innerR, inside);
+    }
+  };
+  auto drawStateText = [&](const String& text, const SwitchRect& clip, int x, int baseline, const String& hex) {
+    if (text.isEmpty() || font == nullptr || !clip.valid()) return;
+    canvas_->setClip(clip.x, clip.y, clip.w, clip.h);
+    font->drawText(*canvas_, text, (int16_t)x, (int16_t)baseline, colourOf(hex));
+    canvas_->clearClip();
+  };
+  auto widthOf = [&](const String& text) -> int {
+    if (font == nullptr || text.isEmpty()) return 0;
+    return measureTrueTextWidth(text, font);
   };
 
-  for (size_t i = 0; i < stateCount; i++) {
-    int segX = boundary(i);
-    // Two different widths, because the designer uses two. Content is clipped
-    // to the gap between this boundary and the next, which tiles obj.width
-    // exactly with no seam; the marker bar is sized from the segment width
-    // itself (Math.round(width) in drawBar), which is the same number for
-    // every segment even when the boundaries are not evenly spaced.
-    int segW = boundary(i + 1) - segX;
-    int barW = jsRound(segmentWidth);
+  if (!switchshape::isKnobForm(obj)) {
+    const SwitchRect box = switchshape::container(obj);
+    if (look.surfaceFramed) ringRect(box, 1, materialcolors::applyDepth(switchshape::colorOf(obj)));
+    else fillRect(box, look.surface);
 
-    bool isPending = (int)i == pendingStateIndex;
-    bool isPressed = (int)i == pressedStateIndex && !isPending;
-    bool isActive = (int)i == activeIndex;
+    std::vector<SwitchRect> segs;
+    switchshape::segments(obj, count, segs);
+    for (int i = 0; i < count && i < (int)segs.size(); i++) {
+      const SwitchRect& seg = segs[i];
+      const bool chosen = i == activeIndex;
+      if (chosen) fillRect(seg, look.chosen);
+      // A finger on a segment, and a tap whose answer has not come back: the
+      // same ring. Both mean "this is not what is reported - yet".
+      if (i == askedIndex || i == pressedStateIndex) ringRect(seg, 2, look.ring);
 
-    // Divider between segments (not before the first one - the outer
-    // border already covers that edge), same skip-if-transparent as the
-    // outer border above.
-    if (i > 0 && !borderTransparent) {
-      canvas_->drawLine(segX, obj.y, segX, obj.y + obj.height - 1, borderColor);
+      const String ink = chosen ? look.onChosen : look.onSurface;
+      const String& iconPath =
+          (chosen && !states[i].iconPathActive.isEmpty()) ? states[i].iconPathActive : states[i].iconPath;
+      const String label = states[i].label;
+      const SwitchContent content = switchshape::content(seg, metrics, !iconPath.isEmpty(), widthOf(label));
+      canvas_->setClip(seg.x, seg.y, seg.w, seg.h);
+      if (content.hasIcon && content.icon.valid()) {
+        ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, content.icon.x, content.icon.y);
+      }
+      canvas_->clearClip();
+      drawStateText(label, seg, content.textX, content.baseline, ink);
     }
-
-    // showMarker is a "single" mode concept: here the bar's whole job is to
-    // say which of the n segments is active, which is not a question the
-    // author gets to answer per state. An unconfirmed segment draws hollow
-    // and the confirmed one stays solid, so during a write you see both -
-    // "it is this, you asked for that" - and nothing has to lie.
-    if (isPending || isPressed) {
-      drawSwitchBar(segX, obj.y, barW, markerColor, true);
-    } else if (isActive) {
-      drawSwitchBar(segX, obj.y, barW, markerColor, false);
-    }
-
-    const SwitchState& state = obj.properties.states[i];
-    // A genuinely different picture while this segment is active, falling
-    // back to the normal one when the state declares none - which is now
-    // the common case, since the exporter only ships a second file when the
-    // author really picked a second icon (2026-08-25). Older exports, which
-    // always carried one, keep working through the same branch.
-    const String& iconPath = (isActive && !state.iconPathActive.isEmpty()) ? state.iconPathActive : state.iconPath;
-
-    // Clips to this segment's own rect, not the whole control - matches
-    // the designer's per-segment clip fix (2026-08-13): an oversized font
-    // gets cropped at the segment boundary instead of bleeding into a
-    // neighbor. Deliberately no ink-overhang allowance here: the clip is
-    // the segment, which is taller than the text, so nothing is being
-    // shaved off in the first place.
-    canvas_->setClip(segX, obj.y, segW, obj.height);
-    // Floats, so the centre matches. The designer centres on the unrounded
-    // segment (x + width/2), and handing it a rounded pair here would shift
-    // an icon or a label by a pixel on any boundary that is not whole.
-    drawSwitchStateContent(state, iconPath, (float)obj.x + (float)i * segmentWidth, segmentWidth, bandTop, bandHeight,
-                           textColor, font, fontAscent, fontDescent);
-    canvas_->clearClip();
+    return true;
   }
 
+  // The switch form. The colour says what is reported; the knob says what was
+  // asked for.
+  const bool on = activeIndex >= 0 && switchshape::stateIsOn(states[activeIndex]);
+  const SwitchKnobLook knobLook = switchshape::knobLook(obj, currentScreenBgHex_, on);
+  const SwitchRect track = switchshape::track(obj, count);
+  fillRect(track, knobLook.track);
+  if (!knobLook.trackOutline.isEmpty()) ringRect(track, 2, knobLook.trackOutline);
+
+  const int shownIndex = askedIndex >= 0 ? askedIndex : activeIndex;
+  const String ink = materialcolors::onColorFor(currentScreenBgHex_);
+  const SwitchRect box = switchshape::labelBox(obj, count);
+
+  if (shownIndex < 0) {
+    // Nothing reported: no knob, because every position belongs to a state and
+    // standing somewhere would claim one nobody has reported.
+    const SwitchContent content = switchshape::content(box, metrics, false, widthOf("?"));
+    drawStateText("?", box, content.textX, content.baseline, ink);
+    return true;
+  }
+
+  const switchshape::SwitchKnob knob = switchshape::knob(obj, count, shownIndex, pressedStateIndex >= 0);
+  const int d = knob.r * 2;
+  canvas_->fillRoundRect(knob.cx - knob.r, knob.cy - knob.r, d, d, knob.r, colourOf(knobLook.knob));
+
+  const SwitchState& state = states[shownIndex];
+  const String& iconPath = (on && !state.iconPathActive.isEmpty()) ? state.iconPathActive : state.iconPath;
+  if (!iconPath.isEmpty()) {
+    const int iconSize = (d * 3) / 5 > 1 ? (d * 3) / 5 : 1;
+    ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, knob.cx - iconSize / 2, knob.cy - iconSize / 2);
+  }
+
+  const SwitchContent content = switchshape::content(box, metrics, false, widthOf(state.label));
+  drawStateText(state.label, box, box.x, content.baseline, ink);
   return true;
 }
+
 
 // Draw order for objects that share a zIndex.
 //
@@ -2005,6 +1877,7 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   // arc-level mixes its anti-aliased edges into this when its own
   // background is transparent, which is the usual case for a ring.
   currentScreenBg_ = bgTransparent ? 0xFFFF : screenBg;
+  currentScreenBgHex_ = bgTransparent || screen.backgroundColor.isEmpty() ? String("#ffffff") : screen.backgroundColor;
 
   std::vector<ScreenObject> sortedObjects = screen.objects;
   std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
@@ -2035,6 +1908,7 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
   bool bgTransparent = false;
   uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
   currentScreenBg_ = bgTransparent ? 0xFFFF : screenBg;
+  currentScreenBgHex_ = bgTransparent || screen.backgroundColor.isEmpty() ? String("#ffffff") : screen.backgroundColor;
 
   canvas_->setRegion(rx, ry, rw, rh);
   canvas_->fillRect(rx, ry, rw, rh, currentScreenBg_);

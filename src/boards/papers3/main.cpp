@@ -35,6 +35,7 @@
 #include "../../FirmwareUpdater.h"
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
+#include "../../project/SwitchShape.h"
 #include "../../project/ProjectLoader.h"
 
 // The panel's own size, read back at boot and checked against what the DDF
@@ -171,22 +172,20 @@ static void renderAndPresent(const char *reason)
 // see in a screenshot.
 static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
 {
+  // One rule, in switchshape::stateIndexForTap - the designer's own
+  // switchStateIndexForTap, mirrored. In the switch form two states toggle
+  // wherever they are hit, more take the slot under the finger (or advance,
+  // beside the track); a group takes the segment. A second copy here would
+  // drift, and a finger would hit something other than what it points at.
   const int states = (int)hit->properties.states.size();
   if (states <= 0) return -1;
-
-  if (hit->properties.mode == "single")
-  {
-    // One area, one target: a tap moves to the next state and wraps. The
-    // active index comes from the renderer rather than a second copy of the
-    // rule here - what is drawn and what is tapped have to agree.
-    const int active = renderer->getActiveSwitchStateIndex(*hit);
-    return (active < 0) ? 0 : (active + 1) % states;
-  }
-
-  int index = ((int)(x - objX) * states) / hit->width;
-  if (index < 0) index = 0;
-  if (index >= states) index = states - 1;
-  return index;
+  const int active = renderer == nullptr ? -1 : renderer->getActiveSwitchStateIndex(*hit);
+  // In the object's own coordinates: a Switch inside a panel carries
+  // coordinates relative to its tab-control, while the finger is in screen
+  // ones. objX is where the hit test found the object, so this is the offset
+  // between the two.
+  const int localX = x - objX + hit->x;
+  return switchshape::stateIndexForTap(*hit, localX, active);
 }
 
 static void dispatchButtonAction(const ButtonAction &action)

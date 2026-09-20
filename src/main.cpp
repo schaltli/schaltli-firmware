@@ -49,6 +49,7 @@
 #include "DeviceInfo.h"
 #include "project/ProjectLoader.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/SwitchShape.h"
 #include "project/ColorAssetLoader.h"
 #include "ScreenNavigatorOverlay.h"
 #include "RotaryEncoderReader.h"
@@ -1302,26 +1303,20 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   const int anzahl = (int)treffer->properties.states.size();
   if (anzahl <= 0 || treffer->properties.writeTopic.isEmpty()) return false;
 
-  int index;
-  if (treffer->properties.mode == "single") {
-    // Einzelflaeche (2026-08-25): die ganze Flaeche ist ein Ziel, und ein
-    // Tipp geht zum naechsten Zustand in der Liste, am Ende zurueck auf
-    // Null. Bei zwei Zustaenden ist das ein Umschalter, bei dreien ein
-    // Zyklus - deshalb gibt es keinen "genau zwei"-Sonderfall zu behandeln.
-    //
-    // Der aktive Index kommt aus dem Renderer, nicht aus einer zweiten
-    // Kopie derselben Regel hier: was gezeichnet wird und was getippt wird,
-    // muessen sich ueber denselben Zustand einig sein.
-    if (screenRenderer == nullptr) return false;
-    const int aktiv = screenRenderer->getActiveSwitchStateIndex(*treffer);
-    // Noch kein Retained-Wert: die Kachel zeigt "?", und ein Tipp faengt
-    // vorne an, statt gar nichts zu tun.
-    index = (aktiv < 0) ? 0 : (aktiv + 1) % anzahl;
-  } else {
-    index = ((int)(x - objX) * anzahl) / treffer->width;
-    if (index < 0) index = 0;
-    if (index >= anzahl) index = anzahl - 1;
-  }
+  // Which state a tap picks is one rule, in switchshape::stateIndexForTap -
+  // the designer's own switchStateIndexForTap, mirrored. In the switch form
+  // two states toggle wherever they are hit, more take the slot under the
+  // finger (or advance, beside the track); a group takes the segment. Written
+  // out here a second time it would drift, and a finger would hit something
+  // other than what it points at.
+  const int aktiv = screenRenderer == nullptr ? -1 : screenRenderer->getActiveSwitchStateIndex(*treffer);
+  // In the object's own coordinates: a Switch inside a panel carries
+  // coordinates relative to its tab-control, while the finger is in screen
+  // ones. objX is where the hit test found the object, so this is the offset
+  // between the two.
+  const int lokalX = x - objX + treffer->x;
+  const int index = switchshape::stateIndexForTap(*treffer, lokalX, aktiv);
+  if (index < 0 || index >= anzahl) return false;
 
   const String &wert = treffer->properties.states[index].writeValue;
   if (wert.isEmpty()) return false;
