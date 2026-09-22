@@ -149,6 +149,29 @@ inline SwitchLook look(const ScreenObject& obj, const String& background) {
   return out;
 }
 
+// What a ring on one button of a group encloses - the designer's
+// `switchRingFill` in lib/switch-shape.ts.
+//
+// A ring is its outer pill with the inside taken back, so whatever the ring
+// stands on has to be named rather than inherited. Three answers:
+//
+//   - the chosen button keeps its OWN colour inside the ring. It is still the
+//     reported state; the ring only says a different one has been asked for.
+//   - any other button shows the container it sits in.
+//   - empty where the container is only an outline (a 1-bit panel): nothing
+//     lies behind it, so the ring encloses the screen. The caller decides what
+//     that means - a run nobody claims for the anti-aliased path, the screen's
+//     own colour for the whole-pixel one.
+//
+// Here rather than in ColorScreenRenderer because all three renderers need the
+// same answer, and because it is the one thing about a ring the designer's
+// golden recording can carry (`group-asked-for-what-is-already-chosen`, which
+// is the only case where the first answer differs from the second).
+inline String ringFill(const SwitchLook& look, bool chosen) {
+  if (chosen) return look.chosen;
+  return look.surfaceFramed ? String("") : look.surface;
+}
+
 inline SwitchKnobLook knobLook(const ScreenObject& obj, const String& background, bool on) {
   const SwitchLook base = look(obj, background);
   const String color = materialcolors::applyDepth(colorOf(obj));
@@ -283,6 +306,29 @@ inline SwitchKnob knob(const ScreenObject& obj, int count, int index, bool press
   out.cx = t.x + pad + slot * step + step / 2;
   out.cy = t.y + t.h / 2;
   out.r = d / 2;
+  return out;
+}
+
+// Where a knob's state icon goes, given that knob's circle.
+//
+// Three fifths of the diameter, centred - not the font's cap height, which is
+// what `content()` below sizes a button's icon by. A knob is round, and its own
+// size already says how big the picture inside it can be.
+//
+// Named rather than written out at the one place that draws it, because the
+// designer bakes the bitmap this blits and has to arrive at the same number.
+// On 2026-09-22 it did not: exportSwitchStateIcon baked at the cap height for
+// both forms, and a 19x19 picture was blitted into the 28x28 box this rule
+// reserves. 522 differing pixels in a conformance run, all inside that square.
+inline SwitchRect knobIcon(const SwitchKnob& k) {
+  int size = k.r * 2 * 3 / 5;
+  if (size < 1) size = 1;
+  SwitchRect out;
+  out.x = k.cx - size / 2;
+  out.y = k.cy - size / 2;
+  out.w = size;
+  out.h = size;
+  out.r = 0;
   return out;
 }
 

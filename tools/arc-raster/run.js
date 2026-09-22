@@ -70,8 +70,18 @@ function die(message) {
   process.exit(1);
 }
 
+// Exit 2 rather than 1: this check is about the rasterizer, and "there is no
+// compiler on this machine" is not an answer about the rasterizer. It is the
+// code hil/test-all.js reads as SKIPPED - loudly, in the summary - the same
+// way it treats a board that is not plugged in. A real disagreement still
+// leaves with 1 and fails the run.
+function skip(message) {
+  console.error(`\n${message}`);
+  process.exit(2);
+}
+
 if (!fs.existsSync(GOLDEN)) {
-  die(
+  skip(
     `No golden file at ${GOLDEN}.\n` +
       `It is written by the designer repo:  node hil/android/fixtures/build-arc-golden.js\n` +
       `(that needs the designer's dev server running). Point ARC_GOLDEN at it if it lives elsewhere.`,
@@ -107,7 +117,7 @@ function build(name) {
     return exe;
   }
   if (!VCVARS) {
-    die(
+    skip(
       "No desktop C++ compiler found - no g++ or clang++ on PATH, and no Visual Studio\n" +
         "Build Tools in the usual places. This check compiles src/project/ArcRaster.cpp for\n" +
         "the host; without a compiler it cannot run, and has NOT passed.",

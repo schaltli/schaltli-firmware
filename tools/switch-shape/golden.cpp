@@ -94,6 +94,19 @@ int main(int argc, char** argv) {
   printRect("track", track);
   printRect("labelbox", labelBox);
 
+  // What a ring on each button would enclose. Printed per button rather than
+  // only for the one ringed now, so the rule is pinned whichever button a
+  // finger asks for - and because only a button that is at once the reported
+  // state AND the one asked for tells the right answer (its own colour) from
+  // the wrong one (the container's). "-" is the designer's null: nothing lies
+  // behind a container that is only an outline.
+  {
+    const SwitchLook ringLook = switchshape::look(obj, background);
+    for (int i = 0; i < count; i++) {
+      printf("ringfill %s\n", hexOf(switchshape::ringFill(ringLook, i == activeIndex)));
+    }
+  }
+
   printf("knobs %d\n", count);
   for (int i = 0; i < count; i++) {
     const switchshape::SwitchKnob k = switchshape::knob(obj, count, i, false, on);

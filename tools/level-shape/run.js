@@ -49,8 +49,18 @@ function die(message) {
   process.exit(1);
 }
 
+// Exit 2 rather than 1: this check is about the shape rules, and "there is no
+// compiler on this machine" is not an answer about the shape rules. It is the
+// code hil/test-all.js reads as SKIPPED - loudly, in the summary - the same
+// way it treats a board that is not plugged in. A real disagreement still
+// leaves with 1 and fails the run.
+function skip(message) {
+  console.error(`\n${message}`);
+  process.exit(2);
+}
+
 if (!fs.existsSync(GOLDEN)) {
-  die(
+  skip(
     `No golden file at ${GOLDEN}.\n` +
       `It is written by the designer repo:  node hil/android/fixtures/build-level-golden.js\n` +
       `(that needs the designer's dev server running). Point LEVEL_GOLDEN at it if it lives elsewhere.`,
@@ -85,7 +95,7 @@ function build(name) {
     return exe;
   }
   if (!VCVARS) {
-    die(
+    skip(
       "No desktop C++ compiler found - no g++ or clang++ on PATH, and no Visual Studio\n" +
         "Build Tools in the usual places. This check compiles src/project/LevelShape.h for\n" +
         "the host; without a compiler it cannot run, and has NOT passed.",
@@ -253,18 +263,28 @@ console.log(
     : `\n${failures} case(s) failed.`,
 );
 
-// --- what the recording cannot say -------------------------------------------
+// --- the same rule, over a range the recording only samples -------------------
 //
-// Every recorded slider is an object with room to spare: its slot is exactly
-// the handle's asked-for length, so a port measuring the handle from the slot
-// and a port measuring it from the thickness arrive at the same numbers and
-// the twelve cases above cannot tell them apart. The 4.3B's conformance bar is
-// NOT such an object - it carries a name, so its slot is only what is left
-// under the header - and that is where LevelShape.h was wrong until today.
+// This block was written on 2026-09-22 because the recording had no case for
+// the rule it holds. Every recorded slider was an object with room to spare -
+// its slot exactly the handle's asked-for length - so a port measuring the
+// handle from the slot and a port measuring it from the thickness arrived at
+// the same numbers, and no case could tell them apart. The 4.3B's conformance
+// bar is NOT such an object: it carries a name, so its slot is only what is
+// left under the header, and that is where LevelShape.h was wrong.
 //
-// Rather than restate the designer's arithmetic here (which is the very drift
-// the recording exists to prevent), this holds the rule the designer states in
-// prose and the recording has no case for:
+// The recording has two such cases now - slider-squeezed-by-its-header and
+// slider-vertical-squeezed-across - and they catch that defect on their own:
+// put it back into LevelShape.h and the plain comparison above fails both,
+// before this block runs at all. So this is no longer the only thing standing
+// between the defect and a green run.
+//
+// It is kept anyway, because it says something the two cases cannot: they pin
+// two points (18 px across and 34), while this squeezes every recorded slider
+// to three widths in turn and demands that nothing along the bar moves at any
+// of them. Rather than restate the designer's arithmetic here (which is the
+// very drift the recording exists to prevent), it holds the rule the designer
+// states in prose:
 //
 //   Nothing along the bar follows from the room across it.
 //
@@ -275,7 +295,8 @@ console.log(
 //
 // Source: lib/level-shape.ts, levelHandleSpan's own comment ("Measured from the
 // length the thickness ASKS for, not from the one the object had room for"),
-// the designer's 2026-09-22 change.
+// the designer's 2026-09-22 change. Also LevelShape.kt's levelHandleSpan, which
+// carried the same fault until the two squeezed cases were recorded.
 console.log("\nAnd nothing along the bar follows from the room across it:");
 
 let invariantFailures = 0;

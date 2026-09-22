@@ -54,8 +54,18 @@ function die(message) {
   process.exit(1);
 }
 
+// Exit 2 rather than 1: this check is about the shape rules, and "there is no
+// compiler on this machine" is not an answer about the shape rules. It is the
+// code hil/test-all.js reads as SKIPPED - loudly, in the summary - the same
+// way it treats a board that is not plugged in. A real disagreement still
+// leaves with 1 and fails the run.
+function skip(message) {
+  console.error(`\n${message}`);
+  process.exit(2);
+}
+
 if (!fs.existsSync(GOLDEN)) {
-  die(
+  skip(
     `No golden file at ${GOLDEN}.\n` +
       `It is written by the designer repo:  node hil/android/fixtures/build-switch-golden.js\n` +
       `(that needs the designer's dev server running). Point SWITCH_GOLDEN at it if it lives elsewhere.`,
@@ -90,7 +100,7 @@ function build(name) {
     return exe;
   }
   if (!VCVARS) {
-    die(
+    skip(
       "No desktop C++ compiler found - no g++ or clang++ on PATH, and no Visual Studio\n" +
         "Build Tools in the usual places. This check compiles src/project/SwitchShape.h for\n" +
         "the host; without a compiler it cannot run, and has NOT passed.",
@@ -154,13 +164,15 @@ function writeCase(input, metrics) {
 }
 
 // What the firmware printed, as a map of the first word to the rest, with the
-// repeated lines (seg, knob, quietknob) kept as lists.
+// repeated lines (seg, knob, quietknob, ringfill) kept as lists.
+const REPEATED = ["seg", "knob", "quietknob", "ringfill"];
+
 function parse(text) {
-  const out = { seg: [], knob: [], quietknob: [] };
+  const out = Object.fromEntries(REPEATED.map((key) => [key, []]));
   for (const line of text.trim().split(/\r?\n/)) {
     const parts = line.trim().split(/\s+/);
     const key = parts.shift();
-    if (key === "seg" || key === "knob" || key === "quietknob") out[key].push(parts);
+    if (REPEATED.includes(key)) out[key].push(parts);
     else out[key] = parts;
   }
   return out;
@@ -208,6 +220,18 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
   });
   checkRect("track", got.track, want.track);
   checkRect("labelBox", got.labelbox, want.labelBox);
+
+  // What a ring on each button encloses. The chosen button keeps its OWN
+  // colour there; every other one shows the container, or nothing where the
+  // container is only an outline. Only a button that is at once the reported
+  // state and the one asked for tells the two apart, which the recording had
+  // no case for until group-asked-for-what-is-already-chosen.
+  if (want.ringFills) {
+    check("ringFills", got.ringfill.length, want.ringFills.length);
+    want.ringFills.forEach((fill, i) => {
+      if (got.ringfill[i]) checkHex(`ringFill[${i}]`, got.ringfill[i][0], fill);
+    });
+  }
   want.knobs.forEach((knob, i) => {
     if (got.knob[i]) checkKnob(`knob[${i}]`, got.knob[i], knob);
   });

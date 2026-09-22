@@ -1990,11 +1990,12 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
         // A ring is its outer pill with the inside taken back, so what the
         // ring encloses has to be said out loud: the chosen pill, the
         // container, or - where the container is only an outline - nothing at
-        // all. The whole-pixel path cannot say the first of those and paints
-        // the container's colour inside a chosen segment's ring instead.
-        if (chosen) painted.push_back(insidePill(seg, 2, colourOf(look.chosen), true));
-        else if (look.surfaceFramed) painted.push_back(insidePill(seg, 2, 0, false));
-        else painted.push_back(insidePill(seg, 2, colourOf(look.surface), true));
+        // all (switchshape::ringFill, which the designer and the Android app
+        // read from their own copy of the same rule). Nothing at all is a run
+        // that claims its sub-samples and paints none of them.
+        const String inside = switchshape::ringFill(look, chosen);
+        if (inside.isEmpty()) painted.push_back(insidePill(seg, 2, 0, false));
+        else painted.push_back(insidePill(seg, 2, colourOf(inside), true));
         painted.push_back(wholePill(seg, colourOf(look.ring)));
         continue;
       }
@@ -2026,11 +2027,11 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
       // encloses has to be said out loud: the chosen segment keeps its own
       // colour inside the ring - it is still the reported state - and an
       // unchosen one shows the container, or the screen where the container is
-      // only an outline.
+      // only an outline. One rule, in switchshape::ringFill; "nothing behind
+      // it" is the screen's own colour on this path, which cannot leave a hole.
       if (i == askedIndex || i == pressedStateIndex) {
-        const String inside =
-            chosen ? look.chosen : (look.surfaceFramed ? currentScreenBgHex_ : look.surface);
-        ringRect(seg, 2, look.ring, inside);
+        const String fill = switchshape::ringFill(look, chosen);
+        ringRect(seg, 2, look.ring, fill.isEmpty() ? currentScreenBgHex_ : fill);
       }
     }
 #endif
@@ -2120,8 +2121,10 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   if (on) {
     const String& iconPath = !state.iconPathActive.isEmpty() ? state.iconPathActive : state.iconPath;
     if (!iconPath.isEmpty()) {
-      const int iconSize = (d * 3) / 5 > 1 ? (d * 3) / 5 : 1;
-      ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, knob.cx - iconSize / 2, knob.cy - iconSize / 2);
+      // switchshape::knobIcon, not three fifths worked out here: the designer
+      // bakes the bitmap to that rule and the two have to be the same number.
+      const SwitchRect iconBox = switchshape::knobIcon(knob);
+      ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, iconBox.x, iconBox.y);
     }
   }
 
