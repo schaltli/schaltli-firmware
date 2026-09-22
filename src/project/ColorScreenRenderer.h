@@ -8,6 +8,7 @@
 #include "../ClippedCanvas16.h"
 #include "ColorAssetLoader.h"
 #include "LevelShape.h"
+#include "PillRaster.h"
 #include <functional>
 
 // Color (RGB565) counterpart of MqttEPaperDisplay2's ScreenRenderer -
@@ -43,6 +44,22 @@
 // correctly but isn't tappable yet. Out of scope here (this port covers
 // rendering only, per the request that introduced it); see those
 // functions' own comments.
+// One pill-shaped run and the colour it is painted in - the counterpart of
+// PaintedPill in the designer's components/canvas/renderers/paint-pills.ts.
+//
+// It lives here rather than in PillRaster.h because the designer keeps colour
+// out of lib/pill-raster.ts too: that file is geometry, and where the geometry
+// is painted is the renderer's business.
+//
+// `paints == false` is a hole: the run claims its pixels - nothing behind it
+// shows through - but paints nothing, which is how an outline is described
+// (the outer pill in the outline's colour, the inside knocked out of it).
+struct PaintedPill {
+  PillRaster::Band band;
+  uint16_t colour = 0;
+  bool paints = true;
+};
+
 class ColorScreenRenderer {
 public:
   ColorScreenRenderer(IProjectLoader& projectLoader, ClippedCanvas16* canvas);
@@ -191,6 +208,29 @@ private:
   // and an edge that mixes into different things on the two sides is an
   // edge that fails the pixel comparison.
   bool renderArcLevel(const ScreenObject& obj, uint16_t mixInto);
+
+  // Paints a set of pill-shaped runs, anti-aliased, in one pass - this repo's
+  // copy of the designer's components/canvas/renderers/paint-pills.ts.
+  //
+  // The runs come in priority order - a handle before the track it lies on, a
+  // hole before the ring it cuts - because every sub-sample is counted into
+  // exactly one of them (PillRaster.h). That is the whole reason this exists
+  // rather than a sequence of fillRoundRect calls: where two runs meet,
+  // painting one over the other leaves a seam of the lower one's colour along
+  // the join.
+  //
+  // Straight onto the canvas, not through a buffer of its own: there is no
+  // zoom here, so there is no second softening to avoid - the designer draws
+  // into an offscreen buffer only because its canvas is scaled.
+  //
+  // `mixInto` is what a soft edge blends against where nothing of the control
+  // covers a pixel: a declared colour rather than whatever happens to be on
+  // the canvas, exactly as renderArcLevel's own mixInto is, and for the same
+  // reason - the designer cannot read its canvas back at an arbitrary zoom.
+  //
+  // Only ever called where PILL_ANTIALIASED is 1. Below 24 bit the callers
+  // keep their whole-pixel path; see PillRaster.h for why that is a decision.
+  void paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto);
 
   // The background renderScreen() filled before drawing any object.
   uint16_t currentScreenBg_ = 0xFFFF;

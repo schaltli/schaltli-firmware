@@ -142,6 +142,23 @@ inline bool hasHandle(const ScreenObject& obj) {
 // How long the handle is, across the bar: Material's 44 on its 16, as a ratio.
 inline int handleLength(int thick) { return (thick * 11) / 4; }
 
+// How long the handle ASKS to be, across the bar - what the author's thickness
+// implies, before the object's own size across has had a say.
+//
+// Everything about the handle ALONG the bar - how wide it is, how much room is
+// left either side of it - is measured from this and never from the slot it
+// ended up in. An object too short for its handle clamps the handle's length,
+// since it cannot stand out of a bar that is not there; its width runs along
+// the bar, where nothing is short of room.
+//
+// Measuring from the clamped slot instead is what made a bar with a header -
+// whose slot is only what is left under the text - draw a 3 px handle with a
+// 2 px gap where the designer draws 4 and 6. The 4.3B conformance run saw that
+// on 2026-09-22 as 170 differing pixels, all of them the two track runs beside
+// the handle and the handle's own outline. The designer's levelHandleSpan is
+// this function (lib/level-shape.ts).
+inline int handleSpan(const ScreenObject& obj) { return handleLength(thickness(obj)); }
+
 // One line of the font: ascent plus descent.
 inline int lineHeight(const LevelFontMetrics& m) { return m.ascent + m.descent; }
 
@@ -286,9 +303,8 @@ inline int clampInt(int v, int lo, int hi) {
 // make room, which would move every value's position.
 inline LevelRect handleRect(const ScreenObject& obj, const LevelLayout& lay, float percent) {
   const bool vertical = isVertical(obj);
-  const int across = vertical ? lay.slot.w : lay.slot.h;
   const int span = vertical ? lay.track.h : lay.track.w;
-  int thick = handleWidth(across);
+  int thick = handleWidth(handleSpan(obj));
   const int third = span / 3;
   if (thick > third) thick = third;
   if (thick < 2) thick = 2;
@@ -337,8 +353,7 @@ inline void segments(const ScreenObject& obj, const LevelLayout& lay, float fill
     runs[1] = Run{edge, end, false};
   }
 
-  const int across = vertical ? lay.slot.w : lay.slot.h;
-  const int gap = handleGap(across);
+  const int gap = handleGap(handleSpan(obj));
   const int cutA = handle ? (vertical ? handle->y : handle->x) - gap : 0;
   const int cutB = handle ? (vertical ? handle->y + handle->h : handle->x + handle->w) + gap : 0;
 

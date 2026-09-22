@@ -974,6 +974,121 @@ String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) {
   return obj.properties.fontId;
 }
 
+#if PILL_ANTIALIASED
+// Sixteen sub-samples a pixel, mixed in 5/6/5 - the arc's rules exactly.
+// See the declaration in ColorScreenRenderer.h for what the order of the runs
+// means and why they all arrive in one call.
+void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto) {
+  std::vector<PillRaster::Band> bands;
+  std::vector<ArcRaster::Rgb565> colours;
+  std::vector<uint16_t> packed;
+  // Not std::vector<bool>: that one is a bit field with a proxy reference, and
+  // this is read once per band per pixel.
+  std::vector<uint8_t> paints;
+  bands.reserve(painted.size());
+  colours.reserve(painted.size());
+  packed.reserve(painted.size());
+  paints.reserve(painted.size());
+  for (size_t i = 0; i < painted.size(); i++) {
+    const PaintedPill& p = painted[i];
+    if (p.band.w <= 0 || p.band.h <= 0) continue;
+    bands.push_back(p.band);
+    colours.push_back(ArcRaster::toRgb565(p.colour));
+    packed.push_back(p.colour);
+    paints.push_back(p.paints ? 1 : 0);
+  }
+  if (bands.empty()) return;
+
+  const PillRaster::Box bounds = PillRaster::bandsBounds(bands);
+  if (bounds.w <= 0 || bounds.h <= 0) return;
+
+  // Only the clipped cut-through, for the reason renderArcLevel gives at
+  // length: pixelBands() samples every pixel sixteen times against every run,
+  // so the walk is the whole cost, and a partial redraw should pay only for
+  // what really changes. Without a clip, the runs' own bounding box.
+  int32_t pxFrom = bounds.x, pxTo = bounds.x + bounds.w;
+  int32_t pyFrom = bounds.y, pyTo = bounds.y + bounds.h;
+  if (canvas_->clipActive()) {
+    const int32_t cx0 = (int32_t)canvas_->clipX();
+    const int32_t cy0 = (int32_t)canvas_->clipY();
+    const int32_t cx1 = cx0 + (int32_t)canvas_->clipW();
+    const int32_t cy1 = cy0 + (int32_t)canvas_->clipH();
+    if (cx0 > pxFrom) pxFrom = cx0;
+    if (cy0 > pyFrom) pyFrom = cy0;
+    if (cx1 < pxTo) pxTo = cx1;
+    if (cy1 < pyTo) pyTo = cy1;
+  }
+
+  const ArcRaster::Rgb565 mix = ArcRaster::toRgb565(mixInto);
+  std::vector<uint8_t> counts(bands.size(), 0);
+
+  for (int32_t py = pyFrom; py < pyTo; py++) {
+    for (int32_t px = pxFrom; px < pxTo; px++) {
+      PillRaster::pixelBands(bands, px, py, counts.data());
+
+      // The same arithmetic ArcRaster::blendBands does, over a list rather
+      // than over three fixed pairs: a ring has exactly three bands and never
+      // will have a fourth, while a pill control has as many runs as it has
+      // parts. Accumulated in one pass and rounded once - an unrounded divide
+      // would bias every anti-aliased edge half a step darker on one side, and
+      // rounding per run would bias it several times over.
+      int32_t r = 0, g = 0, b = 0;
+      int32_t covered = 0;
+      int inked = 0;
+      size_t only = 0;
+      for (size_t i = 0; i < bands.size(); i++) {
+        const uint8_t count = counts[i];
+        // A run that paints nothing still claims its sub-samples - that is
+        // what makes a hole a hole - it simply contributes none of them to the
+        // mixture, so they fall to the background below like any other
+        // uncovered sub-sample.
+        if (count == 0 || paints[i] == 0) continue;
+        r += (int32_t)colours[i].r * count;
+        g += (int32_t)colours[i].g * count;
+        b += (int32_t)colours[i].b * count;
+        covered += count;
+        inked++;
+        only = i;
+      }
+      // Nothing of the control here. The pixel is left alone rather than
+      // painted with the background: a pill has no square of its own to own,
+      // so whatever is behind it - a box, an image - still shows through.
+      if (covered == 0) continue;
+
+      // A pixel that one run owns outright keeps that run's colour exactly.
+      // On the designer's 8-bit canvas and on Android's ARGB_8888 bitmap that
+      // is the point of the rule: the body of a bar would otherwise come back
+      // a step off through 5/6/5 and not match the box beside it. Here the
+      // framebuffer already IS 5/6/5, so the two are provably the same value
+      // ((16c + 8) / 16 == c). It stays because the rule is shared, and
+      // because it skips the arithmetic on most of the control's pixels.
+      if (inked == 1 && covered == PillRaster::COVERAGE_MAX) {
+        canvas_->drawPixel((int16_t)px, (int16_t)py, packed[only]);
+        continue;
+      }
+
+      const int32_t rest = PillRaster::COVERAGE_MAX - covered;
+      r += (int32_t)mix.r * rest;
+      g += (int32_t)mix.g * rest;
+      b += (int32_t)mix.b * rest;
+      // All operands are non-negative, so a plain divide floors - the same
+      // thing Math.floor does on the designer's side.
+      const int32_t half = PillRaster::COVERAGE_MAX / 2;
+      ArcRaster::Rgb565 out;
+      out.r = (uint8_t)((r + half) / PillRaster::COVERAGE_MAX);
+      out.g = (uint8_t)((g + half) / PillRaster::COVERAGE_MAX);
+      out.b = (uint8_t)((b + half) / PillRaster::COVERAGE_MAX);
+      canvas_->drawPixel((int16_t)px, (int16_t)py, ArcRaster::packRgb565(out));
+    }
+  }
+}
+#else
+// Below 24 bit nothing is softened, so nothing calls this. Defined all the
+// same, because a declaration without a definition is a link error waiting for
+// the first caller that forgets the gate.
+void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t) {}
+#endif  // PILL_ANTIALIASED
+
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   const String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
 
@@ -985,6 +1100,21 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   const LevelTrackLook look = levelshape::trackLook(fillHex, currentScreenBgHex_);
   const uint16_t fillColor = parseHexColor(fillHex);
   const uint16_t trackColor = parseHexColor(look.track);
+  // A handle a finger can move keeps the bar's own colour - handle and filled
+  // track are one object that the gap separates - and one that only reports the
+  // installation's target takes the track's colour and steps back. The user, on
+  // the picture: "seine dimmed farbe sagt mir dass ich ihn nicht bewegen kann".
+  // Where the track is only an outline there is no quiet colour to step back
+  // into, so every handle there stays solid. handleColourFor() in the designer's
+  // render-level-indicator.ts, and the same three lines renderArcLevel already
+  // carries - the ring and the bar have to say this the same way or the two
+  // sides of one control contradict each other.
+  //
+  // "Settable" here is a non-blank writeTopic and nothing else. NOT
+  // objecttypes::isSettable, which answers the other question - which objects
+  // accept a finger at all - and stays for that.
+  const uint16_t handleColor =
+      parseHexColor((!obj.properties.writeTopic.isEmpty() || look.framed) ? fillHex : look.track);
   const uint16_t textColor =
       parseHexColor(obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor);
 
@@ -998,6 +1128,11 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     }
   }
 
+#if !PILL_ANTIALIASED
+  // The whole-pixel path, unchanged since before the rasterizer existed and
+  // kept line for line: below 24 bit there is nothing to mix into, so this is
+  // still the picture (PillRaster.h says why that is a decision).
+  //
   // One run of track or fill, painted flush at the ends that are not the
   // track's own, and - where the mixed colour cannot be told from the
   // background - as an outline in the bar's colour with the background cut back
@@ -1027,6 +1162,84 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     drawRun(seg, fillColor);
     LevelSegment inner;
     if (levelshape::frameInner(seg, vertical, inner)) drawRun(inner, trackColor);
+  };
+#endif
+
+  // Everything this bar is made of, described rather than painted, and handed
+  // to one rasterizer (PillRaster.h and paintPills above).
+  //
+  // The order IS the picture: a sub-sample belongs to the first run that
+  // contains it and to no other. Painting the handle over the track - which is
+  // what the whole-pixel path above still does, because it has nothing to mix
+  // - would leave a ring of track colour around it where the two meet, and the
+  // same along the value's edge, which is the one place on a bar anybody looks
+  // at.
+  auto paintBar = [&](const std::vector<LevelSegment>& runs, const LevelRect* handle) {
+#if PILL_ANTIALIASED
+    // A run's two ends: rounded where the track itself ends, square where
+    // something cut it - the fill's edge, or the handle's gap. That is
+    // Material's 2 dp inner corner taken to its limit (LevelShape.h).
+    auto bandOf = [&](const LevelSegment& seg) {
+      PillRaster::Band band;
+      band.x = seg.x;
+      band.y = seg.y;
+      band.w = seg.w;
+      band.h = seg.h;
+      band.rLow = seg.roundStart ? seg.r : 0;
+      band.rHigh = seg.roundEnd ? seg.r : 0;
+      band.vertical = vertical;
+      return band;
+    };
+    auto pillOf = [](const PillRaster::Band& band, uint16_t colour) {
+      PaintedPill out;
+      out.band = band;
+      out.colour = colour;
+      out.paints = true;
+      return out;
+    };
+
+    std::vector<PaintedPill> painted;
+    if (handle != nullptr && handle->valid()) {
+      PillRaster::Band band;
+      band.x = handle->x;
+      band.y = handle->y;
+      band.w = handle->w;
+      band.h = handle->h;
+      band.rLow = handle->r;
+      band.rHigh = handle->r;
+      // It lies ACROSS the bar, so its own long axis is the other one.
+      band.vertical = !vertical;
+      painted.push_back(pillOf(band, handleColor));
+    }
+    for (const LevelSegment& seg : runs) {
+      if (seg.isFill) {
+        painted.push_back(pillOf(bandOf(seg), fillColor));
+        continue;
+      }
+      // The unfilled track: a body in its mixed colour, or - where that colour
+      // cannot be told from the background - an outline in the bar's own
+      // colour. The outline is the run's outer pixel with its inside taken
+      // back, not a ring behind it, so it ends straight where a run is cut
+      // instead of in a rounded cap. The inside comes first, being the one
+      // that wins the pixels it covers.
+      if (!look.framed) {
+        painted.push_back(pillOf(bandOf(seg), trackColor));
+        continue;
+      }
+      LevelSegment inner;
+      if (levelshape::frameInner(seg, vertical, inner)) painted.push_back(pillOf(bandOf(inner), trackColor));
+      painted.push_back(pillOf(bandOf(seg), fillColor));
+    }
+    paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)));
+#else
+    for (const LevelSegment& seg : runs) {
+      if (seg.isFill) drawRun(seg, fillColor);
+      else drawTrackRun(seg);
+    }
+    if (handle != nullptr && handle->valid()) {
+      canvas_->fillRoundRect(handle->x, handle->y, handle->w, handle->h, handle->r, handleColor);
+    }
+#endif
   };
 
   // The header's text: the numbers against the right edge at their measured
@@ -1063,7 +1276,9 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     // Nothing has arrived: the empty track and the name, and neither fill nor
     // number. An empty fill would claim an empty tank.
     drawHeader("", "", false);
-    drawTrackRun(levelshape::emptyTrack(lay));
+    std::vector<LevelSegment> empty;
+    empty.push_back(levelshape::emptyTrack(lay));
+    paintBar(empty, nullptr);
     return true;
   }
 
@@ -1098,14 +1313,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
 
   std::vector<LevelSegment> runs;
   levelshape::segments(obj, lay, fillPercentF, hasHandle ? &handle : nullptr, runs);
-  for (const LevelSegment& seg : runs) {
-    if (seg.isFill) drawRun(seg, fillColor);
-    else drawTrackRun(seg);
-  }
-
-  if (hasHandle && handle.valid()) {
-    canvas_->fillRoundRect(handle.x, handle.y, handle.w, handle.h, handle.r, fillColor);
-  }
+  paintBar(runs, hasHandle ? &handle : nullptr);
 
   const bool asPercent = obj.properties.displayValue == "percentage";
   const String measured = asPercent ? String((int)(fillPercentF + 0.5f)) + "%" : valueStr;
@@ -1168,6 +1376,35 @@ String ColorScreenRenderer::getIconPathForValue(const ScreenObject& obj, const S
   return "";
 }
 
+// Between the commanded number and the measured one under it, exactly the
+// designer's ARC_SUB_GAP.
+static const int16_t kArcSubGap = 2;
+
+// The band's thickness and how far the ring sits inside the object's edge -
+// both in one place, because arcLevelDirtyRect() has to arrive at the same two
+// numbers and a second copy of them is precisely the copy-paste trap that has
+// caught this flow once already (see that function's own note).
+static int32_t arcThicknessFor(const ScreenObject& obj, int32_t size) {
+  // 0 means the author set none, and then both shapes draw the one default
+  // they now share (levelshape::kDefaultThickness, 16 since 2026-09-22).
+  int32_t thickness =
+      obj.properties.arcThickness > 0 ? obj.properties.arcThickness : levelshape::kDefaultThickness;
+  if (thickness < 1) thickness = 1;
+  if (thickness > size / 2) thickness = size / 2;
+  return thickness;
+}
+
+static int32_t arcInsetFor(const ScreenObject& obj, int32_t size, int32_t thickness) {
+  if (obj.properties.writeTopic.isEmpty() && obj.properties.setpointTopic.isEmpty()) return 0;
+  // (11/4 t - t) / 2, rounded up: half the handle's overhang. Written as
+  // (7t + 7) / 8 because C++'s integer division floors for these and the
+  // designer's Math.ceil does not.
+  const int32_t wanted = (thickness * 7 + 7) / 8;
+  const int32_t room = size / 2 - thickness - 1;
+  const int32_t inset = wanted < room ? wanted : room;
+  return inset > 0 ? inset : 0;
+}
+
 // The round counterpart of renderLevelIndicator. Same value mapping, same
 // text centring - the two are siblings, and matching the bar is what keeps
 // this port honest.
@@ -1180,7 +1417,7 @@ String ColorScreenRenderer::getIconPathForValue(const ScreenObject& obj, const S
 bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixInto) {
   String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
   // No value yet: the track alone - no fill (not even what the calibration
-  // makes of 0), no marker, no number (render-arc-level.ts, the same rule).
+  // makes of 0), no handle, no number (render-arc-level.ts, the same rule).
   String trimmedValue = valueStr;
   trimmedValue.trim();
   const bool noValue = trimmedValue.isEmpty();
@@ -1189,37 +1426,64 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   if (fillPercent < 0.0f) fillPercent = 0.0f;
   if (fillPercent > 100.0f) fillPercent = 100.0f;
 
-  // No setpoint topic, no marker - a tank level has nothing to aim at.
+  // Only a ring that CAN have a handle ever draws one - a write topic or a
+  // setpoint topic, the same two things the inset below reserves room for. An
+  // asked value is keyed by TOPIC, so without that guard a read-only gauge
+  // sharing a dimmer's topic would draw a handle it had reserved no room for
+  // (render-arc-level.ts asks exactly this question, and so does arcInset).
+  const bool canHaveHandle =
+      !obj.properties.writeTopic.isEmpty() || !obj.properties.setpointTopic.isEmpty();
+
+  // What was asked for, beside what is measured: a request a finger just made
+  // here first, otherwise a setpoint topic's reported value. Am Topic, nicht am
+  // Objekt: zwei Regler auf einem Dimmer sind ein Wert, und beide zeigen, was
+  // von ihm verlangt wurde (Entscheidung 6c).
   //
-  // Was ein Finger gerade angefordert hat, gewinnt aber auch hier, und braucht
-  // dafuer kein Sollwert-Topic: ein Dimmer hat nur einen Wert am Broker
-  // (Entscheidung 6c, dieselbe Regel wie im Balken oben).
-  bool hasSetpoint = false;
-  float setpointPercent = 0.0f;
-  if (!noValue) {
-    String setpointStr = obj.properties.setpointTopic.isEmpty()
-                             ? String("")
-                             : projectLoader_.getTopicValue(obj.properties.setpointTopic);
-    // Am Topic, nicht am Objekt: zwei Balken auf einem Dimmer sind ein Wert,
-    // und beide zeigen, was von ihm verlangt wurde.
+  // Deliberately without the bar's fallback to the measured value itself: the
+  // handle would then appear on a ring the moment a value arrived, and a ring
+  // that reserved no room for one draws it outside its own rectangle.
+  String rawMarker;
+  if (!noValue && canHaveHandle) {
     const String markerTopic =
         obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
     if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
-      setpointStr = askedValue_;
+      rawMarker = askedValue_;
+    } else if (!obj.properties.setpointTopic.isEmpty()) {
+      rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
     }
-    if (!setpointStr.isEmpty()) {
-      hasSetpoint = true;
-      setpointPercent = interpolateCalibration(setpointStr.toFloat(), obj.properties.calibrationPoints);
-      if (setpointPercent < 0.0f) setpointPercent = 0.0f;
-      if (setpointPercent > 100.0f) setpointPercent = 100.0f;
-    }
+  }
+  String trimmedMarker = rawMarker;
+  trimmedMarker.trim();
+  const bool hasSetpoint = !trimmedMarker.isEmpty();
+  float setpointPercent = 0.0f;
+  if (hasSetpoint) {
+    setpointPercent = interpolateCalibration(rawMarker.toFloat(), obj.properties.calibrationPoints);
+    if (setpointPercent < 0.0f) setpointPercent = 0.0f;
+    if (setpointPercent > 100.0f) setpointPercent = 100.0f;
   }
 
   const int32_t size = min(obj.width, obj.height);
   if (size <= 0) return true;
-  int32_t thickness = obj.properties.arcThickness;
-  if (thickness < 1) thickness = 1;
-  if (thickness > size / 2) thickness = size / 2;
+  // `thickness` is the arc's own name and became the bar's too on 2026-09-22 -
+  // one thing, one name, and one default of 16 on both. It was the ring's own
+  // 22 while a ring was thought to need more presence, and that survived
+  // exactly as long as it took to put a dial and a slider on one screen.
+  // `barThickness` is still read (ProjectLoader), because the projects in the
+  // van are full of it and nothing here rewrites a file someone else owns.
+  const int32_t thickness = arcThicknessFor(obj, size);
+
+  // How far the ring sits inside the object's own edge: room for the handle,
+  // which lies across the band and stands out of it on both sides. With the
+  // band touching the edge the outer half of the handle would fall outside the
+  // object, and an object that draws past its own rectangle is clipped by the
+  // designer's buffer, by the app's box and by this renderer's object rect
+  // alike.
+  //
+  // Reserved whenever the object CAN have a handle rather than while one is
+  // being drawn, so the ring does not jump inwards the moment a value arrives.
+  // On an object too small to give up the room, the reservation gives way
+  // before the band does.
+  const int32_t inset = arcInsetFor(obj, size, thickness);
 
   // Two clock positions and a direction become one clockwise sector, so the
   // rasterizer only ever deals with clockwise sweeps. A counter-clockwise
@@ -1242,31 +1506,61 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   ArcRaster::RingGeometry geom;
   geom.size = size;
   geom.thickness = thickness;
+  geom.inset = inset;
   geom.track = ArcRaster::makeSector(start64, sweep64);
   geom.fill = ArcRaster::makeSector(fillStart64, filled64);
+  // Rounded pill ends: the band is every point within half a thickness of its
+  // centreline, which past the last angle is a disc. A ring that goes all the
+  // way round has no ends to round.
+  const ArcRaster::Caps ends = ArcRaster::caps(size, thickness, inset, start64, sweep64);
+  geom.hasStartCap = ends.has;
+  geom.hasEndCap = ends.has;
+  geom.startCap = ends.startCap;
+  geom.endCap = ends.endCap;
+  // A cap belongs to the fill when the fill actually reaches that end.
+  geom.startCapFilled = filled64 > 0 && fillStart64 == start64;
+  geom.endCapFilled = filled64 > 0 && fillStart64 + filled64 >= start64 + sweep64;
   if (hasSetpoint) {
+    // The setpoint is the slider's handle, not a wedge of the ring: a pill
+    // lying across the band, standing out of it on both sides, with a gap cut
+    // either side of it - and the gap takes its pixels from the ring, not from
+    // the handle, which is what separates the two.
     const int32_t at = ArcRaster::sweepForPercent(sweep64, setpointPercent);
-    const int32_t centreAt = counterClockwise ? start64 + sweep64 - at : start64 + at;
-    int32_t markerDeg = obj.properties.markerWidth;
-    if (markerDeg < 1) markerDeg = 1;
-    const int32_t width64 = markerDeg * ArcRaster::ANGLE_SCALE;
-    geom.marker = ArcRaster::makeSector(centreAt - width64 / 2, width64);
-  } else {
-    geom.marker = ArcRaster::makeSector(0, 0);
+    const int32_t angle64 = counterClockwise ? start64 + sweep64 - at : start64 + at;
+    geom.handle = ArcRaster::handleBand(size, thickness, inset, angle64, sweep64);
+    geom.hasHandle = true;
   }
 
-  bool backgroundTransparent = false;
-  const uint16_t backgroundPacked =
-      parseHexColor(obj.properties.backgroundColor.isEmpty() ? "transparent" : obj.properties.backgroundColor,
-                    &backgroundTransparent);
-  // Where the object declares no background of its own, the edges mix into
-  // the screen's - known to the designer too, so both mix into the same
-  // thing. Over a background image that is an approximation, but it is the
-  // same approximation on both sides, so the comparison stays exact.
-  const ArcRaster::Rgb565 mix = ArcRaster::toRgb565(backgroundTransparent ? mixInto : backgroundPacked);
-  const ArcRaster::Rgb565 trackColour = ArcRaster::toRgb565(parseHexColor(obj.properties.trackColor));
-  const ArcRaster::Rgb565 fillColour = ArcRaster::toRgb565(parseHexColor(obj.properties.fillColor));
-  const ArcRaster::Rgb565 markerColour = ArcRaster::toRgb565(parseHexColor(obj.properties.markerColor));
+  // One colour the author sets; everything else follows from it and from what
+  // the ring stands on - the same rule, and the same function, the bar uses for
+  // its own track (docs/2026-09-22-arc-look.md). The ring has no background, no
+  // track colour and no marker colour of its own any more: those three stay in
+  // old project files and are simply not read.
+  const String fillHex = materialcolors::applyDepth(
+      obj.properties.fillColor.isEmpty() ? String("#4CAF50") : obj.properties.fillColor);
+  const LevelTrackLook look = levelshape::trackLook(fillHex, currentScreenBgHex_);
+  geom.framed = look.framed;
+
+  // What the anti-aliased edges mix into: the screen's own colour, which the
+  // designer knows too, so both mix into the same thing. Over a background
+  // image that is an approximation - but it is the same approximation on both
+  // sides, so the comparison stays exact and only the eye can tell.
+  const ArcRaster::Rgb565 mix = ArcRaster::toRgb565(mixInto);
+  const ArcRaster::Rgb565 fillColour = ArcRaster::toRgb565(parseHexColor(fillHex));
+  // Where the mixed track cannot be told from the background, the band is drawn
+  // as an outline in the bar's own colour instead of a body in a colour nobody
+  // would see. A track you cannot see is not a track.
+  const ArcRaster::Rgb565 trackColour =
+      ArcRaster::toRgb565(parseHexColor(look.framed ? fillHex : look.track));
+  // A handle a finger can move keeps the bar's own colour - handle and filled
+  // track are one object that the gap separates - and one that only reports the
+  // installation's target takes the track's colour and steps back. The user,
+  // on the picture: "seine dimmed farbe sagt mir dass ich ihn nicht bewegen
+  // kann". Where the track is an outline there is no quiet colour to step back
+  // into, so every handle stays solid (handleColourFor in the designer).
+  const bool settable = !obj.properties.writeTopic.isEmpty();
+  const ArcRaster::Rgb565 handleColour =
+      ArcRaster::toRgb565(parseHexColor((settable || look.framed) ? fillHex : look.track));
 
   // Nur den geclippten Ausschnitt durchrechnen. pixelBands() tastet jedes
   // Pixel 16-fach ab; auf einem 360er Ring sind das rund 380.000 Sektortests
@@ -1290,11 +1584,11 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // iterations with it costs far less than the thing being measured.
   const bool profiling = RenderProfile::enabled();
   if (profiling) { ArcRaster::probeEnabled() = true; ArcRaster::probeReset(); }
-  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0;
-  // Counted unconditionally: the background runs below add whole spans at a
-  // time, and branching on the profile for one addition per row is noise.
-  uint32_t pixelsDrawn = 0;
+  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0, pixelsDrawn = 0;
 
+  // Nothing but the ring is painted: the object has no background of its own
+  // any more, so whatever is behind it - a screen colour, a background image -
+  // shows through everywhere the band is not (docs/2026-09-22-arc-look.md).
   for (int32_t py = pyFrom; py < pyTo; py++) {
     // Which pixels of this row the ring can reach at all. Everything outside
     // is empty by the same test pixelBands() makes before anything else, so
@@ -1306,26 +1600,6 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     const int32_t holeFrom = span.holeX0 > from ? span.holeX0 : from;
     const int32_t holeTo = span.holeX1 < to - 1 ? span.holeX1 : to - 1;
     const bool hasHole = span.holeX1 >= span.holeX0 && holeTo >= holeFrom;
-
-    if (!backgroundTransparent) {
-      // The object still owns its whole square, so what the ring cannot reach
-      // is drawn as runs. The same pixels in the same colour as the per-pixel
-      // version wrote, one contiguous write per gap instead of one per pixel.
-      const uint32_t g0 = profiling ? esp_cpu_get_cycle_count() : 0;
-      if (from > pxFrom) {
-        canvas_->drawFastHLine(obj.x + pxFrom, obj.y + py, from - pxFrom, backgroundPacked);
-        pixelsDrawn += from - pxFrom;
-      }
-      if (hasHole) {
-        canvas_->drawFastHLine(obj.x + holeFrom, obj.y + py, holeTo + 1 - holeFrom, backgroundPacked);
-        pixelsDrawn += holeTo + 1 - holeFrom;
-      }
-      if (to < pxTo) {
-        canvas_->drawFastHLine(obj.x + to, obj.y + py, pxTo - to, backgroundPacked);
-        pixelsDrawn += pxTo - to;
-      }
-      if (profiling) drawCycles += esp_cpu_get_cycle_count() - g0;
-    }
 
     for (int32_t px = from; px < to; px++) {
       // Jumping the hole rather than testing every pixel of it. The for-step
@@ -1340,26 +1614,14 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         bandsCycles += esp_cpu_get_cycle_count() - c0;
         pixelsSeen++;
       }
-      const int32_t covered = bands.fill + bands.track + bands.marker;
+      const int32_t covered = bands.fill + bands.track + bands.handle;
 
-      if (covered == 0) {
-        // Nothing of the ring here. With an opaque background the object
-        // still owns its square; with a transparent one the pixel is left
-        // alone - which is what "transparent" means everywhere in this
-        // renderer: skip the draw, never mix.
-        if (!backgroundTransparent) {
-          uint32_t d0 = profiling ? esp_cpu_get_cycle_count() : 0;
-          canvas_->drawPixel(obj.x + px, obj.y + py, backgroundPacked);
-          if (profiling) {
-            drawCycles += esp_cpu_get_cycle_count() - d0;
-            pixelsDrawn++;
-          }
-        }
-        continue;
-      }
+      // Nothing of the ring here: the pixel is left alone, which is what the
+      // ring floating on the screen means - skip the draw, never mix.
+      if (covered == 0) continue;
 
-      const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, markerColour,
-                                                   bands.marker, mix, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+      const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, handleColour,
+                                                   bands.handle, mix, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
       uint32_t d1 = profiling ? esp_cpu_get_cycle_count() : 0;
       canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
       if (profiling) {
@@ -1381,34 +1643,70 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     RenderProfile::add("  arc: uniform x" + String(pr.uniformCalls), pr.uniformCycles / 240);
   }
 
-  if (obj.properties.displayValue == "none" || noValue) return true;
+  // The numbers, the way the bar says them: the big one is the COMMANDED value
+  // - where the handle points, and what a finger just changed - and the
+  // measured one appears under it in brackets, smaller, only when it says
+  // something the big one does not. A ring puts the two one above the other
+  // rather than side by side: it has the room, and it has no header line to lay
+  // them out on.
+  if (noValue) return true;
+  const bool asPercent = obj.properties.displayValue == "percentage";
+  if (!asPercent && obj.properties.displayValue != "value") return true;
 
-  String displayText;
-  if (obj.properties.displayValue == "percentage") {
-    displayText = String((int)(fillPercent + 0.5f)) + "%";
-  } else if (obj.properties.displayValue == "value") {
-    displayText = valueStr;
-  }
-  if (displayText.isEmpty()) return true;
+  // Round, don't truncate - the same Math.round the bar's own value text
+  // matches, for the same reason.
+  const String measured = asPercent ? String((int)(fillPercent + 0.5f)) + "%" : valueStr;
+  const String commanded =
+      hasSetpoint ? (asPercent ? String((int)(setpointPercent + 0.5f)) + "%" : rawMarker) : measured;
+  if (commanded.isEmpty()) return true;
+  const bool showsSub = hasSetpoint && measured != commanded;
 
   // Centred exactly as renderLevelIndicator centres its own value, so the
   // two siblings cannot drift apart on the one thing they both do.
   const BdfFont* font = fontFor(obj.properties.fontId);
-  int16_t textWidth = measureTrueTextWidth(displayText, font);
-  int16_t fontAscent = getFontAscentById(obj.properties.fontId);
-  int16_t fontDescent = getFontDescentById(obj.properties.fontId);
-  int16_t textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
-  int16_t fontHeight = fontAscent + fontDescent;
-  int16_t textY = obj.y + jsRound((obj.height - fontHeight) / 2.0f) + fontAscent;
-
   bool textTransparent = false;
-  uint16_t textColor = parseHexColor(obj.properties.textColor.isEmpty() ? "#ffffff" : obj.properties.textColor,
-                                     &textTransparent);
-  if (!textTransparent && font != nullptr) {
-    canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
-    font->drawText(*canvas_, displayText, textX, textY, textColor);
-    canvas_->clearClip();
+  const uint16_t textColor = parseHexColor(
+      obj.properties.textColor.isEmpty() ? "#ffffff" : obj.properties.textColor, &textTransparent);
+  if (textTransparent || font == nullptr) return true;
+
+  const int16_t fontAscent = getFontAscentById(obj.properties.fontId);
+  const int16_t line = fontAscent + getFontDescentById(obj.properties.fontId);
+
+  // The bracketed number is written in another file, not the same one drawn
+  // smaller: a BDF face cannot be scaled at all, so "smaller" has to mean
+  // "another font", which is the rule the bar's own sub-number follows
+  // (levelSubFontId, two thirds of the object's own line).
+  String subText;
+  const BdfFont* subFont = nullptr;
+  int16_t subAscent = 0;
+  int16_t subLine = 0;
+  String subId;
+  if (showsSub) {
+    subText = "(" + measured + ")";
+    subId = levelSubFontId(obj);
+    const BdfFont* candidate = fontFor(subId);
+    if (candidate != nullptr) {
+      subFont = candidate;
+      subAscent = getFontAscentById(subId);
+      subLine = subAscent + getFontDescentById(subId);
+    }
   }
+
+  // The pair is centred together, so the big number does not jump the moment a
+  // setpoint arrives.
+  const int16_t block = line + (subFont != nullptr ? subLine + kArcSubGap : 0);
+  const float top = obj.y + (obj.height - block) / 2.0f;
+
+  canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
+  const int16_t textWidth = measureTrueTextWidth(commanded, font);
+  font->drawText(*canvas_, commanded, (int16_t)(obj.x + jsRound((obj.width - textWidth) / 2.0f)),
+                 (int16_t)jsRound(top + fontAscent), textColor);
+  if (subFont != nullptr) {
+    const int16_t subWidth = measureTrueTextWidth(subText, subFont);
+    subFont->drawText(*canvas_, subText, (int16_t)(obj.x + jsRound((obj.width - subWidth) / 2.0f)),
+                      (int16_t)jsRound(top + line + kArcSubGap + subAscent), textColor);
+  }
+  canvas_->clearClip();
 
   return true;
 }
@@ -1568,24 +1866,98 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   if (askedIndex < 0) askedIndex = pendingStateIndex;
 
   auto colourOf = [&](const String& hex) { return parseHexColor(hex); };
-  auto fillRect = [&](const SwitchRect& r, const String& hex) {
+#if !PILL_ANTIALIASED
+  // The whole-pixel path, unchanged since before the rasterizer existed and
+  // kept line for line: below 24 bit there is nothing to mix into, so this is
+  // still the picture (PillRaster.h says why that is a decision).
+  //
+  // One rounded rectangle, whose two ends can carry different radii - which is
+  // what a button in a connected group is since 2026-09-21 (SwitchShape.h).
+  // GFX has no primitive for that, so the shape is drawn twice and each pass is
+  // clipped to the half its own end belongs to. Safe because fillRoundRect
+  // clamps a radius to half the short side, which is never more than half the
+  // width: neither end's rounding can reach across the split. The rasterised
+  // path below says the same thing in one band, with rLow and rHigh.
+  auto fillPill = [&](const SwitchRect& r, uint16_t colour) {
     if (!r.valid()) return;
-    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colourOf(hex));
+    if (r.rightRadius() == r.r) {
+      canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colour);
+      return;
+    }
+    const int split = r.w / 2;
+    canvas_->setClip(r.x, r.y, split, r.h);
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colour);
+    canvas_->setClip(r.x + split, r.y, r.w - split, r.h);
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.rightRadius(), colour);
+    canvas_->clearClip();
   };
+  auto fillRect = [&](const SwitchRect& r, const String& hex) { fillPill(r, colourOf(hex)); };
   // A ring cut out of a filled shape rather than stroked: a thin stroke breaks
   // up wherever the picture is later cut to one bit, and cutting leaves what is
   // behind the control visible.
-  auto ringRect = [&](const SwitchRect& r, int thickness, const String& hex) {
+  //
+  // What the ring encloses is the CALLER's to say. It used to be the
+  // container's surface whatever was being ringed, which erased the fill of a
+  // chosen segment the moment a finger went down on it and painted a knob
+  // track's inside in a colour from the other form - the designer puts the
+  // chosen colour and the track's own colour there (render-switch.ts), and the
+  // anti-aliased path below already did.
+  auto ringRect = [&](const SwitchRect& r, int thickness, const String& hex, const String& insideHex) {
     if (!r.valid()) return;
-    const uint16_t colour = colourOf(hex);
-    const uint16_t inside = colourOf(look.surfaceFramed ? currentScreenBgHex_ : look.surface);
-    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, r.r, colour);
+    fillPill(r, colourOf(hex));
     const int t = thickness > 0 ? thickness : 1;
     if (r.w > 2 * t && r.h > 2 * t) {
-      const int innerR = r.r - t > 0 ? r.r - t : 0;
-      canvas_->fillRoundRect(r.x + t, r.y + t, r.w - 2 * t, r.h - 2 * t, innerR, inside);
+      SwitchRect inner;
+      inner.x = r.x + t;
+      inner.y = r.y + t;
+      inner.w = r.w - 2 * t;
+      inner.h = r.h - 2 * t;
+      inner.r = r.r - t > 0 ? r.r - t : 0;
+      inner.rRight = r.rightRadius() - t > 0 ? r.rightRadius() - t : 0;
+      fillPill(inner, colourOf(insideHex));
     }
   };
+#else
+  // Everything this control is made of is a pill: the container, a segment,
+  // the track, the knob. They are described rather than painted, because the
+  // rasterizer needs them all at once to give each sub-sample to exactly one
+  // of them (PillRaster.h).
+  //
+  // A SwitchRect carries a radius for each end since the connected group's
+  // geometry came across (SwitchShape.h): a button is round on the outside and
+  // barely rounded where it faces its neighbour, and rightRadius() answers the
+  // one radius for everything else.
+  auto wholePill = [](const SwitchRect& r, uint16_t colour) {
+    PaintedPill out;
+    out.band.x = r.x;
+    out.band.y = r.y;
+    out.band.w = r.w;
+    out.band.h = r.h;
+    out.band.rLow = r.r;
+    out.band.rHigh = r.rightRadius();
+    out.colour = colour;
+    out.paints = true;
+    return out;
+  };
+  // What a ring leaves untouched - the same arithmetic the whole-pixel
+  // ringRect uses for its inside, so a ring comes out where it always did.
+  // `paints` false is a hole: the run claims its pixels and paints nothing,
+  // which is how what lies behind the control stays visible through it.
+  auto insidePill = [](const SwitchRect& r, int thickness, uint16_t colour, bool paints) {
+    const int t = thickness > 0 ? thickness : 1;
+    PaintedPill out;
+    out.band.x = r.x + t;
+    out.band.y = r.y + t;
+    out.band.w = r.w - 2 * t;
+    out.band.h = r.h - 2 * t;
+    out.band.rLow = r.r - t > 0 ? r.r - t : 0;
+    out.band.rHigh = r.rightRadius() - t > 0 ? r.rightRadius() - t : 0;
+    out.colour = colour;
+    out.paints = paints;
+    return out;
+  };
+  const uint16_t pillMix = parseHexColor(materialcolors::applyDepth(currentScreenBgHex_));
+#endif
   auto drawStateText = [&](const String& text, const SwitchRect& clip, int x, int baseline, const String& hex) {
     if (text.isEmpty() || font == nullptr || !clip.valid()) return;
     canvas_->setClip(clip.x, clip.y, clip.w, clip.h);
@@ -1599,19 +1971,75 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
 
   if (!switchshape::isKnobForm(obj)) {
     const SwitchRect box = switchshape::container(obj);
-    if (look.surfaceFramed) ringRect(box, 1, materialcolors::applyDepth(switchshape::colorOf(obj)));
-    else fillRect(box, look.surface);
-
     std::vector<SwitchRect> segs;
     switchshape::segments(obj, count, segs);
+
+#if PILL_ANTIALIASED
+    // Every shape at once, in priority order, through one rasterizer: a
+    // sub-sample belongs to the first run that contains it and to no other.
+    // Drawn one over the other, each rounded end would carry a rim of whatever
+    // it covers - which is what the arc was fixed for, and what a
+    // stair-stepped pill beside an anti-aliased ring asked about (2026-09-22).
+    std::vector<PaintedPill> painted;
+    for (int i = 0; i < count && i < (int)segs.size(); i++) {
+      const SwitchRect& seg = segs[i];
+      const bool chosen = i == activeIndex;
+      // A finger on a segment, and a tap whose answer has not come back: the
+      // same ring. Both mean "this is not what is reported - yet".
+      if (i == askedIndex || i == pressedStateIndex) {
+        // A ring is its outer pill with the inside taken back, so what the
+        // ring encloses has to be said out loud: the chosen pill, the
+        // container, or - where the container is only an outline - nothing at
+        // all. The whole-pixel path cannot say the first of those and paints
+        // the container's colour inside a chosen segment's ring instead.
+        if (chosen) painted.push_back(insidePill(seg, 2, colourOf(look.chosen), true));
+        else if (look.surfaceFramed) painted.push_back(insidePill(seg, 2, 0, false));
+        else painted.push_back(insidePill(seg, 2, colourOf(look.surface), true));
+        painted.push_back(wholePill(seg, colourOf(look.ring)));
+        continue;
+      }
+      if (chosen) painted.push_back(wholePill(seg, colourOf(look.chosen)));
+    }
+    if (look.surfaceFramed) {
+      painted.push_back(insidePill(box, 1, 0, false));
+      painted.push_back(wholePill(box, colourOf(materialcolors::applyDepth(switchshape::colorOf(obj)))));
+    } else {
+      painted.push_back(wholePill(box, colourOf(look.surface)));
+    }
+    paintPills(painted, pillMix);
+#else
+    // The container's outline encloses whatever the screen is: there is no
+    // colour behind a framed container, and this path cannot leave a hole.
+    if (look.surfaceFramed) {
+      ringRect(box, 1, materialcolors::applyDepth(switchshape::colorOf(obj)), currentScreenBgHex_);
+    } else {
+      fillRect(box, look.surface);
+    }
     for (int i = 0; i < count && i < (int)segs.size(); i++) {
       const SwitchRect& seg = segs[i];
       const bool chosen = i == activeIndex;
       if (chosen) fillRect(seg, look.chosen);
       // A finger on a segment, and a tap whose answer has not come back: the
       // same ring. Both mean "this is not what is reported - yet".
-      if (i == askedIndex || i == pressedStateIndex) ringRect(seg, 2, look.ring);
+      //
+      // A ring is its outer pill with the inside taken back, so what the ring
+      // encloses has to be said out loud: the chosen segment keeps its own
+      // colour inside the ring - it is still the reported state - and an
+      // unchosen one shows the container, or the screen where the container is
+      // only an outline.
+      if (i == askedIndex || i == pressedStateIndex) {
+        const String inside =
+            chosen ? look.chosen : (look.surfaceFramed ? currentScreenBgHex_ : look.surface);
+        ringRect(seg, 2, look.ring, inside);
+      }
+    }
+#endif
 
+    // The icons and the labels, once the shapes are down: the same loop
+    // whichever way they were painted.
+    for (int i = 0; i < count && i < (int)segs.size(); i++) {
+      const SwitchRect& seg = segs[i];
+      const bool chosen = i == activeIndex;
       const String ink = chosen ? look.onChosen : look.onSurface;
       const String& iconPath =
           (chosen && !states[i].iconPathActive.isEmpty()) ? states[i].iconPathActive : states[i].iconPath;
@@ -1632,14 +2060,49 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   const bool on = activeIndex >= 0 && switchshape::stateIsOn(states[activeIndex]);
   const SwitchKnobLook knobLook = switchshape::knobLook(obj, currentScreenBgHex_, on);
   const SwitchRect track = switchshape::track(obj, count);
-  fillRect(track, knobLook.track);
-  if (!knobLook.trackOutline.isEmpty()) ringRect(track, 2, knobLook.trackOutline);
 
+  // The knob is worked out before anything is painted, because the rasterizer
+  // wants it FIRST: it wins every sub-sample it covers, so no rim of track
+  // colour is left around it. Where it is drawn has not moved - it is still on
+  // top of the track - only where it is decided.
   const int shownIndex = askedIndex >= 0 ? askedIndex : activeIndex;
+  const bool hasKnob = shownIndex >= 0;
+  switchshape::SwitchKnob knob;
+  if (hasKnob) knob = switchshape::knob(obj, count, shownIndex, pressedStateIndex >= 0, on);
+  const int d = knob.r * 2;
+
+#if PILL_ANTIALIASED
+  std::vector<PaintedPill> painted;
+  if (hasKnob) {
+    SwitchRect circle;
+    circle.x = knob.cx - knob.r;
+    circle.y = knob.cy - knob.r;
+    circle.w = d;
+    circle.h = d;
+    circle.r = knob.r;
+    painted.push_back(wholePill(circle, colourOf(knobLook.knob)));
+  }
+  if (!knobLook.trackOutline.isEmpty()) {
+    painted.push_back(insidePill(track, switchshape::kTrackOutline, colourOf(knobLook.track), true));
+    painted.push_back(wholePill(track, colourOf(knobLook.trackOutline)));
+  } else {
+    painted.push_back(wholePill(track, colourOf(knobLook.track)));
+  }
+  paintPills(painted, pillMix);
+#else
+  // The track's own colour inside its outline, which is what the rasterised
+  // path puts there and what the designer draws. It was the container's surface
+  // until the ring learnt to be told - a colour from the other form entirely.
+  fillRect(track, knobLook.track);
+  if (!knobLook.trackOutline.isEmpty()) {
+    ringRect(track, switchshape::kTrackOutline, knobLook.trackOutline, knobLook.track);
+  }
+#endif
+
   const String ink = materialcolors::onColorFor(currentScreenBgHex_);
   const SwitchRect box = switchshape::labelBox(obj, count);
 
-  if (shownIndex < 0) {
+  if (!hasKnob) {
     // Nothing reported: no knob, because every position belongs to a state and
     // standing somewhere would claim one nobody has reported.
     const SwitchContent content = switchshape::content(box, metrics, false, widthOf("?"));
@@ -1647,15 +2110,19 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     return true;
   }
 
-  const switchshape::SwitchKnob knob = switchshape::knob(obj, count, shownIndex, pressedStateIndex >= 0);
-  const int d = knob.r * 2;
+#if !PILL_ANTIALIASED
   canvas_->fillRoundRect(knob.cx - knob.r, knob.cy - knob.r, d, d, knob.r, colourOf(knobLook.knob));
+#endif
 
   const SwitchState& state = states[shownIndex];
-  const String& iconPath = (on && !state.iconPathActive.isEmpty()) ? state.iconPathActive : state.iconPath;
-  if (!iconPath.isEmpty()) {
-    const int iconSize = (d * 3) / 5 > 1 ? (d * 3) / 5 : 1;
-    ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, knob.cx - iconSize / 2, knob.cy - iconSize / 2);
+  // Only a knob that is ON carries an icon. The quiet knob is half the
+  // track's height, and an icon squeezed into it read as a smudge.
+  if (on) {
+    const String& iconPath = !state.iconPathActive.isEmpty() ? state.iconPathActive : state.iconPath;
+    if (!iconPath.isEmpty()) {
+      const int iconSize = (d * 3) / 5 > 1 ? (d * 3) / 5 : 1;
+      ColorAssetLoader::drawBMPToCanvas(canvas_, iconPath, knob.cx - iconSize / 2, knob.cy - iconSize / 2);
+    }
   }
 
   const SwitchContent content = switchshape::content(box, metrics, false, widthOf(state.label));
@@ -2015,9 +2482,12 @@ bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const Strin
   const int32_t sweep64 = spanDeg * ArcRaster::ANGLE_SCALE;
 
   const int32_t centre = size / 2;
-  const int32_t rOuter = size / 2;
-  int32_t thickness = obj.properties.arcThickness;
-  if (thickness < 1) thickness = 1;
+  // Von renderArcLevel geliehen, nicht nachgebaut: seit 2026-09-22 rueckt der
+  // Ring um den Platz des Griffs nach innen, und eine Huelle am alten
+  // Aussenradius laesst die Kante, die sich wirklich bewegt hat, stehen.
+  const int32_t thickness = arcThicknessFor(obj, size);
+  const int32_t inset = arcInsetFor(obj, size, thickness);
+  const int32_t rOuter = size / 2 - inset;
   const int32_t rInner = rOuter - thickness > 0 ? rOuter - thickness : 0;
 
   int32_t minX = size, minY = size, maxX = -1, maxY = -1;
@@ -2025,7 +2495,10 @@ bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const Strin
   for (int i = 0; i <= STEPS; i++) {
     const float pct = lo + (hi - lo) * (float)i / (float)STEPS;
     const int32_t at = ArcRaster::sweepForPercent(sweep64, pct);
-    const int32_t angle64 = start64 + at;
+    // Ein Gegenuhrzeiger-Zifferblatt fuellt vom anderen Ende seines Sektors
+    // (fillStart64 in renderArcLevel), also liegt seine bewegte Kante dort -
+    // ohne das lag die Huelle auf der falschen Seite der Skala.
+    const int32_t angle64 = counterClockwise ? start64 + sweep64 - at : start64 + at;
     int32_t dx = 0, dy = 0;
     // ACHTUNG: direction() liefert die Richtung in der Skala der Sinustabelle
     // (ARC_SIN_SCALE = 16384), NICHT in ANGLE_SCALE (64). Mit der falschen
@@ -2049,7 +2522,17 @@ bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const Strin
   // zu bilden - und die ist fast so gross wie das ganze Bild. Zwei kleine
   // Rechtecke sind billiger als ein grosses, das beide umschliesst.
 
-  const int32_t PAD = 4;
+  // Der Rand deckt Rundung und Ueberhang ab, und seit 2026-09-22 zwei Dinge
+  // mehr, die ueber die Bahn des Mittelkreises hinausreichen: die runde Kappe
+  // am Ende der Skala (eine halbe Dicke) und der Griff, der quer auf dem Band
+  // liegt und auf beiden Seiten aus ihm herausschaut. Seine halbe Laenge kommt
+  // aus handleBand() selbst - die Klemmungen dort ein zweites Mal
+  // hinzuschreiben waere wieder die Copy-paste-Falle.
+  int32_t PAD = 4 + thickness / 2;
+  if (!obj.properties.writeTopic.isEmpty() || !obj.properties.setpointTopic.isEmpty()) {
+    const int32_t half = ArcRaster::handleBand(size, thickness, inset, start64, sweep64).halfLength;
+    PAD += (half + ArcRaster::SUBPIXEL_SCALE - 1) / ArcRaster::SUBPIXEL_SCALE;
+  }
   minX -= PAD; minY -= PAD; maxX += PAD; maxY += PAD;
   if (minX < 0) minX = 0;
   if (minY < 0) minY = 0;

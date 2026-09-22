@@ -17,9 +17,18 @@
 // pixel both ways and compares all three band counts. A real screen came back
 // byte-identical after the change, but that screen has one ring at one angle:
 // the interesting cases are a sweep past half a turn (inSector switches from
-// intersecting two half-planes to unioning them), a marker band making three
-// sectors instead of two, a ring so thin it has no uniform interior, and the
-// degenerate full circle. None of those is on the installed project.
+// intersecting two half-planes to unioning them), a handle lying across the
+// band and standing out of it on both sides, a ring so thin it has no uniform
+// interior, and the degenerate full circle. None of those is on the installed
+// project.
+//
+// Since 2026-09-22 there are two more things the short cut has to be blind to,
+// and both are represented below: a rounded cap, whose disc reaches past the
+// scale's own angles, and a framed track, whose hollow middle the short cut
+// would fill with solid track if it stopped asking about the frame's own two
+// pixels. A framed dial is not what these boards normally draw - none of them
+// is 1-bit - but the branch is compiled here, and a branch nobody exercises is
+// a branch that rots.
 //
 // Cheap enough to run on demand from the debug endpoint - a few hundred
 // thousand comparisons, a second or so - and it needs no fixture, no
@@ -33,27 +42,35 @@ struct Case {
   int32_t thickness;
   int32_t startDeg;
   int32_t sweepDeg;
-  int32_t markerDeg;   // 0 = no marker band
+  int32_t handlePercent;  // < 0 = no handle, and then no room reserved for one
   int32_t fillPercent;
+  bool framed;            // the track drawn as its own outline
 };
 
 // Chosen for the branches they reach, not for looking like real dials.
 static const Case CASES[] = {
-    {"full ring", 64, 8, 0, 360, 0, 60},
-    {"270 dial", 64, 8, 135, 270, 0, 40},
-    {"270 dial + marker", 64, 8, 135, 270, 6, 40},
-    {"narrow 30", 64, 8, 10, 30, 0, 50},
-    {"wide 200", 64, 8, 20, 200, 0, 50},
-    {"wide 350", 64, 8, 5, 350, 3, 50},
-    {"thin ring", 64, 2, 0, 300, 0, 70},
-    {"thick ring", 64, 30, 0, 300, 0, 70},
-    {"thickness = radius", 64, 32, 45, 180, 0, 50},
-    {"odd size", 51, 7, 33, 247, 5, 33},
-    {"tiny", 16, 3, 0, 270, 0, 50},
-    {"empty fill", 64, 8, 0, 270, 0, 0},
-    {"full fill", 64, 8, 0, 270, 4, 100},
-    {"marker at start", 64, 8, 0, 270, 10, 0},
-    {"large", 120, 14, 200, 300, 8, 65},
+    {"full ring", 64, 8, 0, 360, -1, 60, false},
+    {"270 dial", 64, 8, 135, 270, -1, 40, false},
+    {"270 dial + handle", 64, 8, 135, 270, 40, 40, false},
+    {"narrow 30", 64, 8, 10, 30, -1, 50, false},
+    {"wide 200", 64, 8, 20, 200, -1, 50, false},
+    {"wide 350", 64, 8, 5, 350, 20, 50, false},
+    {"thin ring", 64, 2, 0, 300, -1, 70, false},
+    {"thick ring", 64, 30, 0, 300, -1, 70, false},
+    {"thickness = radius", 64, 32, 45, 180, -1, 50, false},
+    {"odd size", 51, 7, 33, 247, 66, 33, false},
+    {"tiny", 16, 3, 0, 270, -1, 50, false},
+    {"empty fill", 64, 8, 0, 270, -1, 0, false},
+    {"full fill", 64, 8, 0, 270, 100, 100, false},
+    {"handle at start", 64, 8, 0, 270, 0, 0, false},
+    {"large", 120, 14, 200, 300, 65, 65, false},
+    // The outline: its two long radii stop where the cap begins, and the cap
+    // contributes only its rim. The short cut has to see both, and the hollow
+    // middle between them, or a framed band comes back solid.
+    {"framed dial", 78, 12, 225, 270, 62, 37, true},
+    {"framed dial, no handle", 78, 12, 225, 270, -1, 37, true},
+    {"framed full ring", 90, 14, 0, 360, 50, 50, true},
+    {"framed thin", 61, 3, 30, 200, 80, 45, true},
 };
 
 inline ArcRaster::RingGeometry buildGeometry(const Case &c)
@@ -61,22 +78,38 @@ inline ArcRaster::RingGeometry buildGeometry(const Case &c)
   const int32_t start64 = c.startDeg * ArcRaster::ANGLE_SCALE;
   const int32_t sweep64 = c.sweepDeg * ArcRaster::ANGLE_SCALE;
   const int32_t filled64 = ArcRaster::sweepForPercent(sweep64, (float)c.fillPercent);
+  // Room for the handle, reserved whenever the object can have one at all -
+  // the renderer's own arcInsetFor(), which is what puts these geometries on
+  // the radii a real dial is drawn at.
+  int32_t inset = 0;
+  if (c.handlePercent >= 0)
+  {
+    const int32_t wanted = (c.thickness * 7 + 7) / 8;
+    const int32_t room = c.size / 2 - c.thickness - 1;
+    inset = wanted < room ? wanted : room;
+    if (inset < 0) inset = 0;
+  }
 
   ArcRaster::RingGeometry geom;
   geom.size = c.size;
   geom.thickness = c.thickness;
+  geom.inset = inset;
   geom.track = ArcRaster::makeSector(start64, sweep64);
   geom.fill = ArcRaster::makeSector(start64, filled64);
-  if (c.markerDeg > 0)
+  const ArcRaster::Caps ends = ArcRaster::caps(c.size, c.thickness, inset, start64, sweep64);
+  geom.hasStartCap = ends.has;
+  geom.hasEndCap = ends.has;
+  geom.startCap = ends.startCap;
+  geom.endCap = ends.endCap;
+  geom.startCapFilled = filled64 > 0;
+  geom.endCapFilled = filled64 >= sweep64;
+  if (c.handlePercent >= 0)
   {
-    const int32_t at = ArcRaster::sweepForPercent(sweep64, (float)c.fillPercent);
-    const int32_t width64 = c.markerDeg * ArcRaster::ANGLE_SCALE;
-    geom.marker = ArcRaster::makeSector(start64 + at - width64 / 2, width64);
+    const int32_t at = ArcRaster::sweepForPercent(sweep64, (float)c.handlePercent);
+    geom.handle = ArcRaster::handleBand(c.size, c.thickness, inset, start64 + at, sweep64);
+    geom.hasHandle = true;
   }
-  else
-  {
-    geom.marker = ArcRaster::makeSector(0, 0);
-  }
+  geom.framed = c.framed;
   return geom;
 }
 
@@ -109,14 +142,14 @@ inline String run(bool &ok)
         ArcRaster::fastPathEnabled() = true;
         totalPixels++;
 
-        if (fast.fill != slow.fill || fast.track != slow.track || fast.marker != slow.marker)
+        if (fast.fill != slow.fill || fast.track != slow.track || fast.handle != slow.handle)
         {
           mismatch++;
           if (mismatch <= 3)
           {
             firstFew += "      (" + String(px) + "," + String(py) + ") fast " + String(fast.fill) + "/" +
-                        String(fast.track) + "/" + String(fast.marker) + " slow " + String(slow.fill) + "/" +
-                        String(slow.track) + "/" + String(slow.marker) + "\n";
+                        String(fast.track) + "/" + String(fast.handle) + " slow " + String(slow.fill) + "/" +
+                        String(slow.track) + "/" + String(slow.handle) + "\n";
           }
         }
       }
@@ -139,13 +172,13 @@ inline String run(bool &ok)
         totalExcluded++;
 
         const ArcRaster::PixelBands b = ArcRaster::pixelBands(geom, px, py);
-        if (b.fill || b.track || b.marker)
+        if (b.fill || b.track || b.handle)
         {
           leaked++;
           if (leaked <= 3)
           {
             firstLeaks += "      (" + String(px) + "," + String(py) + ") excluded but covers " +
-                          String(b.fill) + "/" + String(b.track) + "/" + String(b.marker) + "\n";
+                          String(b.fill) + "/" + String(b.track) + "/" + String(b.handle) + "\n";
           }
         }
       }

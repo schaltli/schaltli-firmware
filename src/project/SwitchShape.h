@@ -26,7 +26,12 @@
 #include "MaterialColors.h"
 #include "ProjectTypes.h"
 
-// Material's 2 dp between the buttons of a connected group.
+// The inset between the container and the buttons in it.
+//
+// Its comment used to read "Material's 2 dp between the buttons of a connected
+// group", which is a different measurement this was not being used for - the
+// buttons tiled edge to edge until the designer's 2026-09-21 change, and here
+// until it was brought across. That one is switchshape::kButtonGap.
 #define SWITCH_PAD 2
 
 struct SwitchRect {
@@ -35,8 +40,14 @@ struct SwitchRect {
   int w = 0;
   int h = 0;
   int r = 0;
+  // The radius of the right-hand end, where it differs from [r] - a button in a
+  // connected group is round on the outside and barely rounded where it faces
+  // its neighbour. Negative means both ends are [r], which is the designer's
+  // absent `rRight`.
+  int rRight = -1;
 
   bool valid() const { return w > 0 && h > 0; }
+  int rightRadius() const { return rRight >= 0 ? rRight : r; }
 };
 
 // What a Switch is painted with. Everything follows from its one colour.
@@ -70,8 +81,24 @@ namespace switchshape {
 
 // Icon to label, and track to label.
 constexpr int kGap = 8;
-// How much bigger the knob gets while a finger is on it.
-constexpr int kKnobPress = 2;
+// Material 3's connected button group: 2 between the buttons, and 8 at the
+// corners where two of them face each other. Both are the spec's own numbers
+// (m3.material.io/components/button-groups/specs) rather than anything chosen
+// here. Mirrors SWITCH_BUTTON_GAP and SWITCH_INNER_CORNER in the designer's
+// lib/switch-shape.ts.
+constexpr int kButtonGap = 2;
+constexpr int kInnerCorner = 8;
+// The knob has three sizes since 2026-09-22, as sixteenths of the track's
+// height: quiet when the switch is off, bigger when it is on, bigger still
+// while a finger is on it. Material does the same. A knob that only changed
+// colour read as a recoloured dot rather than something that had moved.
+// Mirrors SWITCH_KNOB_*_16THS in the designer's lib/switch-shape.ts.
+constexpr int kKnobQuiet16ths = 8;
+constexpr int kKnobOn16ths = 12;
+constexpr int kKnobPressed16ths = 14;
+
+// The outline an off track carries, flat, in the author's own colour.
+constexpr int kTrackOutline = 2;
 
 // The form is the type since 2026-09-20: "switch" is the knob in a
 // track, "button-group" the connected strip. It was a `mode` property
@@ -127,7 +154,10 @@ inline SwitchKnobLook knobLook(const ScreenObject& obj, const String& background
   const String color = materialcolors::applyDepth(colorOf(obj));
   const String ground = materialcolors::applyDepth(background.isEmpty() ? String("#ffffff") : background);
   const LevelTrackLook tint = levelshape::trackLook(color, ground);
-  const String quiet = tint.framed ? color : tint.track;
+  // Where the tint lands back on the background - every 1-bit panel - the
+  // quiet colour IS the background and the outline carries the shape. Note
+  // this differs from look()'s own `quiet`, which falls back to the colour.
+  const String quiet = tint.framed ? ground : tint.track;
   SwitchKnobLook out;
   if (on) {
     out.track = base.chosen;
@@ -136,12 +166,14 @@ inline SwitchKnobLook knobLook(const ScreenObject& obj, const String& background
     out.onKnob = base.chosen;
     return out;
   }
-  // Off is the quiet pair: a pale track with an outline, and the knob in the
-  // tint - "grey", without a grey that no palette here has.
-  out.track = base.surface;
-  out.trackOutline = quiet;
-  out.knob = quiet;
-  out.onKnob = materialcolors::onColorFor(quiet);
+  // Off, since 2026-09-22: the track is the half-strength tint, and the
+  // outline and the knob carry the author's colour at FULL strength. The
+  // older reading - a pale 25 % track with everything else in the tint - made
+  // an off switch look switched off *and* disabled.
+  out.track = quiet;
+  out.trackOutline = color;
+  out.knob = color;
+  out.onKnob = materialcolors::onColorFor(color);
   return out;
 }
 
@@ -157,6 +189,20 @@ inline SwitchRect container(const ScreenObject& obj) {
 }
 
 // The buttons in it, tiling it exactly: each starts where the last one ended.
+//
+// Material 3's connected button group, which is what this is: the buttons stand
+// kButtonGap apart, the ends of the group are fully round, and where two
+// buttons face each other the corner is small. Selecting one changes nothing
+// about its neighbours. A lone button is round at both ends.
+//
+// Each button deciding its own radius from its own box - corner(seg.w, innerH),
+// which is what stood here - was the fault reported to the designer on
+// 2026-09-21: a container 92 wide and 48 tall is a pill (radius 24) while each
+// of its two buttons is about 43 by 43 and so, by the same rule, a rounded
+// square (radius 14) - a rectangle sitting inside a pill, visibly squashed.
+// Handing the button the container's radius instead would be worse: at 43 by 43
+// it clamps to a circle. It is the small inner corner that makes the round
+// outer one safe.
 inline void segments(const ScreenObject& obj, int count, std::vector<SwitchRect>& out) {
   out.clear();
   const SwitchRect box = container(obj);
@@ -165,15 +211,19 @@ inline void segments(const ScreenObject& obj, int count, std::vector<SwitchRect>
   const int innerW = box.w - 2 * SWITCH_PAD > 0 ? box.w - 2 * SWITCH_PAD : 0;
   const int innerH = box.h - 2 * SWITCH_PAD > 0 ? box.h - 2 * SWITCH_PAD : 0;
   const int n = count > 0 ? count : 1;
+  const int outer = box.r - SWITCH_PAD > 0 ? box.r - SWITCH_PAD : 0;
+  const int half = innerH / 2;
+  const int inner = kInnerCorner < half ? kInnerCorner : half;
   for (int i = 0; i < n; i++) {
-    const int from = innerX + (innerW * i) / n;
+    const int from = innerX + (innerW * i) / n + (i == 0 ? 0 : kButtonGap);
     const int to = innerX + (innerW * (i + 1)) / n;
     SwitchRect seg;
     seg.x = from;
     seg.y = innerY;
     seg.w = to - from > 0 ? to - from : 0;
     seg.h = innerH;
-    seg.r = corner(seg.w, innerH);
+    seg.r = i == 0 ? outer : inner;
+    seg.rRight = i == n - 1 ? outer : inner;
     out.push_back(seg);
   }
 }
@@ -215,19 +265,24 @@ struct SwitchKnob {
   int r = 0;
 };
 
-inline SwitchKnob knob(const ScreenObject& obj, int count, int index, bool pressed) {
+inline SwitchKnob knob(const ScreenObject& obj, int count, int index, bool pressed, bool on) {
   const SwitchRect t = track(obj, count);
   int pad = t.h / 8;
   if (pad < 1) pad = 1;
-  int knobD = t.h - 2 * pad;
-  if (knobD < 2) knobD = 2;
+  // The slot's WIDTH is unchanged by state - a knob that grows must not also
+  // move - so the step stays the old full-size knob.
+  int step = t.h - 2 * pad;
+  if (step < 2) step = 2;
   const int last = (count > 0 ? count : 1) - 1;
   int slot = index < 0 ? 0 : index;
   if (slot > last) slot = last;
+  const int sixteenths = pressed ? kKnobPressed16ths : (on ? kKnobOn16ths : kKnobQuiet16ths);
+  int d = t.h * sixteenths / 16;
+  if (d < 2) d = 2;
   SwitchKnob out;
-  out.cx = t.x + pad + slot * knobD + knobD / 2;
+  out.cx = t.x + pad + slot * step + step / 2;
   out.cy = t.y + t.h / 2;
-  out.r = knobD / 2 + (pressed ? kKnobPress : 0);
+  out.r = d / 2;
   return out;
 }
 

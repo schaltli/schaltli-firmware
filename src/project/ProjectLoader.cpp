@@ -391,11 +391,20 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   }
   
   // level-indicator properties
-  props.barDirection = propsJson["barDirection"] | "left-to-right";
+  //
+  // `direction` and `thickness` are the names both shapes now use, since
+  // 2026-09-22 - one thing, one name. The designer's property panel writes
+  // them and stamps `thickness` on every new bar, while lib/project-zip.ts
+  // exports properties verbatim; a device that read only the old names drew
+  // every such bar at the default 16 px, left to right, no matter what the
+  // author had set. The legacy names stay as the fallback, because the
+  // projects in the van are full of them and nothing here rewrites a file
+  // someone else owns. Same two-name reading as arcThickness below.
+  props.barDirection = propsJson["direction"] | (propsJson["barDirection"] | "left-to-right");
   props.displayValue = propsJson["displayValue"] | "none";
   props.label = propsJson["label"] | "";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
-  props.barThickness = propsJson["barThickness"] | 0;
+  props.barThickness = propsJson["thickness"] | (propsJson["barThickness"] | 0);
   props.switchStyle = propsJson["switchStyle"] | "filled";
   props.switchColor = propsJson["switchColor"] | "";
   
@@ -411,7 +420,16 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.arcDirection = propsJson["direction"] | "cw";
   props.minAngle = propsJson["minAngle"] | 225;
   props.maxAngle = propsJson["maxAngle"] | 135;
-  props.arcThickness = propsJson["thickness"] | 22;
+  // `thickness` first, `barThickness` behind it, and 0 meaning "the author set
+  // none" - the renderer then draws the one default both shapes share
+  // (levelshape::kDefaultThickness, 16 since 2026-09-22). It was 22 here while
+  // a ring was thought to be a thing of its own, and that survived exactly as
+  // long as it took to put a dial and a slider on one screen.
+  props.arcThickness = propsJson["thickness"] | props.barThickness;
+  // Retired on 2026-09-22 along with trackColor and markerColor above: the
+  // setpoint is the bar's own handle now, and its size follows the thickness.
+  // Still parsed, because old project files carry it and nothing here rewrites
+  // a file someone else owns - nothing reads it any more.
   props.markerWidth = propsJson["markerWidth"] | 4;
 
   // line properties

@@ -959,7 +959,8 @@ static void setupNetworking()
       geom.thickness = 20;
       geom.track = ArcRaster::makeSector(0, 360 * ArcRaster::ANGLE_SCALE);
       geom.fill = ArcRaster::makeSector(0, 0);
-      geom.marker = ArcRaster::makeSector(0, 0);
+      // A ring that goes all the way round has no ends to round and no handle
+      // on it, so the outer diameter a ruler reads is the one asked for here.
 
       const ArcRaster::Rgb565 ink = ArcRaster::toRgb565(0xFFFF);
       const ArcRaster::Rgb565 back = ArcRaster::toRgb565(0x0000);
@@ -974,10 +975,10 @@ static void setupNetworking()
         {
           if (span.holeX1 >= span.holeX0 && px >= span.holeX0 && px <= span.holeX1) continue;
           const ArcRaster::PixelBands bands = ArcRaster::pixelBands(geom, px, py);
-          const int32_t covered = bands.fill + bands.track + bands.marker;
+          const int32_t covered = bands.fill + bands.track + bands.handle;
           if (covered == 0) continue;
           const uint16_t mixed = ArcRaster::blendBands(none, bands.fill, ink, bands.track, none,
-                                                       bands.marker, back,
+                                                       bands.handle, back,
                                                        (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
           canvas->drawPixel(x0 + px, y0 + py, mixed);
         }
