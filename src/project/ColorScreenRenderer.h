@@ -11,7 +11,7 @@
 #include "PillRaster.h"
 #include <functional>
 
-// Color (RGB565) counterpart of MqttEPaperDisplay2's ScreenRenderer -
+// Color (RGB565) counterpart of schaltli-eink's ScreenRenderer -
 // renders into a ClippedCanvas16 instead of a 1-bit ClippedCanvas1, real
 // hex colors instead of black/white thresholding, otherwise mirrors that
 // class's carefully HIL-tuned pixel logic (drawTextBox's background/
@@ -25,7 +25,7 @@
 // thick strokes, fixed arrowheads), label, MqttDataField, level-indicator,
 // MQTTIconField, icon, SoftwareButton, tab-control, panel, MqttDataLine.
 // icon and SoftwareButton have no e-paper equivalent to port from -
-// MqttEPaperDisplay2 never implemented either (no touchscreen, and its own
+// schaltli-eink never implemented either (no touchscreen, and its own
 // "icon" object type was never wired up despite existing in the schema) -
 // so their rendering (draw the already-exported bitmap via ColorAssetLoader,
 // always the "normal" state for SoftwareButton until real touch tracking
@@ -33,7 +33,7 @@
 // (lib/project-zip.ts's path/pathNormal/pathActive fields), not ported from
 // existing firmware logic.
 //
-// tab-control/panel/MqttDataLine (2026-08-14 port from MqttEPaperDisplay2's
+// tab-control/panel/MqttDataLine (2026-08-14 port from schaltli-eink's
 // ScreenRenderer) reuse that firmware's logic near-verbatim, swapping only
 // parseColor()'s black/white result for parseHexColor()'s real RGB565 one -
 // the geometry (fillet math, thick-line rasterization, arrowhead placement,
@@ -250,7 +250,7 @@ private:
   // Recurses into the active panel's children (offset-copies with
   // obj.x/obj.y added, since child coordinates are relative to the
   // tab-control's own origin) via renderObject() - draws nothing itself if
-  // no panel matches. Mirrors MqttEPaperDisplay2's ScreenRenderer::
+  // no panel matches. Mirrors schaltli-eink's ScreenRenderer::
   // renderTabControl() and components/canvas/renderers'
   // renderScreenObjects()'s "tab-control" case on the designer side. Takes
   // the same touch-state params renderObject() does, so a SoftwareButton/
@@ -265,7 +265,7 @@ private:
   // tab-control's own topic value, nullptr if none match. Pointer is valid
   // as long as tabControl's own children vector isn't mutated/destroyed -
   // callers only ever use it within the same renderObject() call. Mirrors
-  // MqttEPaperDisplay2's ScreenRenderer::getActivePanel() exactly.
+  // schaltli-eink's ScreenRenderer::getActivePanel() exactly.
   const ScreenObject* getActivePanel(const ScreenObject& tabControl) const;
 
   bool evaluateCondition(float value, const String& op, float threshold) const;
@@ -275,7 +275,7 @@ private:
   // the float-only evaluateCondition() can't distinguish "TEMP" from
   // "POWER" - both toFloat() to 0.0), the four numeric operators delegate
   // to the existing evaluateCondition() via .toFloat() on both sides.
-  // Mirrors MqttEPaperDisplay2's ScreenRenderer::evaluateVisibilityCondition()
+  // Mirrors schaltli-eink's ScreenRenderer::evaluateVisibilityCondition()
   // and lib/render-screen.ts's evaluateCondition() on the designer side
   // exactly, the 0.0-not-NaN fallback included.
   bool evaluateVisibilityCondition(const String& actualValue, const String& op, const String& comparisonValue) const;
@@ -301,7 +301,7 @@ private:
 
   void drawTextBox(const ScreenObject& obj, const String& displayText, bool drawBorder = true);
 
-  // Line-geometry helpers, ported near-verbatim from MqttEPaperDisplay2's
+  // Line-geometry helpers, ported near-verbatim from schaltli-eink's
   // ScreenRenderer (see that class's own comments for the full derivation
   // of each - fillet tangent/arc math, thick-line rasterization via a
   // rotated-rectangle inside-test, arrowhead placement/shortening). Shared

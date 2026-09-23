@@ -10,7 +10,7 @@
 #include <algorithm>
 
 // Matches JavaScript's Math.round() exactly, including its tie-breaking
-// direction (halves round toward +infinity) - see MqttEPaperDisplay2's
+// direction (halves round toward +infinity) - see schaltli-eink's
 // ScreenRenderer.cpp's identical helper for the full rationale (a naive
 // roundf() port disagreed with the designer's center-align formula by 1px
 // for negative odd width differences).
@@ -412,7 +412,7 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
   uint16_t bgColor = parseHexColor(obj.properties.backgroundColor, &bgTransparent);
 
   // Background -> border -> text, in that order (text last, always on top)
-  // - matches the designer's draw order exactly, see MqttEPaperDisplay2's
+  // - matches the designer's draw order exactly, see schaltli-eink's
   // drawTextBox() comment for the HIL mismatch this order avoids.
   if (!bgTransparent) {
     canvas_->fillRect(obj.x, obj.y, obj.width, boxHeight, bgColor);
@@ -575,7 +575,7 @@ bool ColorScreenRenderer::renderLine(const ScreenObject& obj) {
 // presence at each end is independently evaluated against the topic's
 // signed value (arrowStartOperator/Value, arrowEndOperator/Value), instead
 // of renderLine's fixed booleans. Ported near-verbatim from
-// MqttEPaperDisplay2's ScreenRenderer::renderMqttDataLine().
+// schaltli-eink's ScreenRenderer::renderMqttDataLine().
 bool ColorScreenRenderer::renderMqttDataLine(const ScreenObject& obj) {
   // Black when the project sets none, matching render-mqtt-data-line.ts.
   uint16_t color = parseHexColor(obj.properties.color.isEmpty() ? "#000000" : obj.properties.color);
@@ -693,7 +693,7 @@ Point ColorScreenRenderer::shortenForArrow(const Point& tip, const Point& from, 
 }
 
 // Rounds every interior vertex of a multi-point line via a true circular
-// arc between tangent points - see MqttEPaperDisplay2's ScreenRenderer::
+// arc between tangent points - see schaltli-eink's ScreenRenderer::
 // renderFilletedLine() for the full tangent/arc-center derivation and the
 // 2026-07-30 finding on why a Bezier approximation looked visibly wrong at
 // sharp angles. Ported verbatim (color-depth-independent geometry).
@@ -780,7 +780,7 @@ void ColorScreenRenderer::renderFilletedLine(const std::vector<Point>& points, i
 }
 
 // Fills a strokeWidth>1 line as a rotated rectangle with butt caps - see
-// MqttEPaperDisplay2's ScreenRenderer::fillThickLine() for the full
+// schaltli-eink's ScreenRenderer::fillThickLine() for the full
 // rotated-rectangle inside-test derivation. Ported verbatim except the
 // final canvas_->drawPixel() call, which now writes a real RGB565 color
 // instead of a 1-bit black/white value - Adafruit_GFX's drawPixel()
@@ -894,7 +894,7 @@ bool ColorScreenRenderer::renderMQTTDataField(const ScreenObject& obj) {
   return true;
 }
 
-// Same bar/text layout math as MqttEPaperDisplay2's renderLevelIndicator()
+// Same bar/text layout math as schaltli-eink's renderLevelIndicator()
 // (padding=4, direction handling, center-align via a single combined
 // jsRound division, ascent+descent-based vertical centering) - all of
 // that is color-depth-independent. What differs: that firmware's
@@ -1345,7 +1345,7 @@ bool ColorScreenRenderer::evaluateCondition(float value, const String& op, float
   if (op == "<=") return value <= threshold;
   // MQTTIconField's valueIconPairs use a single "=" (see the designer's
   // mqtt-icon-field-properties.tsx) - both spellings accepted, matching
-  // MqttEPaperDisplay2's identical fix for this exact confusion.
+  // schaltli-eink's identical fix for this exact confusion.
   if (op == "==" || op == "=") return value == threshold;
   if (op == "!=") return value != threshold;
   return false;

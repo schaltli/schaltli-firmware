@@ -40,7 +40,7 @@
 // take it; the 4-bit PaperS3 takes it exactly when its sixteen greys quantise
 // that tint back onto the screen's own colour. LevelShape.h's trackLook()
 // answers the question once, for the ring and for the bar alike. The one
-// device that takes the branch on every screen is MqttEPaperDisplay2 - which
+// device that takes the branch on every screen is schaltli-eink - which
 // is why this repo's copy is held to the same recorded pixels rather than
 // only to a panel it would never show up on (tools/arc-raster/run.js).
 //

@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <functional>
 
-// Firmware updates over MQTT: screenbee/<clientId>/firmware in, progress out
+// Firmware updates over MQTT: schaltli/<clientId>/firmware in, progress out
 // on the same deploy-status topic a project deploy uses (designer repo,
 // docs/2026-09-15-firmware-ota.md, decisions 2, 5 and 8, and
 // device-contract.md §4).

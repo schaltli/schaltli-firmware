@@ -3,7 +3,7 @@
 
 // Shared "take a project zip already sitting in a file on LittleFS and turn
 // it into the live /PROJECT directory" logic - ported ~verbatim from
-// MqttEPaperDisplay2's ProjectInstaller (same miniz-based extraction, same
+// schaltli-eink's ProjectInstaller (same miniz-based extraction, same
 // /PROJECT layout convention) so TestInterfaceServer's project-upload
 // endpoint doesn't have to reinvent it. Kept as its own namespace (not
 // folded into TestInterfaceServer) in case a future MQTT self-deploy path

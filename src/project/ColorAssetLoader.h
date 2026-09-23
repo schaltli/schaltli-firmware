@@ -9,7 +9,7 @@
 // 4-byte boundary, BGR pixel order) - the same format every "24bit"
 // colorDepth project's icon/SoftwareButton assets are actually exported
 // as, so decoding this is decoding the real thing, not a stand-in format.
-// Deliberately narrower than MqttEPaperDisplay2's AssetManager (which
+// Deliberately narrower than schaltli-eink's AssetManager (which
 // only ever needed 1bpp) - this only needs to handle what the M5 Dial DDF
 // actually declares (colorDepth: "24bit"), so 24bpp is the only format
 // supported; anything else fails loudly (returns false) rather than

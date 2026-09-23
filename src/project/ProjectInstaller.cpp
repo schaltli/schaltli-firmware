@@ -19,7 +19,7 @@ namespace {
 // the tree is really gone, which the caller is expected to act on.
 //
 // Iterative rather than recursive to avoid stack overflow, as the version
-// ported from MqttEPaperDisplay2 was - but every entry in a directory is
+// ported from schaltli-eink was - but every entry in a directory is
 // collected *before* any of them is deleted, which that version did not do,
 // and that was a real bug rather than a stylistic difference:
 //
@@ -78,7 +78,7 @@ bool removeTree(const String& path) {
   return !LittleFS.exists(path);
 }
 
-// Ported verbatim from MqttEPaperDisplay2's ProjectInstaller.cpp.
+// Ported verbatim from schaltli-eink's ProjectInstaller.cpp.
 void createDirectoriesForPath(const String& path) {
   int start = 1; // Skip leading /
   while (true) {

@@ -533,7 +533,7 @@ static bool setupPanelAndProject()
     // normal state of a board that has just been flashed, and it still has
     // to reach WiFi so one can be deployed to it.
     Serial.println("[papers3] no project installed yet");
-    displayAdapter->showLines({"ScreenBee", "PaperS3", "", "kein Projekt installiert"});
+    displayAdapter->showLines({"Schaltli", "PaperS3", "", "kein Projekt installiert"});
     return true;
   }
 

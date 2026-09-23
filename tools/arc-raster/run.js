@@ -9,13 +9,13 @@
 // and run it here.
 //
 // Why this exists. The arc rasterizer is written four times - the designer's
-// lib/arc-raster.ts, ArcRaster.cpp here, ArcRaster.cpp in MqttEPaperDisplay2,
+// lib/arc-raster.ts, ArcRaster.cpp here, ArcRaster.cpp in schaltli-eink,
 // ArcRaster.kt in the Android app - in integer arithmetic chosen so the
 // copies cannot produce different pixels. Everything else this firmware draws
 // is checked by a HIL run against the real panel; the rasterizer does not
 // have to wait for one, because the designer already records what it produces
 // (the designer repo's hil/android/fixtures/build-arc-golden.js writes
-// ScreensmithAndroid/app/src/test/resources/arc-raster-golden.json). The same
+// schaltli-android/app/src/test/resources/arc-raster-golden.json). The same
 // recording serves any port of it.
 //
 // And it matters HERE because this repo serves three boards from one copy of
@@ -54,15 +54,15 @@ const { execFileSync, spawnSync } = require("child_process");
 const HERE = __dirname;
 const REPO = path.resolve(HERE, "..", "..");
 const SRC = path.join(REPO, "src", "project");
-// Named after this repo: MqttEPaperDisplay2 carries the same harness, and two
+// Named after this repo: schaltli-eink carries the same harness, and two
 // of them building "golden.exe" into one directory would each be checking the
 // other repo's rasterizer without saying so.
-const OUT = path.join(os.tmpdir(), "arc-raster-check-screenbee-firmware");
+const OUT = path.join(os.tmpdir(), "arc-raster-check-schaltli-firmware");
 const DEG = 64; // 1/64 degree units, the rasterizer's own scale
 
 const GOLDEN =
   process.env.ARC_GOLDEN ||
-  path.resolve(REPO, "..", "ScreensmithAndroid", "app", "src", "test", "resources",
+  path.resolve(REPO, "..", "schaltli-android", "app", "src", "test", "resources",
     "arc-raster-golden.json");
 
 function die(message) {

@@ -3,8 +3,8 @@
 #include <functional>
 
 // Handles the MQTT self-deploy flow (docs/device-contract.md, designer
-// repo, §4's "Deploy-flow topics") - screenbee/<clientId>/deploy in,
-// screenbee/<clientId>/deploy-status out. Referenced but never
+// repo, §4's "Deploy-flow topics") - schaltli/<clientId>/deploy in,
+// schaltli/<clientId>/deploy-status out. Referenced but never
 // implemented here until 2026-08-10 (see MqttClient.h's getClientId()
 // doc comment, ported verbatim from the e-paper firmware, which already
 // mentioned "DeployManager" by name). Found missing when a real deploy
@@ -46,14 +46,14 @@ public:
   using PublishStatusFn = std::function<void(const String& deployId, const String& state, const String& error, int percent)>;
   void setPublishStatusHandler(PublishStatusFn handler) { publishStatus_ = handler; }
 
-  // Publishes an empty retained payload to screenbee/<clientId>/deploy -
+  // Publishes an empty retained payload to schaltli/<clientId>/deploy -
   // the only way to clear a *retained* MQTT message, called once at the
   // very start of handling a deploy (see handleDeployMessage()'s own
   // comment for why this is load-bearing, not cleanup busywork).
   using ClearTriggerFn = std::function<void()>;
   void setClearTriggerHandler(ClearTriggerFn handler) { clearTrigger_ = handler; }
 
-  // Call once a message on screenbee/<clientId>/deploy has been received
+  // Call once a message on schaltli/<clientId>/deploy has been received
   // - parses {deployId, url, crc32} and runs the full download -> verify
   // -> install sequence, publishing status at each step. Must be called
   // from loop(), *after* mqttClient.loop() has fully returned, never from

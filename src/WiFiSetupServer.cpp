@@ -10,7 +10,7 @@
 // after a different device entirely. Exactly the drift the MQTT client id
 // had for the same reason - a copied constant nobody thought to rename.
 const char* WiFiSetupServer::AP_SSID = DEVICE_ID "-setup";
-const char* WiFiSetupServer::AP_PASSWORD = "screenbee12345";
+const char* WiFiSetupServer::AP_PASSWORD = "schaltli12345";
 const IPAddress WiFiSetupServer::AP_IP(192, 168, 4, 1);
 const IPAddress WiFiSetupServer::AP_GATEWAY(192, 168, 4, 1);
 const IPAddress WiFiSetupServer::AP_SUBNET(255, 255, 255, 0);
@@ -219,7 +219,7 @@ void WiFiSetupServer::showSetupScreenAP(int secondsLeft, bool clientConnected) {
   // A WIFI: URI, not the config URL. Phone cameras recognise this natively
   // and offer to join the network; a URL would be unreachable until the
   // phone had already joined, which is the step this is meant to remove.
-  // Typing "screenbee12345" off a 46mm screen is the alternative, and it is
+  // Typing "schaltli12345" off a 46mm screen is the alternative, and it is
   // the reason people give up on device setup.
   String qr = "WIFI:S:";
   qr += AP_SSID;
@@ -247,7 +247,7 @@ void WiFiSetupServer::showSetupScreenSTA() {
   String ip = WiFi.localIP().toString();
   String ssid = WiFi.SSID();
   display_.showLines({
-    "SCREENBEE SETUP",
+    "SCHALTLI SETUP",
     "",
     "Your WiFi: " + ssid,
     "Device IP: " + ip,
@@ -453,7 +453,7 @@ String WiFiSetupServer::testMqttConnection(const String& protocol, const String&
   mqttClient.setServer(host.c_str(), port);
   mqttClient.setSocketTimeout(5);
 
-  String clientId = "ScreenBeeTest_" + String(random(0xffff), HEX);
+  String clientId = "SchaltliTest_" + String(random(0xffff), HEX);
 
   bool connected = false;
   unsigned long startTime = millis();
@@ -478,8 +478,8 @@ String WiFiSetupServer::testMqttConnection(const String& protocol, const String&
   unsigned long duration = millis() - startTime;
 
   if (connected) {
-    String testTopic = "screenbee/test/" + clientId;
-    String testMessage = "Test message from ScreenBee";
+    String testTopic = "schaltli/test/" + clientId;
+    String testMessage = "Test message from Schaltli";
     if (mqttClient.publish(testTopic.c_str(), testMessage.c_str(), false)) {
       mqttClient.disconnect();
       return "SUCCESS: Connected to MQTT broker in " + String(duration) + "ms. Test publish successful.";

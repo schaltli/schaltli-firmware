@@ -10,7 +10,7 @@
 // of this class is board-specific.
 //
 // GFXcanvas16 (RGB565) with an optional clip rectangle - the color
-// (24bit/RGB565) counterpart to MqttEPaperDisplay2's ClippedCanvas1
+// (24bit/RGB565) counterpart to schaltli-eink's ClippedCanvas1
 // (1-bit/monochrome). Same reasoning applies: U8g2_for_Adafruit_GFX (and
 // every other Adafruit_GFX drawing primitive) ultimately draws through
 // drawPixel()/drawFastVLine()/drawFastHLine(), so overriding those here is

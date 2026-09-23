@@ -9,7 +9,7 @@
 #include "interfaces/IDisplay.h"
 #include "interfaces/IConfigStorage.h"
 
-// Lean counterpart of MqttEPaperDisplay2's UnifiedConfigurator - WiFi +
+// Lean counterpart of schaltli-eink's UnifiedConfigurator - WiFi +
 // MQTT setup only, no project upload (that's checkpoint 4's job, tied to
 // a ProjectInstaller that doesn't exist for this device yet - see the
 // project history for why this was deliberately split rather than

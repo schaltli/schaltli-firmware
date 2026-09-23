@@ -1,10 +1,10 @@
 {
-  "ddfVersion": "1.1",
+  "ddfVersion": "1.2",
   "systemGeneration": "1.0",
   "device": {
     "id": "m5stack-papers3",
     "name": "M5Stack PaperS3",
-    "firmwareRepo": "screenbee-firmware"
+    "firmwareRepo": "schaltli-firmware"
   },
   "screen": {
     "width": 960,

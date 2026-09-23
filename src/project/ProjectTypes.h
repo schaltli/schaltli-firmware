@@ -260,7 +260,7 @@ struct ScreenObject {
   // Bitmap paths the designer's export flattens onto the object itself
   // (not nested in `properties`) - see lib/project-zip.ts: an "icon"
   // object gets `path`, a "button" gets `pathNormal`/`pathActive`.
-  // Not present in MqttEPaperDisplay2's ProjectTypes.h - that firmware
+  // Not present in schaltli-eink's ProjectTypes.h - that firmware
   // never implemented either object type (no touchscreen, e-paper icons
   // were never wired up either), so these are new here for M5 Dial.
   String path;
@@ -323,7 +323,7 @@ struct Screen {
 };
 
 // One field pulled out of a "json"-type topic's payload - mirrors the
-// designer's JsonSubtopic (components/screenman-editor.tsx) field-for-
+// designer's JsonSubtopic (components/project-editor.tsx) field-for-
 // field. `path` uses JSONPath's shorthand member/index syntax (RFC 9535) -
 // a genuine *subset* of JSONPath, not an invented look-alike: "temp",
 // "$.temp", "nested.temp", "readings[0].value", "['odd key.with.dots']"

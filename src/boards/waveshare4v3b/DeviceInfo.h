@@ -44,7 +44,7 @@
 // designer verifies this hash against what it downloads and refuses the
 // fetch on a mismatch, so a stale hash does not degrade auto-discovery, it
 // ends it.
-#define DDF_HASH "2316b1802bc87006"
+#define DDF_HASH "ad1539527311d7c8"
 
 // The system generation this firmware understands - the single version
 // number shared by the designer's project file, its device export, and the
@@ -73,6 +73,6 @@
 #define RECOVERY_PROJECT_PATH "/recovery_project.zip"
 
 // The MQTT topic namespace every device/browser participant in the deploy
-// flow shares (screenbee/<clientId>/...) - the same shared protocol as
-// every other ScreenBee device, not device-specific.
-#define TOPIC_PREFIX "screenbee"
+// flow shares (schaltli/<clientId>/...) - the same shared protocol as
+// every other Schaltli device, not device-specific.
+#define TOPIC_PREFIX "schaltli"

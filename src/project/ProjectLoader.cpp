@@ -278,7 +278,7 @@ void ProjectLoader::parseScreens(JsonArray screensArray) {
 
     // buttonActions is a JSON *object* keyed by button id (e.g. "button-0"),
     // not an array - mirrors the designer's Record<string,
-    // HardwareButtonAction> (components/screenman-editor.tsx), which
+    // HardwareButtonAction> (components/project-editor.tsx), which
     // JSON.stringify's the same way.
     if (screenJson["buttonActions"].is<JsonObject>()) {
       screen.buttonActions = parseScreenButtonActions(screenJson["buttonActions"].as<JsonObject>());
@@ -329,7 +329,7 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   }
 
   // Recursive: only "switcher" and "panel" objects carry children in
-  // practice, but parsing is generic (matches the designer's ScreenmanObject
+  // practice, but parsing is generic (matches the designer's ScreenObject
   // - any object type is technically allowed to have children). Absent for
   // every existing project (additive JSON field), so old projects parse
   // identically to before.

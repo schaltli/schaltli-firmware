@@ -16,7 +16,7 @@
 // pixels, with a panel connected, and only for whatever object happens to be
 // in that fixture. The designer already records the answers
 // (hil/android/fixtures/build-switch-golden.js writes
-// ScreensmithAndroid/app/src/test/resources/switch-shape-golden.json), and the
+// schaltli-android/app/src/test/resources/switch-shape-golden.json), and the
 // same recording serves any port of the rules.
 //
 // It found its first divergence the day it was written: the connected button
@@ -42,11 +42,11 @@ const { execFileSync, spawnSync } = require("child_process");
 const HERE = __dirname;
 const REPO = path.resolve(HERE, "..", "..");
 const SRC = path.join(REPO, "src", "project");
-const OUT = path.join(os.tmpdir(), "switch-shape-check-screenbee-firmware");
+const OUT = path.join(os.tmpdir(), "switch-shape-check-schaltli-firmware");
 
 const GOLDEN =
   process.env.SWITCH_GOLDEN ||
-  path.resolve(REPO, "..", "ScreensmithAndroid", "app", "src", "test", "resources",
+  path.resolve(REPO, "..", "schaltli-android", "app", "src", "test", "resources",
     "switch-shape-golden.json");
 
 function die(message) {

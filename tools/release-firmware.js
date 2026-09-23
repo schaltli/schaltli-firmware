@@ -49,7 +49,7 @@
 // layout lives there.
 //
 // Options: --designer <path> (default ../v0-screenman-editor-design),
-// --release-repo <owner/name> (default Matthias-Hess/screenbee-designer),
+// --release-repo <owner/name> (default Matthias-Hess/schaltli-designer),
 // --notes <file> (markdown, placed in the release body),
 // --allow-dirty (dry run only - a release is never built from uncommitted
 // changes).
@@ -78,7 +78,7 @@ function arg(name, fallback) {
 const publish = process.argv.includes("--publish")
 const allowDirty = process.argv.includes("--allow-dirty")
 const designer = path.resolve(arg("--designer", path.join(REPO, "..", "v0-screenman-editor-design")))
-const releaseRepo = arg("--release-repo", "Matthias-Hess/screenbee-designer")
+const releaseRepo = arg("--release-repo", "Matthias-Hess/schaltli-designer")
 const notesFile = arg("--notes", null)
 if (notesFile && !fs.existsSync(notesFile)) {
   console.error(`[release] ERROR: --notes ${notesFile} does not exist`)
@@ -192,8 +192,8 @@ try {
     }
 
     const image = fs.readFileSync(path.join(REPO, ".pio", "build", board.env, "firmware.bin"))
-    const markers = [...new Set(image.toString("latin1").match(/<<screenbee-image device=[a-z0-9-]+>>/g) || [])]
-    if (markers.length !== 1 || markers[0] !== `<<screenbee-image device=${deviceId}>>`) {
+    const markers = [...new Set(image.toString("latin1").match(/<<schaltli-image device=[a-z0-9-]+>>/g) || [])]
+    if (markers.length !== 1 || markers[0] !== `<<schaltli-image device=${deviceId}>>`) {
       throw new Error(`${board.env} carries ${markers.join(", ") || "no marker"}, expected ${deviceId}'s`)
     }
     if (!image.includes(Buffer.from(`"${tag}"`)) && !image.includes(Buffer.from(tag))) {
@@ -273,7 +273,7 @@ const push = run("git", ["push", "origin", tag], { stdio: "inherit" })
 if (push.status !== 0) fail(`git push origin ${tag} failed`)
 
 const notes = [
-  `Firmware ${tag}, built from screenbee-firmware ${commit.slice(0, 10)}.`,
+  `Firmware ${tag}, built from schaltli-firmware ${commit.slice(0, 10)}.`,
   "",
   // Hand-written, from --notes: what a user of the devices should know. The
   // commit list the dry run leaves in dist/<tag>/CHANGES.txt is the material.
@@ -282,7 +282,7 @@ const notes = [
   "",
   "Installed by the designer: deploy/pekaway-install.sh downloads the images firmware/manifest.json names.",
   "",
-  `A brand-new board has no ScreenBee to update, so it is flashed over USB instead: ${FLASHER_URL}`,
+  `A brand-new board has no Schaltli to update, so it is flashed over USB instead: ${FLASHER_URL}`,
   "(pick the board, pick this version, connect the cable - the factory images below are what that page writes,",
   "one file at 0x0; nothing else needs installing.)",
   "",

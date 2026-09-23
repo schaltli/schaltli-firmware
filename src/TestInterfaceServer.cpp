@@ -179,7 +179,7 @@ void TestInterfaceServer::handleSettingsPage() {
   // former dark theme, so the form looks the same wherever it is met.
   String page = F("<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
                   "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-                  "<title>ScreenBee Device Settings</title><style>"
+                  "<title>Schaltli Device Settings</title><style>"
                   "*{margin:0;padding:0;box-sizing:border-box}"
                   "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;"
                   "background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}"

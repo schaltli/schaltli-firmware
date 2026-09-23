@@ -3,8 +3,8 @@
 // Lean setup HTML - WiFi, MQTT and this device's own settings, no project
 // upload tab (that's
 // checkpoint 4's job, tied to a ProjectInstaller that doesn't exist yet
-// for this device). Styling/JS structure mirrors MqttEPaperDisplay2's
-// UnifiedConfiguratorHTML.h closely (same look across ScreenBee devices),
+// for this device). Styling/JS structure mirrors schaltli-eink's
+// UnifiedConfiguratorHTML.h closely (same look across Schaltli devices),
 // just with the "Project Upload" tab and its handlers removed.
 //
 // The Device tab's form and script are not written here: they come from
@@ -21,7 +21,7 @@ static const char WIFI_SETUP_HTML[] PROGMEM = R"=====(
 <!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>ScreenBee Setup</title><style>
+<title>Schaltli Setup</title><style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Arial,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;padding:20px}
 .container{max-width:600px;margin:0 auto;background:white;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,0.3);overflow:hidden}
@@ -56,7 +56,7 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 .hint{opacity:.65;font-size:13px;margin-top:6px;line-height:1.45}
 </style></head><body>
 <div class="container">
-<div class="header"><h1>ScreenBee Setup</h1><p>{{DEVICE}} - Configure WiFi, MQTT and this device</p></div>
+<div class="header"><h1>Schaltli Setup</h1><p>{{DEVICE}} - Configure WiFi, MQTT and this device</p></div>
 <div class="tabs">
 <button class="tab active" onclick="switchTab('wifi')">WiFi Setup</button>
 <button class="tab" onclick="switchTab('mqtt')">MQTT Connection</button>

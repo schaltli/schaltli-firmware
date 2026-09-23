@@ -1,4 +1,4 @@
-// ScreenBee firmware for the Waveshare ESP32-S3-Knob-Touch-LCD-1.8.
+// Schaltli firmware for the Waveshare ESP32-S3-Knob-Touch-LCD-1.8.
 //
 // Boot flow: bring up the panel and LVGL, then try saved WiFi. On success
 // the device connects to MQTT, loads whatever project is installed, renders
@@ -10,7 +10,7 @@
 // hardware-verified 2026-08-18, see the git history) and it was deliberately
 // removed on 2026-08-19: text entry is only ever needed at setup time, and a
 // browser form needs no LVGL, no touch and no encoder logic, so the same
-// flow works unchanged on every ScreenBee device instead of each board
+// flow works unchanged on every Schaltli device instead of each board
 // growing its own input UI. The cost is one more hop for the user; the gain
 // is one implementation instead of N.
 //

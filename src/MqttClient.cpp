@@ -12,7 +12,7 @@ MqttClient::MqttClient()
   // Unique per board, and prefixed with this device's own type rather than
   // the M5 Dial's - the ported version hardcoded "M5Dial-", which made this
   // board announce itself under an M5 Dial client id and, since the client
-  // id *is* the MQTT topic namespace (screenbee/<clientId>/...), put its
+  // id *is* the MQTT topic namespace (schaltli/<clientId>/...), put its
   // hello, deploy and status topics in the wrong place entirely. Caught the
   // first time this firmware connected to a real broker.
   //

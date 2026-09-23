@@ -28,7 +28,7 @@ namespace FirmwareImage
 {
 inline const char *marker()
 {
-  static const char MARKER[] = "<<screenbee-image device=" DEVICE_ID ">>";
+  static const char MARKER[] = "<<schaltli-image device=" DEVICE_ID ">>";
   return MARKER;
 }
 

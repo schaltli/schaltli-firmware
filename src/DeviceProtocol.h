@@ -5,7 +5,7 @@
 #include "DeviceInfo.h"
 
 // The MQTT half of the device contract: the topics under
-// screenbee/<clientId>/ that every ScreenBee device speaks, and the exact
+// schaltli/<clientId>/ that every Schaltli device speaks, and the exact
 // payload shapes docs/device-contract.md §4 specifies.
 //
 // Extracted rather than written a second time. These four functions are pure
