@@ -48,7 +48,7 @@
 // The designer checkout is needed for every run, dry or not: the factory
 // layout lives there.
 //
-// Options: --designer <path> (default ../v0-screenman-editor-design),
+// Options: --designer <path> (default ../schaltli-designer),
 // --release-repo <owner/name> (default Matthias-Hess/schaltli-designer),
 // --notes <file> (markdown, placed in the release body),
 // --allow-dirty (dry run only - a release is never built from uncommitted
@@ -77,7 +77,7 @@ function arg(name, fallback) {
 
 const publish = process.argv.includes("--publish")
 const allowDirty = process.argv.includes("--allow-dirty")
-const designer = path.resolve(arg("--designer", path.join(REPO, "..", "v0-screenman-editor-design")))
+const designer = path.resolve(arg("--designer", path.join(REPO, "..", "schaltli-designer")))
 const releaseRepo = arg("--release-repo", "Matthias-Hess/schaltli-designer")
 const notesFile = arg("--notes", null)
 if (notesFile && !fs.existsSync(notesFile)) {
