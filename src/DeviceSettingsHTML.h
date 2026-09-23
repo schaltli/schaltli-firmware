@@ -24,7 +24,7 @@ static const char DEVICE_SETTINGS_TAB_HTML[] PROGMEM = R"=====(
 <div class="form-group">
 <label for="dsOff">Turn the display off after</label>
 <input id="dsOff" type="number" min="0" max="86400" step="1" placeholder="15">
-<div class="hint">Seconds without a touch or a turn of the knob. 0 keeps the display
+<div class="hint">Seconds without a touch (on the Knob, or a turn of its ring). 0 keeps the display
 on for good. Values arriving over MQTT do not count as activity, so a screen showing
 live readings still goes dark.</div>
 </div>

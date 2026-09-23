@@ -99,8 +99,8 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 {{DEVICE_SETTINGS_TAB}}
 </div>
 <div style="padding:16px;text-align:center">
-<button onclick="exitSetup()" style="background:#555;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Cancel and restart</button>
-<p style="margin-top:8px;font-size:13px;opacity:.7">Leaves setup mode without changing anything.</p>
+<button onclick="exitSetup()" style="background:#555;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Finish and restart</button>
+<p style="margin-top:8px;font-size:13px;opacity:.7">Leaves setup mode and restarts. Whatever you saved above is kept.</p>
 </div>
 </div>
 <script>

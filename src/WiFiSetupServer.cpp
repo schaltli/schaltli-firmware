@@ -255,7 +255,10 @@ void WiFiSetupServer::showSetupScreenSTA() {
     "Open browser:",
     "http://" + ip,
     "",
-    "Hold Push (3s) for AP",
+    // No board here has a push button (issue #8): the way back into the
+    // access point is a finger held on the screen, for a time each board
+    // sets itself - hence no number.
+    "Hold a finger down for setup",
   });
 }
 
@@ -323,7 +326,7 @@ void WiFiSetupServer::handleWiFiConfigure() {
 
   if (saveWiFiCredentials(ssid, password)) {
     configuredSSID_ = ssid;
-    sendJSONResponse(true, "WiFi credentials saved! Restart to connect.");
+    sendJSONResponse(true, "WiFi credentials saved. Tap Finish and restart below to connect.");
   } else {
     sendJSONResponse(false, "Failed to save credentials");
   }
