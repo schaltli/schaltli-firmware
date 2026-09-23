@@ -279,3 +279,12 @@ disappears while asleep and reappears on wake/reset.
 pio run -t upload
 pio device monitor
 ```
+
+## License
+
+The code in this repository is licensed under the GNU Affero General Public
+License, version 3 or (at your option) any later version - see
+[LICENSE](LICENSE).
+
+The name "Schaltli" and the Schaltli mark are not covered by that license. A
+fork may use the code, but not present itself as Schaltli.
