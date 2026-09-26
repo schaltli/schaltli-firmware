@@ -64,7 +64,9 @@
 // This board implements the correct peek from day one, unlike the M5 Dial,
 // which still reads the retired `schemaVersion` field.
 #define SYSTEM_GENERATION_MAJOR 1
-#define SYSTEM_GENERATION_MINOR 0
+// 1: reads the dark variant (XDark) of a 1.1 export and, on a colour board,
+// follows schaltli/state/theme (designer docs/device-contract.md 2.3, 4).
+#define SYSTEM_GENERATION_MINOR 1
 
 // Where DeployManager.cpp promotes a verified deploy download to, and
 // TestInterfaceServer.cpp's recovery endpoint (GET /recovery-project) reads

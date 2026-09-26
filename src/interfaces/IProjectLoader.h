@@ -47,6 +47,13 @@ public:
    * @param buttonId Button id string, e.g. "button-0"
    */
   virtual ButtonAction getButtonAction(int screenIndex, const String& buttonId) const = 0;
+
+  /**
+   * Shows the loaded project in its dark variant (true) or its light one -
+   * every XDark in place of its X (project/ThemeVariant.h). A no-op for the
+   * variant it is already in, and for a project without dark fields.
+   */
+  virtual void applyThemeVariant(bool dark) = 0;
 };
 
 

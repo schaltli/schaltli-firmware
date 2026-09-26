@@ -14,6 +14,7 @@ struct ValueIconPair {
   float value;
   String thenShowIcon;        // Icon ID to show
   String path;                // Path to BMP file
+  String pathDark;            // The dark variant's bitmap (ThemeVariant.h); empty: same as path
 };
 
 // Calibration point for level indicators
@@ -48,6 +49,9 @@ struct SwitchState {
   // fallback below in renderSwitch already handled that case, because
   // exports predating the second variant looked exactly like this.
   String iconPathActive;
+  // The dark variant's two bitmaps (ThemeVariant.h); empty: same as light.
+  String iconPathDark;
+  String iconPathActiveDark;
   // "single" mode only: does this state show the marker bar? Ignored in
   // "segmented", where the bar always marks whichever segment is active.
   bool showMarker;
@@ -102,6 +106,16 @@ struct ObjectProperties {
   String borderColor;
   String textColor;
   String color;                           // Alternate text color property (for labels)
+  // The dark variant's value, beside its light one (the designer's
+  // docs/device-contract.md §2.3). Empty: the same as light. Swapped in by
+  // ThemeVariant.h while schaltli/state/theme says dark.
+  String backgroundColorDark;
+  String borderColorDark;
+  String textColorDark;
+  String colorDark;
+  String fillColorDark;
+  String strokeColorDark;
+  String switchColorDark;
   String textAlign;                       // "left", "center", "right"
   String fontId;                          // Font identifier
   String fontWeight;                      // "normal", "bold" (for labels)
@@ -266,6 +280,10 @@ struct ScreenObject {
   String path;
   String pathNormal;
   String pathActive;
+  // The dark variant's bitmaps (ThemeVariant.h); empty: same as light.
+  String pathDark;
+  String pathNormalDark;
+  String pathActiveDark;
   // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own
@@ -305,6 +323,7 @@ struct Screen {
   String name;
   String path;                            // Background BMP path (optional)
   String backgroundColor;                 // Screen fill color, e.g. "#ffffff" (optional, defaults to white)
+  String backgroundColorDark;             // The dark variant's (ThemeVariant.h); empty: same as light
   std::vector<ScreenObject> objects;
   // Per-screen override of a button's action, keyed by button id (e.g.
   // "button-0") - takes priority over ProjectConfig::hardwareButtons's
@@ -380,8 +399,13 @@ struct ProjectConfig {
   std::vector<Font> fonts;
   std::vector<Screen> screens;
   std::vector<HardwareButtonDef> hardwareButtons;
+  // Which variant the pairs above currently hold, and which pairs
+  // ThemeVariant.h swapped to get there - kept so that exactly those are
+  // swapped back.
+  bool themeDark;
+  std::vector<bool> themeSwapped;
 
-  ProjectConfig() : screenWidth(0), screenHeight(0) {}
+  ProjectConfig() : screenWidth(0), screenHeight(0), themeDark(false) {}
 };
 
 

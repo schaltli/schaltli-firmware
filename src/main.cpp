@@ -48,6 +48,7 @@
 #include "DeployManager.h"
 #include "DeviceInfo.h"
 #include "project/ProjectLoader.h"
+#include "project/ThemeVariant.h"
 #include "project/ColorScreenRenderer.h"
 #include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
@@ -1813,6 +1814,12 @@ static volatile bool wifiPowerSaveNeedsReassert = false;
 // Hier, weil onMqttMessage() und buildDebugJson() ihn brauchen und beide
 // frueher im File stehen.
 static bool signalModeActive = false;
+
+// Light or dark, as schaltli/state/theme last said (the designer's
+// docs/2026-09-26-device-switch.md). Kept apart from the project because the
+// retained value can arrive before the project is loaded, and must still hold
+// for it once it is.
+static bool wantedThemeDark = false;
 static uint32_t signalModeUntilMs = 0;
 static uint32_t signalModeLastDrawMs = 0;
 static int8_t signalModeBest = 0;
@@ -1836,6 +1843,10 @@ static String buildDebugJson() {
   }
   out += ",\"firmwareBuild\":\"" FIRMWARE_BUILD "\"";
   out += ",\"installsOnlyFor\":\"" DEVICE_ID "\"";
+  // What schaltli/state/theme asked for, and what the loaded project shows.
+  out += String(",\"theme\":\"") + (wantedThemeDark ? "dark" : "light") + "\"";
+  out += String(",\"themeShown\":\"") +
+         (projectLoader.isLoaded() && projectLoader.getProject().themeDark ? "dark" : "light") + "\"";
   out += ",\"edgeCountGpio7\":" + String(edgeCountGpio7);
   out += ",\"edgeCountGpio8\":" + String(edgeCountGpio8);
   out += ",\"dispatchedRight\":" + String(dispatchedRight);
@@ -2100,6 +2111,8 @@ static void loadAndRenderProject() {
     Serial.println("[project] failed to load /PROJECT/project.json");
     return;
   }
+  // The theme may have been reported before there was a project to show it.
+  projectLoader.applyThemeVariant(wantedThemeDark);
   const ProjectConfig &project = projectLoader.getProject();
   Serial.printf("[project] loaded \"%s\", %d screen(s)\n", project.name.c_str(), (int)project.screens.size());
 
@@ -2317,7 +2330,33 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
   return true;
 }
 
+static String themeTopic() { return String(TOPIC_PREFIX) + "/state/theme"; }
+
+// Shows the loaded project in the variant schaltli/state/theme asked for, and
+// redraws it whole: every colour, the screen background and every baked
+// bitmap change at once, and so do the pre-rendered neighbours and the menu's
+// backdrop, which are pictures of the old variant.
+static void applyWantedTheme() {
+  if (!projectLoader.isLoaded()) return;
+  if (projectLoader.getProject().themeDark == wantedThemeDark) return;
+  projectLoader.applyThemeVariant(wantedThemeDark);
+  canvasPresenter.invalidateSlots();
+  menuBackdropReady = false;
+  if (signalModeActive) return;
+  if (currentScreenIndex < 0 || currentScreenIndex >= (int)projectLoader.getProject().screens.size()) return;
+  renderScreenIndex(currentScreenIndex);
+}
+
 static void onMqttMessage(const String &topic, const String &payload) {
+  // Light or dark for the whole installation. Handled before the project's
+  // own topics: it is not one of them unless a Theme switch reads it too, in
+  // which case the switch gets the value as well.
+  if (topic == themeTopic()) {
+    wantedThemeDark = themevariant::isDarkPayload(payload);
+    if (projectLoader.isLoaded()) projectLoader.setTopicValue(topic, payload);
+    applyWantedTheme();
+    return;
+  }
   // Device-level control topic - routed to DeployManager rather than falling
   // through to setTopicValue(), which would try to display the deploy JSON.
   //
@@ -2402,6 +2441,8 @@ static void setupMqtt(const WiFiCredentials &creds) {
   });
   firmwareUpdater.setFailedHandler([]() { renderScreenIndex(currentScreenIndex); });
   mqttClient.subscribe(deviceTopic("firmware"));
+  // Retained, so the broker answers with the current theme on every connect.
+  mqttClient.subscribe(themeTopic());
   mqttClient.setConnectedCallback([]() { publishHello(); });
   mqttClient.setCallback(onMqttMessage);
   mqttClient.connect();
@@ -2674,6 +2715,12 @@ static void setupWiFi() {
         }
         // Plain text rather than the JSON blob: this one is read by a human
         // who is asking why something did not appear.
+        // set=theme=dark|light: what schaltli/state/theme would do, without
+        // a broker - for the HIL dark pass and for looking at it by hand.
+        if (setArg.startsWith("theme=")) {
+          wantedThemeDark = themevariant::isDarkPayload(setArg.substring(6));
+          applyWantedTheme();
+        }
         if (setArg == "describe") {
           return screenRenderer ? screenRenderer->describeScreen(currentScreenIndex)
                                 : String("no renderer\n");

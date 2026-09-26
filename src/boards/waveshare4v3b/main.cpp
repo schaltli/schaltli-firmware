@@ -87,6 +87,7 @@
 #include "../../DeviceProtocol.h"
 #include "../../ClippedCanvas16.h"
 #include "../../project/ProjectLoader.h"
+#include "../../project/ThemeVariant.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
 #include "project/ObjectTypes.h"
@@ -233,6 +234,25 @@ static String idleScreenId;             // empty = feature off, cached from NVS
 static bool contactOnlyWoke = false;
 
 static bool renderPending = false;
+
+// Light or dark, as schaltli/state/theme last said (the designer's
+// docs/2026-09-26-device-switch.md). Kept apart from the project: the
+// retained value can arrive before the project is loaded, and must hold for
+// it once it is.
+static bool wantedThemeDark = false;
+
+// Shows the loaded project in the wanted variant. Swapped here, drawn by the
+// loop: a change asks for a whole screen (pendingTopicOverflow), because
+// every colour, the background and every baked bitmap change at once - no
+// partial redraw has a rectangle for that.
+static void applyWantedTheme()
+{
+  if (!projectLoader.isLoaded()) return;
+  if (projectLoader.getProject().themeDark == wantedThemeDark) return;
+  projectLoader.applyThemeVariant(wantedThemeDark);
+  pendingTopicOverflow = true;
+  renderPending = true;
+}
 static unsigned long lastTopicRenderMs = 0;
 // A render plus its blit costs 180ms. Drawing every value as it lands left
 // the loop no time for anything else, so values are coalesced to at most
@@ -527,6 +547,8 @@ static void setupRenderStack()
     Serial.println("[4v3b] loadProject FAILED");
     return;
   }
+  // The theme may have been reported before there was a project to show it.
+  projectLoader.applyThemeVariant(wantedThemeDark);
   Serial.printf("[4v3b] project \"%s\", %ux%u, %u screen(s)\n",
                 projectLoader.getProject().name.c_str(),
                 projectLoader.getProject().screenWidth,
@@ -719,7 +741,17 @@ static void setupNetworking()
   // framebuffer for a few hundred milliseconds before re-rendering, and
   // nobody wants that on a panel that is showing a project.
   testInterface.setDebugHandler([](const String &setArg) -> String {
+    // ?set=theme=dark|light: what schaltli/state/theme would do, without a
+    // broker - for the HIL dark pass and for looking at it by hand.
+    if (setArg.startsWith("theme="))
+    {
+      wantedThemeDark = themevariant::isDarkPayload(setArg.substring(6));
+      applyWantedTheme();
+    }
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
+    out += String("theme ") + (wantedThemeDark ? "dark" : "light") + ", shown " +
+           (projectLoader.isLoaded() && projectLoader.getProject().themeDark ? "dark" : "light") +
+           " (?set=theme=dark|light)\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
     {
@@ -1070,6 +1102,9 @@ static void setupNetworking()
   });
   firmwareUpdater.setFailedHandler([]() { renderAndPresent("firmware update failed"); });
   mqttClient.subscribe(protocol.deviceTopic("firmware"));
+  // Light or dark for the whole installation - retained, so the broker
+  // answers with the current theme on every connect.
+  mqttClient.subscribe(String(TOPIC_PREFIX) + "/state/theme");
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
     Serial.println("[4v3b] published hello");
@@ -1084,6 +1119,15 @@ static void setupNetworking()
     {
       pendingDeployPayload = payload;
       pendingDeploy = true;
+      return;
+    }
+    // Light or dark. Before the project's own topics: it is not one of them
+    // unless a Theme switch reads it too, which then gets the value as well.
+    if (topic == String(TOPIC_PREFIX) + "/state/theme")
+    {
+      wantedThemeDark = themevariant::isDarkPayload(payload);
+      if (projectLoader.isLoaded()) projectLoader.setTopicValue(topic, payload);
+      applyWantedTheme();
       return;
     }
     // The installation's word ends the request: the marker goes, and the fill

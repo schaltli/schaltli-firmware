@@ -20,6 +20,7 @@ public:
   String getTopicValue(const String& topic) const override;
   void setTopicValue(const String& topic, const String& value) override;
   ButtonAction getButtonAction(int screenIndex, const String& buttonId) const override;
+  void applyThemeVariant(bool dark) override;
 
 private:
   ProjectConfig project_;

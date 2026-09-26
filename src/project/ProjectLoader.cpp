@@ -1,4 +1,5 @@
 #include "ProjectLoader.h"
+#include "ThemeVariant.h"
 #include <exception>
 #include <math.h>
 
@@ -265,6 +266,9 @@ void ProjectLoader::parseScreens(JsonArray screensArray) {
     screen.name = screenJson["name"] | "";
     screen.path = resolveAssetPath(screenJson["path"] | "");
     screen.backgroundColor = screenJson["backgroundColor"] | "#ffffff";
+    // No default for a dark field: empty means "the same as light", and the
+    // light default is not a dark value (ThemeVariant.h).
+    screen.backgroundColorDark = screenJson["backgroundColorDark"] | "";
     screen.pageIconPath = resolveAssetPath(screenJson["pageIconPath"] | "");
 
     if (screenJson["objects"].is<JsonArray>()) {
@@ -323,6 +327,9 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   obj.path = resolveAssetPath(objJson["path"] | "");
   obj.pathNormal = resolveAssetPath(objJson["pathNormal"] | "");
   obj.pathActive = resolveAssetPath(objJson["pathActive"] | "");
+  obj.pathDark = resolveAssetPath(objJson["pathDark"] | "");
+  obj.pathNormalDark = resolveAssetPath(objJson["pathNormalDark"] | "");
+  obj.pathActiveDark = resolveAssetPath(objJson["pathActiveDark"] | "");
 
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
@@ -371,6 +378,16 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // The two callers that genuinely want black when nothing is set - lines -
   // now say so themselves, which is also what the designer does.
   props.color = propsJson["color"] | "";
+  // The dark variant's colours, no defaults (ThemeVariant.h). iconColor and
+  // buttonColor have none here because they have no light field either:
+  // icons and buttons arrive baked, dark ones through the *Dark paths.
+  props.backgroundColorDark = propsJson["backgroundColorDark"] | "";
+  props.borderColorDark = propsJson["borderColorDark"] | "";
+  props.textColorDark = propsJson["textColorDark"] | "";
+  props.colorDark = propsJson["colorDark"] | "";
+  props.fillColorDark = propsJson["fillColorDark"] | "";
+  props.strokeColorDark = propsJson["strokeColorDark"] | "";
+  props.switchColorDark = propsJson["switchColorDark"] | "";
   props.textAlign = propsJson["textAlign"] | "left";
   props.fontId = propsJson["fontId"] | "";
   props.fontWeight = propsJson["fontWeight"] | "normal";
@@ -496,6 +513,8 @@ std::vector<SwitchState> ProjectLoader::parseSwitchStates(JsonArray statesArray)
     state.writeValue = stateJson["writeValue"] | "";
     state.iconPath = resolveAssetPath(stateJson["path"] | "");
     state.iconPathActive = resolveAssetPath(stateJson["pathActive"] | "");
+    state.iconPathDark = resolveAssetPath(stateJson["pathDark"] | "");
+    state.iconPathActiveDark = resolveAssetPath(stateJson["pathActiveDark"] | "");
     // "Show this state as switched on", which decides whether a switch
     // showing it is drawn in colour. Renamed from showMarker on 2026-09-20
     // (designer docs/2026-09-20-switch-look.md, decision 4); every project
@@ -526,6 +545,7 @@ std::vector<ValueIconPair> ProjectLoader::parseValueIconPairs(JsonArray pairsArr
     pair.value = pairJson["value"].as<String>().toFloat();
     pair.thenShowIcon = pairJson["thenShowIcon"] | "";
     pair.path = resolveAssetPath(pairJson["path"] | "");
+    pair.pathDark = resolveAssetPath(pairJson["pathDark"] | "");
     
     pairs.push_back(pair);
   }
@@ -744,6 +764,10 @@ void ProjectLoader::parseHardwareButtons(JsonArray hardwareButtonsArray) {
     }
     project_.hardwareButtons.push_back(def);
   }
+}
+
+void ProjectLoader::applyThemeVariant(bool dark) {
+  themevariant::apply(project_, dark);
 }
 
 ButtonAction ProjectLoader::getButtonAction(int screenIndex, const String& buttonId) const {
