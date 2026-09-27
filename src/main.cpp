@@ -1358,10 +1358,17 @@ static String levelDragPayload;
 // Das Lese-Topic, dessen naechste Nachricht die Anforderung beendet. Getrennt
 // von levelDragTopic, weil die Anforderung den Finger ueberlebt.
 static String levelAskedTopic;
+// Nach dem Loslassen: der Wert, dessen Antwort die Anforderung beendet, und
+// bis wann auf sie gewartet wird (endLevelDrag, MQTT-Callback, loop()).
+static String levelAwaitValue;
+static unsigned long levelAwaitUntilMs = 0;
+static const unsigned long LEVEL_AWAIT_MS = 2500;
 static unsigned long levelDragLastPublishMs = 0;
-// Ein Zug soll nicht dreissig Nachrichten schicken - dieselbe Sammelzeit wie
-// der Schrittbefehl der Luefterseite im Fahrzeug.
-static const unsigned long LEVEL_PUBLISH_MIN_MS = 250;
+// Ein Zug soll nicht dreissig Nachrichten schicken. 100 ms, zehn in der
+// Sekunde: naeher kann das Licht dem Finger nicht folgen, und 250 ms wirkten
+// auf dem 4.3B wie ein Nachhinken. Pekaway verkraftet das - es legt einen
+// Dimmerwert ohnehin erst 200 ms nach dem letzten Befehl ab.
+static const unsigned long LEVEL_PUBLISH_MIN_MS = 100;
 
 // Ganze Zahlen ohne Komma, wie der Designer sie schreibt; eine Stufe von 0,5
 // braucht die Stelle dahinter.
@@ -1404,6 +1411,8 @@ static bool beginLevelDrag(int16_t x, int16_t y) {
   levelDragTopic = "";
   levelDragWriteTopic = "";
   levelDragPayload = "";
+  // Ein neuer Finger: worauf das letzte Loslassen wartete, zaehlt nicht mehr.
+  levelAwaitValue = "";
   if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
 
   int16_t objX = 0;
@@ -1448,8 +1457,23 @@ static void endLevelDrag() {
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty()) {
     mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
     Serial.printf("[level] losgelassen auf %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
+    levelAwaitValue = levelDragPayload;
+    levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
   }
   levelDragObjId = "";
+  // Schon beantwortet, waehrend der Finger ruhte: eine Bruecke meldet nur
+  // Aenderungen, eine zweite Antwort kommt also nicht - jetzt beenden statt
+  // nach der Wartezeit.
+  const String gemeldet = projectLoader.getTopicValue(levelAskedTopic);
+  if (!levelAwaitValue.isEmpty() && !levelAskedTopic.isEmpty() && !gemeldet.isEmpty() &&
+      screenRenderer != nullptr && fabsf(gemeldet.toFloat() - levelAwaitValue.toFloat()) <= 0.001f) {
+    levelAwaitValue = "";
+    screenRenderer->clearAskedValue();
+    levelAskedTopic = "";
+    canvasPresenter.invalidateSlots();
+    menuBackdropReady = false;
+    renderScreenIndex(currentScreenIndex);
+  }
 }
 
 static void pollTouchGesturesInner() {
@@ -2385,8 +2409,22 @@ static void onMqttMessage(const String &topic, const String &payload) {
   // angeforderte ist (Entscheidung 6c). Waehrend der Finger noch liegt,
   // bleibt der Marker, wo er ist: er haengt am Objekt, nicht am Topic.
   if (screenRenderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic) {
+    // Solange der Finger liegt, beendet keine Antwort die Anforderung - der
+    // Finger fragt ja noch. Und nach dem Loslassen nur die Antwort auf den
+    // Wert, auf dem er losgelassen hat: die Antworten auf die Werte, ueber
+    // die der Zug lief, sind dann noch unterwegs. Beides gespeichert, nicht
+    // gezeichnet. Wie auf dem 4.3B (2026-09-27, im Van: der Anfasser sprang
+    // nach dem Loslassen auf einen Zwischenwert zurueck und dann weiter).
+    const bool fingerLiegt = !levelDragObjId.isEmpty();
+    const bool wartet = !levelAwaitValue.isEmpty() && (long)(levelAwaitUntilMs - millis()) > 0 &&
+                        fabsf(payload.toFloat() - levelAwaitValue.toFloat()) > 0.001f;
+    if (fingerLiegt || wartet) {
+      projectLoader.setTopicValue(topic, payload);
+      return;
+    }
     screenRenderer->clearAskedValue();
     levelAskedTopic = "";
+    levelAwaitValue = "";
   }
 
   const String oldValue = projectLoader.getTopicValue(topic);
@@ -2886,6 +2924,19 @@ void loop() {
   // Before lv_timer_handler(), so LVGL and the gesture detector both work
   // from the same single reading of a register that clears when read.
   PHASE("sampleTouch", sampleTouch());
+
+  // Ein losgelassener Balken, dessen Endwert nie beantwortet wurde: dann gilt
+  // doch das letzte Wort der Anlage (Entscheidung 6c) - nur spaeter.
+  if (!levelAwaitValue.isEmpty() && (long)(millis() - levelAwaitUntilMs) >= 0) {
+    levelAwaitValue = "";
+    if (screenRenderer != nullptr && !levelAskedTopic.isEmpty()) {
+      screenRenderer->clearAskedValue();
+      levelAskedTopic = "";
+      canvasPresenter.invalidateSlots();
+      menuBackdropReady = false;
+      renderScreenIndex(currentScreenIndex);
+    }
+  }
 
   lv_tick_inc(5);
   PHASE("lvgl", pumpLvgl());

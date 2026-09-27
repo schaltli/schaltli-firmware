@@ -241,6 +241,24 @@ float ColorScreenRenderer::calibrationValueForPercent(float percent, const std::
 // A level with somewhere to write to is one a finger can set; without one it
 // is exactly the read-only bar it has always been (decision 1). Only the bar
 // so far - the ring follows (decision 7).
+// The value a level shows. What the installation reports - except on a level
+// with no setpoint of its own while a finger is asking for a value on it. That
+// is the dimmer's pattern in the handbook (designer, mqtt-beispiele.md): one
+// value, which a command sets and the state reports back a moment later, so
+// while the finger is on it the value IS the finger - fill and handle
+// together, as the lamp follows it and as Pekaway's own dashboard shows it.
+// Showing the report there split one value in two while answers ran behind
+// the finger: the fill jumped about under a steady handle (2026-09-27, in the
+// van). A level WITH a setpoint topic is the heater's pattern, where wanted
+// and measured are truly different: its fill stays the report, and only the
+// marker follows the finger (decision 6c).
+String ColorScreenRenderer::shownLevelValue(const ScreenObject& obj) const {
+  if (obj.properties.setpointTopic.isEmpty() && !askedValue_.isEmpty() && askedTopic_ == obj.properties.topic) {
+    return askedValue_;
+  }
+  return projectLoader_.getTopicValue(obj.properties.topic);
+}
+
 void ColorScreenRenderer::setAskedValue(const String& markerTopic, const String& value) {
   askedTopic_ = markerTopic;
   askedValue_ = value;
@@ -1090,7 +1108,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t) 
 #endif  // PILL_ANTIALIASED
 
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
-  const String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
+  const String valueStr = shownLevelValue(obj);
 
   // One colour: the bar's. The unfilled track is mixed from it and the screen
   // behind it, and the object has no background, border or track colour of its
@@ -1415,7 +1433,7 @@ static int32_t arcInsetFor(const ScreenObject& obj, int32_t size, int32_t thickn
 // have hard edges. See ArcRaster.h for why the arithmetic is shaped the way
 // it is.
 bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixInto) {
-  String valueStr = projectLoader_.getTopicValue(obj.properties.topic);
+  String valueStr = shownLevelValue(obj);
   // No value yet: the track alone - no fill (not even what the calibration
   // makes of 0), no handle, no number (render-arc-level.ts, the same rule).
   String trimmedValue = valueStr;

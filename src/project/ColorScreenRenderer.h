@@ -400,6 +400,8 @@ private:
   bool markerTopicBounds(int screenIndex, const String& markerTopic, int16_t& x, int16_t& y, int16_t& w,
                          int16_t& h) const;
   void clearAskedValue();
+  // What a level shows: the report, or on the dimmer pattern the finger (see the .cpp).
+  String shownLevelValue(const ScreenObject& obj) const;
 
  private:
 
