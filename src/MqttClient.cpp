@@ -245,8 +245,19 @@ void MqttClient::loop() {
         }
       }
     } else {
-      // Process incoming messages
+      // Process incoming messages - all that have arrived, not one.
+      // PubSubClient::loop() reads at most one packet a call, and the board
+      // calls this once a loop turn, which on the 4.3B includes a render of
+      // 170 ms. Values that queued up while a slider was dragged - ten a
+      // second, each echoed back as state - then came out one per render
+      // after the finger lifted: the whole drag replayed on the screen before
+      // it settled (2026-09-27, in the van). Taken together, the values land
+      // first and the next render draws only the newest. Bounded, so a
+      // broker that keeps talking cannot hold the loop.
       mqttClient_.loop();
+      for (int i = 0; i < 32 && wifiClient_.available() > 0 && mqttClient_.connected(); i++) {
+        mqttClient_.loop();
+      }
     }
   }
 }
