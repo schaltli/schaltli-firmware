@@ -254,11 +254,14 @@ static void applyWantedTheme()
   renderPending = true;
 }
 static unsigned long lastTopicRenderMs = 0;
-// A render plus its blit costs 180ms. Drawing every value as it lands left
-// the loop no time for anything else, so values are coalesced to at most
-// one render in this window. The first value after a quiet spell is still
-// drawn at once - the window has already passed by then.
-static const unsigned long TOPIC_RENDER_MIN_MS = 250;
+// Drawing every value as it lands left the loop no time for anything else,
+// so values are coalesced to at most one render in this window. The first
+// value after a quiet spell is still drawn at once - the window has already
+// passed by then. 250 ms when a render plus its blit cost up to 490 ms; since
+// pill-shaped controls sample only their edges (PillRaster::pixelBandsQuick,
+// 2026-09-27) it is about 170 ms, and a quarter of a second of waiting on top
+// was most of what a dimmer's value took to show.
+static const unsigned long TOPIC_RENDER_MIN_MS = 150;
 
 // Where the swipes that never happened went. Half of twenty were missing
 // twice in a row while every recorded one was clean, and the two possible
@@ -371,6 +374,11 @@ static String levelDragObjId;
 static String levelDragTopic;
 static String levelDragWriteTopic;
 static String levelDragPayload;
+// After a release: the value whose answer ends the request, and until when
+// to wait for it (endLevelDrag, the MQTT callback, loop()).
+static String levelAwaitValue;
+static unsigned long levelAwaitUntilMs = 0;
+static const unsigned long LEVEL_AWAIT_MS = 2500;
 // The topic whose next message ends the request - the setpoint topic where
 // there is one, else the read topic. Separate from levelDragTopic because the
 // request outlives the finger.
@@ -378,14 +386,20 @@ static String levelAskedTopic;
 static int16_t levelDragX = 0, levelDragY = 0, levelDragW = 0, levelDragH = 0;
 static unsigned long levelDragLastPublishMs = 0;
 // A drag must not put thirty messages on the broker - the same coalescing the
-// van's fan step uses.
-static const unsigned long LEVEL_PUBLISH_MIN_MS = 250;
+// van's fan step uses. 100 ms, ten a second: the value on the screen can follow
+// the finger no closer than this, and 250 ms read as a lag behind it. Pekaway
+// takes a stream like that in its stride - it files a dimmer level 200 ms
+// after the last command anyway.
+static const unsigned long LEVEL_PUBLISH_MIN_MS = 100;
 
 static String pressedButtonId;
 static String pressedSwitchId;
 static int pressedSwitchIndex = -1;
 static String pendingSwitchId;
 static int pendingSwitchIndex = -1;
+// The topic the marked switch reads, and whether it has answered since.
+static String pendingReadTopic;
+static bool pendingAnswered = false;
 static unsigned long pendingSinceMs = 0;
 // Long enough for a broker on the same network to answer several times
 // over, short enough that a dead link does not leave a switch waiting for
@@ -1121,6 +1135,10 @@ static void setupNetworking()
       pendingDeploy = true;
       return;
     }
+    // The answer a switch's mark is waiting for - its own read topic, and no
+    // other. The theme's answer is one too, so this comes before it.
+    if (!pendingSwitchId.isEmpty() && topic == pendingReadTopic) pendingAnswered = true;
+
     // Light or dark. Before the project's own topics: it is not one of them
     // unless a Theme switch reads it too, which then gets the value as well.
     if (topic == String(TOPIC_PREFIX) + "/state/theme")
@@ -1135,8 +1153,28 @@ static void setupNetworking()
     // (decision 6c).
     if (renderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
     {
+      // After the release, only the answer to the value it was released on
+      // ends the request. The answers to the values the drag passed through
+      // are still on their way then, and each used to end it and be drawn -
+      // the fill went to one of them and on to the end value, two jumps
+      // after the finger lifted (2026-09-27, in the van). Kept, not drawn,
+      // until the end value's answer comes or the wait runs out (loop()).
+      //
+      // And while the finger is still down, no answer ends it: the finger is
+      // still asking. An answer used to, and when the finger then rested
+      // before lifting, nothing set the marker again - the handle fell back
+      // to a value the drag had passed through, then went on to the end value.
+      const bool fingerDown = !levelDragObjId.isEmpty();
+      const bool awaiting = !levelAwaitValue.isEmpty() && (long)(levelAwaitUntilMs - millis()) > 0 &&
+                            fabsf(payload.toFloat() - levelAwaitValue.toFloat()) > 0.001f;
+      if (fingerDown || awaiting)
+      {
+        projectLoader.setTopicValue(topic, payload);
+        return;
+      }
       renderer->clearAskedValue();
       levelAskedTopic = "";
+      levelAwaitValue = "";
     }
 
     // Read before it is overwritten: the partial redraw needs the value the
@@ -1238,10 +1276,12 @@ static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
 //
 // The region render is what makes this worth doing at all: a full screen is
 // 113ms before the panel even sees it, and a press that arrives a tenth of a
-// second late is not feedback. The blit is still whole, because with three
-// framebuffers the one being drawn into is two flips old and a partial copy
-// would show two frames at once - the tearing this board just got rid of, by
-// another route.
+// second late is not feedback. The copy to the panel is only the rectangle
+// too (RgbPanel::blitRegion), whose per-buffer bookkeeping is what lets a
+// partial copy into a framebuffer two flips old come out whole. It was the
+// whole screen here until 2026-09-27 - 61 ms of every frame of a dragged
+// dimmer, which held the handle to about nine frames a second while the lamp
+// itself followed the finger in 45 ms.
 static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const char *reason,
                          bool present = true)
 {
@@ -1254,7 +1294,7 @@ static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const c
   // A transition composes from the canvas, not from the panel, so the one
   // caller that is about to start one needs the canvas corrected and
   // nothing else - the first composed frame replaces the glass anyway.
-  if (present) panel.blit(canvas->getBuffer());
+  if (present) panel.blitRegion(canvas->getBuffer(), rx, ry, rw, rh);
   const uint32_t t2 = micros();
   Serial.printf("[feedback] %s: region %lums, blit %lums\n", reason,
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
@@ -1643,6 +1683,8 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   levelDragTopic = "";
   levelDragWriteTopic = "";
   levelDragPayload = "";
+  // A new finger: whatever the last release waited for is not the question now.
+  levelAwaitValue = "";
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
 
   int16_t objX = 0, objY = 0;
@@ -1693,6 +1735,24 @@ static void endLevelDrag()
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty())
   {
     mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
+    // What the answer has to say before the fill moves (see the MQTT
+    // callback). Long enough for a van's bridge and its Pekaway to answer,
+    // short enough that a value it would not take is shown soon.
+    levelAwaitValue = levelDragPayload;
+    levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
+    // Already answered while the finger rested: a bridge publishes only
+    // changes, so no second answer comes - end the request now rather than
+    // after the wait.
+    const String reported = projectLoader.getTopicValue(levelAskedTopic);
+    if (!levelAskedTopic.isEmpty() && !reported.isEmpty() && renderer != nullptr &&
+        fabsf(reported.toFloat() - levelAwaitValue.toFloat()) <= 0.001f)
+    {
+      levelAwaitValue = "";
+      renderer->clearAskedValue();
+      levelAskedTopic = "";
+      pendingTopicOverflow = true;
+      renderPending = true;
+    }
     Serial.printf("[level] released on %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
     lastTap = "level " + levelDragObjId + " -> " + levelDragPayload;
   }
@@ -1746,6 +1806,10 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // device, the mark expiring is the honest outcome - the alternative is a
   // segment that looks switched because we said so.
   markPending(hit->id, index, objX, objY, hit->width, hit->height);
+  // What ends the mark: this switch's own read topic answering (JSON field
+  // paths stripped - the answer arrives on the bare topic).
+  pendingReadTopic = stripJsonPath(hit->properties.topic);
+  pendingAnswered = false;
   lastTap = "(" + String(x) + "," + String(y) + ") Switch \"" + hit->id + "\" segment " +
             String(index) + " -> " + hit->properties.writeTopic + " = " + value +
             (sent ? "" : "  (NOT published - broker away)");
@@ -2175,13 +2239,18 @@ void loop()
     if (d > worstMqttUs) worstMqttUs = d;
   }
 
-  // A value arrived, so the device has newer state than the mark does. The
-  // mark goes before the render rather than after it, so the fresh values
-  // decide the picture instead of being drawn under a stale "waiting".
-  if (renderPending && !pendingSwitchId.isEmpty())
+  // The switch's own answer arrived, so the device has newer state than the
+  // mark does. The mark goes before the render rather than after it, so the
+  // fresh value decides the picture instead of being drawn under a stale
+  // "waiting". Only its own answer: any value used to end it, and on a screen
+  // with anything else live one of those came in first - the knob went back
+  // to the old side until the answer moved it again, three jumps for one tap
+  // (2026-09-27, the Theme switch on the 4.3B in the van).
+  if (pendingAnswered && !pendingSwitchId.isEmpty())
   {
     pendingSwitchId = "";
     pendingSwitchIndex = -1;
+    pendingAnswered = false;
     feedbackActive = false;
   }
   else if (!pendingSwitchId.isEmpty() && (millis() - pendingSinceMs) >= PENDING_TIMEOUT_MS)
@@ -2189,6 +2258,20 @@ void loop()
     // Nothing came back. Better to drop the mark than to leave a switch
     // looking like it is still being asked.
     clearPending("pending timed out");
+  }
+
+  // A released level whose end value was never answered: the installation's
+  // last word is shown after all, as decision 6c has it - just later.
+  if (!levelAwaitValue.isEmpty() && (long)(millis() - levelAwaitUntilMs) >= 0)
+  {
+    levelAwaitValue = "";
+    if (renderer != nullptr && !levelAskedTopic.isEmpty())
+    {
+      renderer->clearAskedValue();
+      levelAskedTopic = "";
+      pendingTopicOverflow = true;
+      renderPending = true;
+    }
   }
 
   // Only ever from here, where no finger is down: a screen going dark under
