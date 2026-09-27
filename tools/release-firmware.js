@@ -48,6 +48,27 @@
 // The designer checkout is needed for every run, dry or not: the factory
 // layout lives there.
 //
+// A pre-release is a build for one person to try - a fix for a problem they
+// reported - before it becomes a release for everyone:
+//
+//   node tools/release-firmware.js --prerelease knob_crash                 # dry run
+//   node tools/release-firmware.js --prerelease knob_crash --publish --notes n.md
+//   node tools/release-firmware.js --drop-prerelease fw-2026.09.27.2-pre.knob_crash
+//
+// Its tag takes the day's next number and a name, fw-2026.09.27.2-pre.knob_crash,
+// so it sorts between the releases (the designer's lib/firmware-build.ts). It
+// is published as a GitHub pre-release, never "latest", and its manifest goes
+// onto a designer branch pre/<name> instead of main: main, the handbook and
+// flasher on Pages, and every installation that updates from main stay as they
+// are. Whoever should try it installs exactly that:
+//
+//   curl -fsSL .../deploy/pekaway-install.sh | bash -s -- --ref fw-2026.09.27.2-pre.knob_crash
+//
+// The branch is made from the designer's HEAD in a worktree of its own, so a
+// designer fix that goes with it is on it too - commit it first; the checkout
+// you work in is not touched. --drop-prerelease removes the release, the tag
+// in both repos and the branch again.
+//
 // Options: --designer <path> (default ../schaltli-designer),
 // --release-repo <owner/name> (default Matthias-Hess/schaltli-designer),
 // --notes <file> (markdown, placed in the release body),
@@ -80,6 +101,13 @@ const allowDirty = process.argv.includes("--allow-dirty")
 const designer = path.resolve(arg("--designer", path.join(REPO, "..", "schaltli-designer")))
 const releaseRepo = arg("--release-repo", "Matthias-Hess/schaltli-designer")
 const notesFile = arg("--notes", null)
+const prerelease = arg("--prerelease", null)
+const dropPrerelease = arg("--drop-prerelease", null)
+if (prerelease !== null && !/^[a-z0-9_]+$/.test(prerelease)) {
+  // Anything else could run into git's "-3-g..." or "-dirty" after it.
+  console.error(`[release] ERROR: --prerelease ${prerelease}: lower case, digits and _ only`)
+  process.exit(1)
+}
 if (notesFile && !fs.existsSync(notesFile)) {
   console.error(`[release] ERROR: --notes ${notesFile} does not exist`)
   process.exit(1)
@@ -123,9 +151,31 @@ function deviceInfo(dir) {
 function nextTag() {
   const now = new Date()
   const day = `${now.getFullYear()}.${String(now.getMonth() + 1).padStart(2, "0")}.${String(now.getDate()).padStart(2, "0")}`
+  // Releases and pre-releases share the numbers of a day (fw-...27.2-pre.x
+  // uses up 2), so the number is read from the front of each tag.
   const existing = git("tag", "-l", `fw-${day}.*`).split(/\r?\n/).filter(Boolean)
-  const n = existing.map((t) => Number(t.split(".").pop())).filter(Number.isFinite)
+  const n = existing.map((t) => Number(/^fw-\d{4}\.\d{2}\.\d{2}\.(\d+)/.exec(t)?.[1])).filter(Number.isFinite)
   return `fw-${day}.${n.length ? Math.max(...n) + 1 : 1}`
+}
+
+// --- drop a pre-release ----------------------------------------------------
+if (dropPrerelease) {
+  const name = /-pre\.([a-z0-9_]+)$/.exec(dropPrerelease)?.[1]
+  if (!name) fail(`${dropPrerelease} is not a pre-release tag (fw-YYYY.MM.DD.N-pre.<name>)`)
+  const steps = [
+    ["gh", ["release", "delete", dropPrerelease, "--repo", releaseRepo, "--cleanup-tag", "--yes"], REPO],
+    ["git", ["push", "origin", `:refs/tags/${dropPrerelease}`], REPO],
+    ["git", ["tag", "-d", dropPrerelease], REPO],
+    ["git", ["push", "origin", "--delete", `pre/${name}`], designer],
+    ["git", ["branch", "-D", `pre/${name}`], designer],
+    ["git", ["tag", "-d", dropPrerelease], designer],
+  ]
+  for (const [cmd, args, cwd] of steps) {
+    const r = run(cmd, args, { cwd })
+    const why = (r.stderr || "").trim().split(/\r?\n/)[0]
+    console.log(`[release] ${cmd} ${args.join(" ")}: ${r.status === 0 ? "done" : `nothing to do (${why})`}`)
+  }
+  process.exit(0)
 }
 
 // --- preflight -----------------------------------------------------------
@@ -158,8 +208,12 @@ if (!fs.existsSync(bootApp0)) fail(`boot_app0.bin not found at ${bootApp0}`)
 // would announce exactly the name the real release of the same day then
 // gets, and the designer would call it up to date (2026-09-15, both test
 // boards).
-const headTags = git("tag", "--points-at", "HEAD", "-l", "fw-*").split(/\r?\n/).filter((t) => t && !t.endsWith("-dryrun"))
-const tag = headTags[0] || (publish ? nextTag() : `${nextTag()}-dryrun`)
+// A pre-release reuses only a tag of its own name on HEAD, a release only a
+// release's.
+const headTags = git("tag", "--points-at", "HEAD", "-l", "fw-*").split(/\r?\n/)
+  .filter((t) => t && !t.endsWith("-dryrun") && (prerelease ? t.endsWith(`-pre.${prerelease}`) : !t.includes("-pre.")))
+const fresh = prerelease ? `${nextTag()}-pre.${prerelease}` : nextTag()
+const tag = headTags[0] || (publish ? fresh : `${fresh}-dryrun`)
 const createdTag = headTags.length === 0
 const commit = git("rev-parse", "HEAD")
 console.log(`[release] ${tag} from ${commit.slice(0, 10)}${publish ? "" : " (dry run - nothing is published)"}`)
@@ -295,6 +349,10 @@ const assets = [
   ...Object.values(manifest.devices).flatMap((d) => [path.join(outDir, d.file), path.join(outDir, d.factory.file)]),
   path.join(outDir, "manifest.json"),
 ]
+if (prerelease) {
+  publishPrerelease()
+  process.exit(0)
+}
 const release = run("gh", ["release", "create", tag, "--repo", releaseRepo, "--title", `Firmware ${tag}`, "--notes", notes, ...assets],
   { stdio: "inherit" })
 if (release.status !== 0) fail(`gh release create failed - the tag is pushed; create the release by hand or re-run`)
@@ -303,3 +361,44 @@ const target = path.join(designer, "firmware", "manifest.json")
 fs.mkdirSync(path.dirname(target), { recursive: true })
 fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + "\n")
 console.log(`\n[release] ${tag} published. Wrote ${target} - commit and push it in the designer repo.`)
+
+// The designer side of a pre-release: branch pre/<name> from the designer's
+// HEAD, in a worktree of its own, with the manifest committed on it - the
+// release is then created on that branch, so its tag in the designer repo is
+// the commit that ships this firmware.
+function publishPrerelease() {
+  const branch = `pre/${prerelease}`
+  const dg = (...args) => {
+    const r = run("git", args, { cwd: designer })
+    if (r.status !== 0) fail(`git ${args.join(" ")} in the designer failed:\n${r.stderr}`)
+    return r.stdout.trim()
+  }
+  if (dg("status", "--porcelain", "--untracked-files=no")) {
+    console.log("[release] note: the designer has uncommitted changes - they are not part of the pre-release")
+  }
+  const tree = path.join(os.tmpdir(), `schaltli-designer-${prerelease}-${Date.now()}`)
+  dg("worktree", "add", "-B", branch, tree, "HEAD")
+  try {
+    const target = path.join(tree, "firmware", "manifest.json")
+    fs.mkdirSync(path.dirname(target), { recursive: true })
+    fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + "\n")
+    const wt = (...args) => {
+      const r = run("git", args, { cwd: tree })
+      if (r.status !== 0) fail(`git ${args.join(" ")} in the pre-release worktree failed:\n${r.stderr}`)
+      return r.stdout.trim()
+    }
+    wt("add", "firmware/manifest.json")
+    wt("commit", "-m", `Ship pre-release ${tag}`)
+    console.log(`\n[release] pushing designer branch ${branch}`)
+    const push = run("git", ["push", "--force", "origin", branch], { cwd: tree, stdio: "inherit" })
+    if (push.status !== 0) fail(`git push origin ${branch} failed - the firmware tag is pushed; push the branch by hand or drop the pre-release`)
+  } finally {
+    run("git", ["worktree", "remove", "--force", tree], { cwd: designer })
+  }
+  const release = run("gh", ["release", "create", tag, "--repo", releaseRepo, "--title", `Pre-release ${tag}`,
+    "--prerelease", "--latest=false", "--target", branch, "--notes", notes, ...assets], { stdio: "inherit" })
+  if (release.status !== 0) fail("gh release create failed - tag and branch are pushed; create the release by hand or drop the pre-release")
+  console.log(`\n[release] ${tag} published as a pre-release on ${releaseRepo}, designer branch ${branch}.`)
+  console.log(`[release] to install it on a Pekaway: curl -fsSL https://raw.githubusercontent.com/${releaseRepo}/main/deploy/pekaway-install.sh | bash -s -- --ref ${tag}`)
+  console.log(`[release] to remove it again: node tools/release-firmware.js --drop-prerelease ${tag}`)
+}
