@@ -316,7 +316,8 @@ if (!publish) {
   removeTag()
   console.log(`[release] dry run complete. --publish would push ${tag.replace(/-dryrun$/, "")}, create the release in ${releaseRepo}` +
     ` with ${Object.keys(manifest.devices).length} OTA images, ${Object.keys(manifest.devices).length} factory images and the manifest,` +
-    ` and write firmware/manifest.json into ${designer}.`)
+    (prerelease ? `, as a pre-release, and put its manifest on the designer branch pre/${prerelease}.`
+      : ` and write firmware/manifest.json into ${designer}.`))
   process.exit(0)
 }
 
