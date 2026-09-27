@@ -7,3 +7,10 @@
 # compiled into the firmware would differ from the ones the designer
 # renders with.
 ddf-source*/** -text
+
+# The generated DDF headers are written with LF by tools/pre_build_ddf.py,
+# which compares bytes before rewriting. Checked out with CRLF (Git for
+# Windows' core.autocrlf=true, the default on the PC the environment moved to
+# on 2026-09-27) every build rewrote them, the tree was never clean - which a
+# release needs - and the DDF freshness check called two of them stale.
+src/boards/*/ddf_zip.h text eol=lf
