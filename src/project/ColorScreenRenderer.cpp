@@ -253,7 +253,10 @@ float ColorScreenRenderer::calibrationValueForPercent(float percent, const std::
 // and measured are truly different: its fill stays the report, and only the
 // marker follows the finger (decision 6c).
 String ColorScreenRenderer::shownLevelValue(const ScreenObject& obj) const {
-  if (obj.properties.setpointTopic.isEmpty() && !askedValue_.isEmpty() && askedTopic_ == obj.properties.topic) {
+  // Only the control under the finger follows it: a read-only gauge on the
+  // same topic keeps showing what is reported.
+  if (obj.properties.setpointTopic.isEmpty() && !obj.properties.writeTopic.isEmpty() && !askedValue_.isEmpty() &&
+      askedTopic_ == obj.properties.topic) {
     return askedValue_;
   }
   return projectLoader_.getTopicValue(obj.properties.topic);
