@@ -1024,7 +1024,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
 
   for (int32_t py = pyFrom; py < pyTo; py++) {
     for (int32_t px = pxFrom; px < pxTo; px++) {
-      PillRaster::pixelBands(bands, px, py, counts.data());
+      PillRaster::pixelBandsQuick(bands, px, py, counts.data());
 
       // The same arithmetic ArcRaster::blendBands does, over a list rather
       // than over three fixed pairs: a ring has exactly three bands and never

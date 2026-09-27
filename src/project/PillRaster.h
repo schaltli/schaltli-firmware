@@ -174,6 +174,63 @@ inline void pixelBands(const std::vector<Band>& bands, int32_t px, int32_t py, u
   }
 }
 
+// Whether a pixel is wholly inside a band (2), wholly outside it (0) or
+// neither (1) - decided from whole pixels, without a single sub-sample.
+//
+// Exact, not an estimate: the band's box and its clamped radii are whole
+// pixels, so a pixel is either in the box or out of it, and a pixel outside
+// both of the run's rounded end zones - or across the middle, clear of every
+// corner - has all sixteen sub-samples inside by insideBand()'s own rules.
+// Everything nearer a rounded corner than that answers 1 and is sampled.
+inline int pixelCover(const Band& band, int32_t px, int32_t py) {
+  if (band.w <= 0 || band.h <= 0) return 0;
+  if (px < band.x || px >= band.x + band.w || py < band.y || py >= band.y + band.h) return 0;
+  const int32_t maxRadius = floorDiv(band.w < band.h ? band.w : band.h, 2);
+  const int32_t rLow = clampRadius(band.rLow, maxRadius);
+  const int32_t rHigh = clampRadius(band.rHigh, maxRadius);
+  if (rLow == 0 && rHigh == 0) return 2;
+  const int32_t along = band.vertical ? py : px;
+  const int32_t alongLow = band.vertical ? band.y : band.x;
+  const int32_t alongHigh = alongLow + (band.vertical ? band.h : band.w);
+  // Sub-samples sit at 1/8..7/8 of the pixel: all of them are at or past the
+  // low end zone when the pixel starts there, and all before the high end
+  // zone when the pixel ends before it.
+  if (along >= alongLow + rLow && along < alongHigh - rHigh) return 2;
+  const int32_t across = band.vertical ? px : py;
+  const int32_t acrossLow = band.vertical ? band.x : band.y;
+  const int32_t acrossHigh = acrossLow + (band.vertical ? band.w : band.h);
+  const int32_t r = rLow > rHigh ? rLow : rHigh;
+  if (across >= acrossLow + r && across < acrossHigh - r) return 2;
+  return 1;
+}
+
+// pixelBands(), with the same answer and most of the work left out.
+//
+// Firmware-only, and a matter of speed, not of result: sampling every pixel of
+// a control sixteen times against every run cost the 4.3B's full-width slider
+// 290 ms a draw (2026-09-27, /api/debug?set=render=1), while nearly all of its
+// pixels lie wholly inside one run or wholly outside all of them. Walked in
+// the same priority order as pixelBands(): runs that miss the pixel are
+// passed over, the first that holds it whole takes all sixteen, and a run
+// that holds only part of it - or holds it after a partial one - sends the
+// pixel to pixelBands() as before. tools/pill-raster/ checks the two agree on
+// every pixel of thousands of random controls. The designer and the Android
+// app have no counterpart and need none: their pixels are the same.
+inline void pixelBandsQuick(const std::vector<Band>& bands, int32_t px, int32_t py, uint8_t* into) {
+  const size_t n = bands.size();
+  for (size_t b = 0; b < n; b++) into[b] = 0;
+  for (size_t b = 0; b < n; b++) {
+    const int cover = pixelCover(bands[b], px, py);
+    if (cover == 0) continue;
+    if (cover == 2) {
+      into[b] = (uint8_t)COVERAGE_MAX;
+      return;
+    }
+    pixelBands(bands, px, py, into);
+    return;
+  }
+}
+
 // A box in whole pixels: what bandsBounds() answers.
 struct Box {
   int32_t x = 0;
