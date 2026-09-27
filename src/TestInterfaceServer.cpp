@@ -8,6 +8,7 @@
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
 #include <Preferences.h>
+#include <WiFi.h>
 #include <lwip/sockets.h>
 
 bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
@@ -21,6 +22,8 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
   webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
+  webServer_->on("/api/wifi", HTTP_POST, [this]() { this->handleWiFiConfigure(); });
+  webServer_->on("/api/scan", HTTP_GET, [this]() { this->handleWiFiScan(); });
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
@@ -336,6 +339,50 @@ void TestInterfaceServer::handleForgetWiFi() {
   // Let the response actually reach the caller before the reset.
   delay(500);
   ESP.restart();
+}
+
+// Moves the device to another network without the setup portal: stores the
+// new SSID and password and reboots onto them. The broker is left as it is -
+// POST /api/mqtt first when the new network has its own. Used by the
+// designer's hil/boards-network.js to take every board from the home network
+// to the camper's and back. A wrong password strands the device the same way
+// the portal would, so the script checks /api/scan sees the network first.
+void TestInterfaceServer::handleWiFiConfigure() {
+  String ssid = webServer_->arg("ssid");
+  if (ssid.isEmpty() || !webServer_->hasArg("password")) {
+    sendJSONResponse(false, "Missing SSID or password");
+    return;
+  }
+  Preferences prefs;
+  if (!prefs.begin("wifi", false)) {
+    sendJSONResponse(false, "Failed to save WiFi credentials");
+    return;
+  }
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", webServer_->arg("password"));
+  prefs.end();
+  sendJSONResponse(true, "WiFi credentials saved - rebooting to join " + ssid);
+  delay(500);
+  ESP.restart();
+}
+
+// The networks this device can hear from where it stands, as the setup
+// portal's scan reports them: {"networks":[{"ssid","rssi","encryption"}]}.
+// Blocks the loop for the two or three seconds a scan takes.
+void TestInterfaceServer::handleWiFiScan() {
+  int n = WiFi.scanNetworks();
+  JsonDocument doc;
+  JsonArray networks = doc["networks"].to<JsonArray>();
+  for (int i = 0; i < n; i++) {
+    JsonObject network = networks.add<JsonObject>();
+    network["ssid"] = WiFi.SSID(i);
+    network["rssi"] = WiFi.RSSI(i);
+    network["encryption"] = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN) ? "open" : "encrypted";
+  }
+  WiFi.scanDelete();
+  String output;
+  serializeJson(doc, output);
+  webServer_->send(200, "application/json", output);
 }
 
 void TestInterfaceServer::handleProjectUploadChunk() {

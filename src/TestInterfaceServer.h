@@ -27,6 +27,10 @@
 //                        without this there is no way back into it short of
 //                        a reflash - which also matters for testing the
 //                        portal at all.
+//   POST /api/wifi     - store a new SSID and password and reboot onto them,
+//                        broker untouched: another network without the portal
+//   GET  /api/scan     - the networks the device can hear, as the portal lists
+//                        them
 //
 // These two come first in the port on purpose: with them live, every later
 // step (project installer, renderer, deploy) is verifiable by pixel-diffing
@@ -164,6 +168,8 @@ private:
   void handleSignalMode();
   void handleMqttConfigure();
   void handleForgetWiFi();
+  void handleWiFiConfigure();
+  void handleWiFiScan();
   void handleGetTopicValues();
   void handleInput();
   void handleTouch();
