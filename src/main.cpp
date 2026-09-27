@@ -659,10 +659,20 @@ static const unsigned long RELEASE_DEBOUNCE_MS = 80;
 // nothing, because someone who lets go wanted neither setup nor whatever
 // button their finger happened to be resting on.
 static const unsigned long SETUP_HOLD_MS = 5000;
-static const unsigned long SETUP_HOLD_FEEDBACK_MS = 1000;
+// The countdown after three seconds of a finger at rest, not one: a finger
+// resting a moment on a dimmer it has just set is not asking for setup, and
+// the countdown took the finger away from the dimmer (2026-09-27, in the van).
+static const unsigned long SETUP_HOLD_FEEDBACK_MS = 3000;
 // A hold has to stay put. Without this a slow swipe would arm it, and on a
 // screen where swiping pages back and forth this would fire eventually.
 static const int SETUP_HOLD_MAX_DRIFT = 40;
+// Where and since when the finger has been at rest. Moving further than the
+// drift starts the rest again from where it went - as on the 4.3B. It used
+// to be the touch's starting point, so a dimmer dragged away and back near
+// where it began counted as a hold the whole time it was moving.
+static int setupHoldAnchorX = 0;
+static int setupHoldAnchorY = 0;
+static unsigned long setupHoldAnchorMs = 0;
 
 static bool setupHoldCountdownShown = false;
 static int setupHoldLastSecond = -1;
@@ -1490,6 +1500,9 @@ static void pollTouchGesturesInner() {
       touchStartX = touchX;
       touchStartY = touchY;
       touchStartMs = millis();
+      setupHoldAnchorX = touchX;
+      setupHoldAnchorY = touchY;
+      setupHoldAnchorMs = touchStartMs;
       dragDecided = false;
       wokeOnThisContact = false;
       setupHoldCountdownShown = false;
@@ -1531,8 +1544,16 @@ static void pollTouchGesturesInner() {
 
     // The reserved setup gesture, checked before anything else can claim
     // this contact.
-    if (!setupModeActive && abs(dx) <= SETUP_HOLD_MAX_DRIFT && abs(dy) <= SETUP_HOLD_MAX_DRIFT) {
-      const unsigned long held = millis() - touchStartMs;
+    const int restDx = touchX - setupHoldAnchorX;
+    const int restDy = touchY - setupHoldAnchorY;
+    if (!setupHoldCountdownShown && (abs(restDx) > SETUP_HOLD_MAX_DRIFT || abs(restDy) > SETUP_HOLD_MAX_DRIFT)) {
+      setupHoldAnchorX = touchX;
+      setupHoldAnchorY = touchY;
+      setupHoldAnchorMs = millis();
+    }
+    if (!setupModeActive && abs(touchX - setupHoldAnchorX) <= SETUP_HOLD_MAX_DRIFT &&
+        abs(touchY - setupHoldAnchorY) <= SETUP_HOLD_MAX_DRIFT) {
+      const unsigned long held = millis() - setupHoldAnchorMs;
       if (held >= SETUP_HOLD_MS) {
         setupHoldConsumed = true;
         enterSetupMode();

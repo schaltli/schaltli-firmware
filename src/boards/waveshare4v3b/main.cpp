@@ -348,7 +348,9 @@ static bool setupModeActive = false;
 // entering setup is one of the cross-device building blocks that were agreed
 // to be the same everywhere rather than per board.
 static const unsigned long SETUP_HOLD_MS = 5000;
-static const unsigned long SETUP_HOLD_FEEDBACK_MS = 1000;
+// After three seconds at rest, as on the knob: a finger resting a moment on a
+// control is not asking for setup (2026-09-27).
+static const unsigned long SETUP_HOLD_FEEDBACK_MS = 3000;
 static const int SETUP_HOLD_MAX_DRIFT = 40;
 // A finger on an 800x480 panel is not a mouse pointer, and a button here is
 // finger sized. Well below the 12px that starts a horizontal drag, so a tap
