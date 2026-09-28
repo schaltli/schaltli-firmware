@@ -273,6 +273,8 @@ struct Gradient {
 int64_t diamond(int64_t ux, int64_t uy);
 void makeGradient(int32_t start64, int32_t sweep64, Gradient* out);
 int32_t gradientStep(const Gradient& g, int32_t x, int32_t y);
+// The same by a 64-bit division per point - slow on the ESP32, for the checks.
+int32_t gradientStepByDivision(const Gradient& g, int32_t x, int32_t y);
 int32_t stepOfOffset(int32_t offset64, int32_t sweep64);
 
 // The glow around a ring's fill: radially along the filled sector and round

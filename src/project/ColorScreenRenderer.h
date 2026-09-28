@@ -169,6 +169,9 @@ public:
 
   bool arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
                          int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
+  // The middle of a ring where its numbers stand - both of them, the asked one
+  // and the measured one under it - across the whole hole.
+  bool arcLevelCentreRect(const ScreenObject& obj, int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
 
   bool renderScreen(int screenIndex, const String& pressedButtonId = "", const String& pendingSwitchId = "",
                      int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
@@ -430,6 +433,21 @@ private:
   // the 4.3B, 166 differing pixels in the conformance photograph).
   bool markerTopicBounds(int screenIndex, const String& markerTopic, int16_t& x, int16_t& y, int16_t& w,
                          int16_t& h) const;
+
+  // What a finger moving this marker topic from oldValue to newValue changes,
+  // as separate rectangles rather than one box round everything bound to it:
+  // a slider across the top and a dial at the bottom on one dimmer made that
+  // box the whole screen, 713 ms a drag frame on the 4.3B (2026-09-28). A ring
+  // gives the stretch of its band between the two values and the numbers in
+  // its middle; anything else its own rectangle. Returns how many were
+  // written, or -1 where it cannot say (an object inside a switcher, more than
+  // `max`) - the caller then falls back to markerTopicBounds.
+  int levelDragRects(int screenIndex, const String& markerTopic, const String& oldValue, const String& newValue,
+                     int16_t* rx, int16_t* ry, int16_t* rw, int16_t* rh, int max);
+  // The value this marker topic is showing as asked for, or "" when none is.
+  String askedValueFor(const String& markerTopic) const {
+    return askedTopic_ == markerTopic ? askedValue_ : String();
+  }
   void clearAskedValue();
   // What a level shows: the report, or on the dimmer pattern the finger (see the .cpp).
   String shownLevelValue(const ScreenObject& obj) const;

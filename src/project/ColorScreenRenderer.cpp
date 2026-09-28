@@ -1051,8 +1051,21 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
     if (j < 0) j = 0;
     return shading->fromEnd ? shading->trackLength - 1 - j : j;
   };
+  // One colour per pixel of the track, worked out once: three divisions per
+  // pixel of fill were a sixth of a slider's render (4.3B, 2026-09-28).
+  std::vector<ArcRaster::Rgb565> trackColours;
+  if (shading != nullptr) {
+    trackColours.resize(shading->trackLength);
+    for (int32_t j = 0; j < shading->trackLength; j++) {
+      trackColours[j] = levelglow::gradient565(shading->from, shading->to, stepAlong(shading->trackStart + j),
+                                              shading->trackLength);
+    }
+  }
   auto gradedAt = [&](int32_t along) {
-    return levelglow::gradient565(shading->from, shading->to, stepAlong(along), shading->trackLength);
+    int32_t j = along - shading->trackStart;
+    if (j > shading->trackLength - 1) j = shading->trackLength - 1;
+    if (j < 0) j = 0;
+    return trackColours[j];
   };
 
   // Only the clipped cut-through, for the reason renderArcLevel gives at
@@ -1778,6 +1791,13 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
       hasGradient ? ArcRaster::toRgb565(parseHexColor(materialcolors::applyDepth(obj.properties.fillEndColor)))
                   : fillColour;
   const int32_t lastStep = ArcRaster::stepOfOffset(filled64 > 1 ? filled64 - 1 : 0, sweep64);
+  // Every step's colour once, rather than three divisions per pixel.
+  static ArcRaster::Rgb565 stepColour[ArcRaster::GRADIENT_STEPS];
+  if (hasGradient) {
+    for (int32_t i = 0; i < ArcRaster::GRADIENT_STEPS; i++) {
+      stepColour[i] = levelglow::gradient565(fillColour, endColour, i, ArcRaster::GRADIENT_STEPS);
+    }
+  }
   const int32_t glowLevels = levelglow::glowPx(obj.properties.glow);
   const bool hasGlow = glowLevels > 0 && filled64 > 0 && !noValue && !look.framed;
   ArcRaster::Glow glow;
@@ -1823,7 +1843,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // iterations with it costs far less than the thing being measured.
   const bool profiling = RenderProfile::enabled();
   if (profiling) { ArcRaster::probeEnabled() = true; ArcRaster::probeReset(); }
-  uint32_t bandsCycles = 0, drawCycles = 0, pixelsSeen = 0, pixelsDrawn = 0;
+  uint32_t bandsCycles = 0, drawCycles = 0, shadeCycles = 0, pixelsSeen = 0, pixelsDrawn = 0;
 
   // Nothing but the ring is painted: the object has no background of its own
   // any more, so whatever is behind it - a screen colour, a background image -
@@ -1857,13 +1877,23 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
       // The pixel's centre, in 1/8 pixel from the ring's centre.
       const int32_t cx = px * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
       const int32_t cy = py * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
+      uint32_t s0 = profiling ? esp_cpu_get_cycle_count() : 0;
       const int32_t glowK =
           hasGlow && covered < ArcRaster::COVERAGE_MAX ? ArcRaster::glowLevel(glow, cx, cy, glowLevels) : 0;
 
       // Nothing of the ring here: the pixel is left alone, which is what the
       // ring floating on the screen means - skip the draw, never mix.
-      if (covered == 0 && glowK == 0) continue;
-
+      if (covered == 0 && glowK == 0) {
+        if (profiling) shadeCycles += esp_cpu_get_cycle_count() - s0;
+        continue;
+      }
+      // The pixel's step, once, and only where something takes a colour from
+      // it: the glow, or a fill.
+      int32_t step = 0;
+      if (hasGradient && (glowK > 0 || bands.fill > 0)) {
+        step = ArcRaster::gradientStep(gradient, cx, cy);
+        if (counterClockwise) step = ArcRaster::GRADIENT_STEPS - 1 - step;
+      }
       ArcRaster::Rgb565 base = mix;
       if (glowK > 0) {
         // The glow is mixed into what already stands here - the screen, an
@@ -1871,27 +1901,23 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         // on the canvas already.
         ArcRaster::Rgb565 glowColour = fillColour;
         if (hasGradient) {
-          int32_t step = ArcRaster::gradientStep(gradient, cx, cy);
-          if (counterClockwise) step = ArcRaster::GRADIENT_STEPS - 1 - step;
-          if (step < glow.stepFrom) step = glow.stepFrom;
-          if (step > glow.stepTo) step = glow.stepTo;
-          glowColour = levelglow::gradient565(fillColour, endColour, step, ArcRaster::GRADIENT_STEPS);
+          int32_t glowStep = step;
+          if (glowStep < glow.stepFrom) glowStep = glow.stepFrom;
+          if (glowStep > glow.stepTo) glowStep = glow.stepTo;
+          glowColour = stepColour[glowStep];
         }
         const ArcRaster::Rgb565 under = ArcRaster::toRgb565(canvas_->getPixel(obj.x + px, obj.y + py));
         base = levelglow::blend565(under, glowColour, levelglow::ALPHA[glowK]);
         if (covered == 0) {
           canvas_->drawPixel(obj.x + px, obj.y + py, ArcRaster::packRgb565(base));
+          if (profiling) shadeCycles += esp_cpu_get_cycle_count() - s0;
           continue;
         }
       }
 
       ArcRaster::Rgb565 fillHere = fillColour;
-      if (hasGradient && bands.fill > 0) {
-        int32_t step = ArcRaster::gradientStep(gradient, cx, cy);
-        if (counterClockwise) step = ArcRaster::GRADIENT_STEPS - 1 - step;
-        if (step > lastStep) step = lastStep;
-        fillHere = levelglow::gradient565(fillColour, endColour, step, ArcRaster::GRADIENT_STEPS);
-      }
+      if (hasGradient && bands.fill > 0) fillHere = stepColour[step > lastStep ? lastStep : step];
+      if (profiling) shadeCycles += esp_cpu_get_cycle_count() - s0;
       const uint16_t mixed = ArcRaster::blendBands(fillHere, bands.fill, trackColour, bands.track, handleFill,
                                                    bands.handle, pointerColour, bands.pointer, base,
                                                    (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
@@ -1908,6 +1934,8 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     const uint32_t mhz = (uint32_t)(esp_cpu_get_cycle_count() ? 240 : 240);
     RenderProfile::add("  arc: pixelBands", bandsCycles / mhz);
     RenderProfile::add("  arc: drawPixel", drawCycles / mhz);
+    // Gradient and glow: the step, the glow's reach and the pixel read back.
+    RenderProfile::add("  arc: gradient and glow", shadeCycles / mhz);
     RenderProfile::note("  arc: " + String(pixelsSeen) + " px seen, " + String(pixelsDrawn) + " drawn");
     ArcRaster::probeEnabled() = false;
     const ArcRaster::Probe& pr = ArcRaster::probe();
@@ -2731,6 +2759,64 @@ bool ColorScreenRenderer::arcLevelTextRect(const ScreenObject& obj, const String
   *outW = (int16_t)(breiteste + 2 * PAD);
   *outH = (int16_t)(fontHeight + 2 * PAD);
   return true;
+}
+
+bool ColorScreenRenderer::arcLevelCentreRect(const ScreenObject& obj, int16_t* outX, int16_t* outY, int16_t* outW,
+                                             int16_t* outH) {
+  if (obj.properties.displayValue == "none") return false;
+  const int32_t size = obj.width < obj.height ? obj.width : obj.height;
+  if (size <= 0) return false;
+  const int32_t thickness = arcThicknessFor(obj, size);
+  const int32_t inset = arcInsetFor(obj, size, thickness);
+  const int32_t rInner = size / 2 - inset - thickness;
+  if (rInner <= 0) return false;
+  if (fontFor(obj.properties.fontId) == nullptr) return false;
+  const int32_t line = getFontAscentById(obj.properties.fontId) + getFontDescentById(obj.properties.fontId);
+  int32_t block = line;
+  const String subId = levelSubFontId(obj);
+  if (fontFor(subId) != nullptr) block += getFontAscentById(subId) + getFontDescentById(subId) + kArcSubGap;
+  // A margin for rounding and for glyphs that reach past their line.
+  const int32_t PAD = 4;
+  int32_t h = block + 2 * PAD;
+  if (h > 2 * rInner) h = 2 * rInner;
+  // Centred on the object, as renderArcLevel centres the numbers.
+  const int32_t cx = obj.x + obj.width / 2;
+  const int32_t cy = obj.y + obj.height / 2;
+  *outX = (int16_t)(cx - rInner);
+  *outY = (int16_t)(cy - h / 2 - 1);
+  *outW = (int16_t)(2 * rInner);
+  *outH = (int16_t)(h + 2);
+  return true;
+}
+
+int ColorScreenRenderer::levelDragRects(int screenIndex, const String& markerTopic, const String& oldValue,
+                                        const String& newValue, int16_t* rx, int16_t* ry, int16_t* rw, int16_t* rh,
+                                        int max) {
+  if (!projectLoader_.isLoaded() || markerTopic.isEmpty()) return -1;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return -1;
+  int count = 0;
+  for (const auto& o : project.screens[screenIndex].objects) {
+    // Nested objects stand relative to their parent: markerTopicBounds knows
+    // how to walk them, this does not try.
+    if (o.type == "switcher") return -1;
+    const String topic = o.properties.setpointTopic.isEmpty() ? o.properties.topic : o.properties.setpointTopic;
+    if (!objecttypes::isAnyLevel(o.type) || topic != markerTopic) continue;
+    if (objecttypes::isArc(o.type) && !oldValue.isEmpty() && !newValue.isEmpty()) {
+      if (count + 2 > max) return -1;
+      if (!arcLevelDirtyRect(o, oldValue, newValue, &rx[count], &ry[count], &rw[count], &rh[count])) return -1;
+      count++;
+      if (arcLevelCentreRect(o, &rx[count], &ry[count], &rw[count], &rh[count])) count++;
+      continue;
+    }
+    if (count + 1 > max) return -1;
+    rx[count] = o.x;
+    ry[count] = o.y;
+    rw[count] = o.width;
+    rh[count] = o.height;
+    count++;
+  }
+  return count;
 }
 
 bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,

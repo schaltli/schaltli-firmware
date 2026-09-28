@@ -1689,19 +1689,62 @@ static String formatLevelPayload(float value)
   return out;
 }
 
+// What changes when the asked value goes from `before` to `after`, drawn and
+// shown: every object bound to it, each on its own - a ring only along the
+// stretch of band between the two values and in its middle. One box round
+// all of them was the whole screen for a slider and a dial on one dimmer.
+static void renderLevelDragChange(const String &before, const String &after)
+{
+  const int MAX_RECTS = 8;
+  int16_t rx[MAX_RECTS], ry[MAX_RECTS], rw[MAX_RECTS], rh[MAX_RECTS];
+  const int rects =
+      renderer->levelDragRects(currentScreen, levelAskedTopic, before, after, rx, ry, rw, rh, MAX_RECTS);
+  if (rects <= 0)
+  {
+    renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
+    return;
+  }
+  const uint32_t t0 = micros();
+  for (int i = 0; i < rects; i++)
+  {
+    renderer->renderScreenRegion(currentScreen, rx[i], ry[i], rw[i], rh[i], pressedButtonId, pendingSwitchId,
+                                 pendingSwitchIndex, pressedSwitchId, pressedSwitchIndex);
+  }
+  const uint32_t t1 = micros();
+  long pixels = 0;
+  for (int i = 0; i < rects; i++)
+  {
+    panel.blitRegion(canvas->getBuffer(), rx[i], ry[i], rw[i], rh[i]);
+    pixels += (long)rw[i] * rh[i];
+  }
+  const uint32_t t2 = micros();
+  lastFeedback = "level drag: " + String(rects) + " region(s), " + String(pixels) + " px, render " +
+                 String((t1 - t0) / 1000.0f, 1) + " ms, blit " + String((t2 - t1) / 1000.0f, 1) + " ms";
+  Serial.printf("[feedback] level drag: %d region(s), render %lums, blit %lums\n", rects,
+                (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
+}
+
 static void applyLevelDragValue(const String &payload, bool force)
 {
   if (payload.isEmpty()) return;
   const bool changed = payload != levelDragPayload;
   if (changed)
   {
+    // What is on the glass now: the last value this drag asked for, or on
+    // the first touch whatever was showing before it.
+    String before = levelDragPayload;
+    if (before.isEmpty() && renderer != nullptr)
+    {
+      before = renderer->askedValueFor(levelAskedTopic);
+      if (before.isEmpty()) before = projectLoader.getTopicValue(levelAskedTopic);
+    }
     levelDragPayload = payload;
     if (renderer != nullptr)
     {
       // Keyed by the topic the request is about (levelAskedTopic), not by the
       // object that took it.
       renderer->setAskedValue(levelAskedTopic, payload);
-      renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
+      renderLevelDragChange(before, payload);
     }
   }
   const unsigned long now = millis();

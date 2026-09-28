@@ -349,6 +349,13 @@ if (!recorded.glowCases || !recorded.glowColours) {
       console.log(`  ok   ${c.name}`);
     }
   }
+  const ex = spawnSync(glowExe, ["exhaustive"], { encoding: "utf8" });
+  if (ex.status !== 0) {
+    console.log(`  FAIL the step without a division differs: ${(ex.stderr || "").trim()}`);
+    failures++;
+  } else {
+    console.log(`  ok   step without a division: ${ex.stdout.trim()}`);
+  }
   const samples = recorded.glowColours;
   fs.writeFileSync(
     CASE_FILE,

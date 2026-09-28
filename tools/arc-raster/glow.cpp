@@ -108,7 +108,41 @@ static int colour(const char* file) {
   return 0;
 }
 
+// The step without a division against the step with one, over every pixel of
+// rings up to the largest panel and at awkward angles: they must never differ.
+static int exhaustive() {
+  static ArcRaster::Gradient gradient;
+  const int sizes[] = {31, 64, 120, 289, 360, 480};
+  const int starts[] = {0, 225 * 64, 12 * 64 + 19, 300 * 64, 90 * 64 + 1};
+  const int sweeps[] = {360 * 64, 270 * 64, 233 * 64 + 41, 1 * 64, 180 * 64, 359 * 64 + 63};
+  long checked = 0;
+  for (int size : sizes) {
+    for (int start : starts) {
+      for (int sweep : sweeps) {
+        ArcRaster::makeGradient(start, sweep, &gradient);
+        const int centre = size * 8 / 2;
+        for (int py = 0; py < size; py++) {
+          for (int px = 0; px < size; px++) {
+            const int cx = px * 8 + 4 - centre, cy = py * 8 + 4 - centre;
+            const int a = ArcRaster::gradientStep(gradient, cx, cy);
+            const int b = ArcRaster::gradientStepByDivision(gradient, cx, cy);
+            if (a != b) {
+              fprintf(stderr, "size %d start %d sweep %d at (%d,%d): %d without division, %d with\n", size, start,
+                      sweep, px, py, a, b);
+              return 3;
+            }
+            checked++;
+          }
+        }
+      }
+    }
+  }
+  printf("%ld points agree\n", checked);
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc >= 2 && strcmp(argv[1], "exhaustive") == 0) return exhaustive();
   if (argc < 3) {
     fprintf(stderr, "usage: glow ring|colour <file>\n");
     return 2;

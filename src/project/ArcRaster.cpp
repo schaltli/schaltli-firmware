@@ -312,7 +312,65 @@ void makeGradient(int32_t start64, int32_t sweep64, Gradient* out) {
   }
 }
 
+// A point's diamond as a quadrant and a fraction, left undivided: the
+// diamond is quadrant * 65536 + floor(num * 65536 / den), with 0 <= num <= den.
+// The division is what cost on the ESP32 - a 64-bit one, in software, for
+// every pixel of a ring with a gradient (measured 2026-09-28 on the 4.3B: a
+// quarter of the screen's render). Comparing against a boundary needs no
+// quotient, only a product, and gives the same answer.
+struct DiamondParts {
+  int64_t quadrant;
+  int64_t num;
+  int64_t den;
+};
+
+static DiamondParts diamondParts(int32_t sx, int32_t sy, int32_t x, int32_t y) {
+  const int64_t ux = (int64_t)sx * x + (int64_t)sy * y;
+  const int64_t uy = (int64_t)sx * y - (int64_t)sy * x;
+  if (ux == 0 && uy == 0) return {0, 0, 1};
+  if (uy >= 0) {
+    if (ux >= 0) return {0, uy, ux + uy};
+    return {1, -ux, -ux + uy};
+  }
+  if (ux < 0) return {2, -uy, -ux - uy};
+  return {3, ux, ux - uy};
+}
+
+// b <= diamond, exactly as the divided comparison: b - quadrant * 65536 is a
+// whole number r, and r <= floor(num * 65536 / den) is r * den <= num * 65536.
+static inline bool atMost(int64_t b, const DiamondParts& d) {
+  const int64_t r = b - d.quadrant * 65536;
+  if (r <= 0) return true;
+  if (r > 65536) return false;
+  return r * d.den <= d.num * 65536;
+}
+
+// diamond <= e: floor(num * 65536 / den) <= r is num * 65536 < (r + 1) * den.
+static inline bool reachesAtMost(const DiamondParts& d, int64_t e) {
+  const int64_t r = e - d.quadrant * 65536;
+  if (r < 0) return false;
+  if (r >= 65536) return true;
+  return d.num * 65536 < (r + 1) * d.den;
+}
+
 int32_t gradientStep(const Gradient& g, int32_t x, int32_t y) {
+  const DiamondParts d = diamondParts(g.sx, g.sy, x, y);
+  // Beyond the scale's end - in the gap: the rare case, worked out in full.
+  if (!reachesAtMost(d, g.end)) {
+    const int64_t p = d.quadrant * 65536 + (d.num * 65536) / d.den;
+    return (p - g.end > 4 * 65536 - p) ? 0 : GRADIENT_STEPS - 1;
+  }
+  int32_t lo = 0, hi = GRADIENT_STEPS - 1;
+  while (lo < hi) {
+    const int32_t mid = (lo + hi) >> 1;
+    if (atMost(g.bounds[mid], d)) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// The plain version, kept for tools/arc-raster to hold the one above to.
+int32_t gradientStepByDivision(const Gradient& g, int32_t x, int32_t y) {
   const int64_t p = diamondFrom(g.sx, g.sy, x, y);
   if (p > g.end) return (p - g.end > 4 * 65536 - p) ? 0 : GRADIENT_STEPS - 1;
   int32_t lo = 0, hi = GRADIENT_STEPS - 1;
@@ -333,24 +391,32 @@ int32_t stepOfOffset(int32_t offset64, int32_t sweep64) {
 }
 
 int32_t glowLevel(const Glow& g, int32_t x, int32_t y, int32_t levels) {
-  const int64_t d2 = (int64_t)x * x + (int64_t)y * y;
+  // In 32 bits: a panel is at most 800 px, so a coordinate is under 3200 in
+  // 1/8 pixel and every square here under 2^25. 64-bit products are several
+  // instructions each on the ESP32, and this runs for every pixel near a ring.
+  const int32_t d2 = x * x + y * y;
+  const int32_t reach = levels * 8;
   int32_t best = 0;
-  if (inSector(g.fill, x, y)) {
+  const int32_t outerMax = g.rMid + g.half + reach;
+  const int32_t innerMin = g.rMid - g.half - reach;
+  if (d2 < outerMax * outerMax && (innerMin <= 0 || d2 >= innerMin * innerMin) && inSector(g.fill, x, y)) {
     for (int32_t k = 1; k <= levels; k++) {
-      const int64_t outer = g.rMid + g.half + k * 8;
-      const int64_t inner = g.rMid - g.half - k * 8;
+      const int32_t outer = g.rMid + g.half + k * 8;
+      const int32_t inner = g.rMid - g.half - k * 8;
       if (d2 < outer * outer && (inner <= 0 || d2 >= inner * inner)) {
         best = k;
         break;
       }
     }
   }
+  const int32_t discMax = g.half + reach;
   for (int i = 0; i < 2; i++) {
-    const int64_t dx = x - g.endX[i], dy = y - g.endY[i];
-    const int64_t c2 = dx * dx + dy * dy;
+    const int32_t dx = x - g.endX[i], dy = y - g.endY[i];
+    if (dx >= discMax || dx <= -discMax || dy >= discMax || dy <= -discMax) continue;
+    const int32_t c2 = dx * dx + dy * dy;
     const int32_t limit = best == 0 ? levels : best - 1;
     for (int32_t k = 1; k <= limit; k++) {
-      const int64_t r = g.half + k * 8;
+      const int32_t r = g.half + k * 8;
       if (c2 < r * r) {
         best = k;
         break;
@@ -494,6 +560,22 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
   const int32_t boxH = SUBSAMPLES - 1;
   // Asked once per pixel rather than once per sub-sample, and reused below.
   const bool testHandle = handleNear(geom, boxCx, boxCy, boxH);
+
+  // Fourth exact short cut: the box lies wholly off the band - past its outer
+  // edge or inside its hole - and the handle cannot reach it. The sampling
+  // loop would then drop every sub-sample at the radius test, the caps being
+  // inside the annulus too; only a pointer, outside the ring, could still
+  // claim one, so a box past the edge on a ring with a pointer goes on to be
+  // sampled. The short cuts above widen the ring by the handle's reach all the
+  // way round, and on the 4.3B's 289 px dial that left a band of pixels 22 px
+  // wide on either side sampled sixteen times each for a handle that stands in
+  // one place: 34,000 pixels, 360 ms a frame (2026-09-28).
+  if (fastPathEnabled() && !testHandle &&
+      (maxD2 < rInner2 || (minD2 >= rOuter2 && !geom.hasPointer))) {
+    if (probeEnabled()) { probe().earlyCalls++;
+    probe().earlyCycles += esp_cpu_get_cycle_count() - probeStart; }
+    return bands;
+  }
   {
     const bool capsClear =
         (!geom.hasStartCap ||
@@ -551,19 +633,28 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
         // both results are squared below, so truncating here would move both
         // of the handle's long edges. Exact in double: the dot products are
         // integers far under 2^53 and the divisor is a power of two.
-        const double along = ((double)dx * (double)h.tx + (double)dy * (double)h.ty) /
-                             (double)ARC_SIN_SCALE;
-        const double out = ((double)dx * (double)h.rx + (double)dy * (double)h.ry) /
-                           (double)ARC_SIN_SCALE;
-        if (out >= -(double)h.halfLength && out <= (double)h.halfLength) {
-          const double absAlong = along < 0 ? -along : along;
-          const double absOut = out < 0 ? -out : out;
+        //
+        // And then, on 2026-09-28, not doubles at all: this part has no
+        // double-precision unit, and every sub-sample near the handle went
+        // through software divides - 250 ms a frame on the 4.3B's dial.
+        // Dividing by ARC_SIN_SCALE, a power of two, is exact, and so is every
+        // comparison below, so each one is made on the undivided integers
+        // (the dot products scaled by ARC_SIN_SCALE) with the same result.
+        // The squares stay under 2^53, which is also what kept the doubles
+        // exact.
+        const int64_t S14 = ARC_SIN_SCALE;
+        const int64_t along = (int64_t)dx * h.tx + (int64_t)dy * h.ty;
+        const int64_t out = (int64_t)dx * h.rx + (int64_t)dy * h.ry;
+        const int64_t absOut = out < 0 ? -out : out;
+        if (absOut <= (int64_t)h.halfLength * S14) {
+          const int64_t absAlong = along < 0 ? -along : along;
           // A pill: straight sides, and a half-circle at each radial end.
-          const double straight = (double)(h.halfLength - h.halfWidth);
-          bool inHandle = absAlong <= (double)h.halfWidth;
+          const int64_t straight = (int64_t)(h.halfLength - h.halfWidth) * S14;
+          const int64_t width = (int64_t)h.halfWidth * S14;
+          bool inHandle = absAlong <= width;
           if (inHandle && absOut > straight) {
-            const double over = absOut - straight;
-            inHandle = over * over + along * along <= (double)h.halfWidth * (double)h.halfWidth;
+            const int64_t over = absOut - straight;
+            inHandle = over * over + along * along <= width * width;
           }
           if (inHandle) {
             bands.handle++;
@@ -572,7 +663,7 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
           // The gap: background either side of the handle, cut out of the
           // band rather than drawn over it. That is what separates the two -
           // the gap takes its pixels from the ring, never from the handle.
-          if (absAlong <= (double)(h.halfWidth + h.gap)) continue;
+          if (absAlong <= (int64_t)(h.halfWidth + h.gap) * S14) continue;
         }
       }
 
