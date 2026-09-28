@@ -106,10 +106,14 @@ int main(int argc, char** argv) {
 
   const LevelLayout lay = levelshape::layout(obj, metrics);
   const bool vertical = levelshape::isVertical(obj);
-  const bool handled = levelshape::hasHandle(obj);
+  // As the renderer decides it since 2026-09-28: only a slider has a handle
+  // (objecttypes::isSettable, spelled out here to keep this program free of
+  // the rest of the project); a bar has a pointer beside its track instead.
+  const bool settable = obj.type == "slider" || obj.type == "dial";
+  const bool handled = levelshape::hasHandle(obj) && settable;
 
   printf("flags %d %d %d %d %d %d %d\n", vertical ? 1 : 0,
-         levelshape::fillsFromEnd(obj) ? 1 : 0, levelshape::thickness(obj), handled ? 1 : 0,
+         levelshape::fillsFromEnd(obj) ? 1 : 0, levelshape::thickness(obj), levelshape::hasHandle(obj) ? 1 : 0,
          levelshape::showsNumber(obj) ? 1 : 0, levelshape::headerHeight(obj, metrics),
          levelshape::valueWidth(obj, metrics));
   printf("metrics %d %d %d\n", metrics.ascent, metrics.descent, metrics.capHeight);
@@ -132,6 +136,16 @@ int main(int argc, char** argv) {
     handle = levelshape::handleRect(obj, lay, setpoint >= 0.0f ? setpoint : percent);
   }
   printMaybeRect("handle", handled, handle);
+
+  LevelRect pointer;
+  bool pointsLeft = false;
+  const bool pointed = levelshape::hasHandle(obj) && !settable && setpoint >= 0.0f &&
+                       levelshape::pointerRect(obj, lay, setpoint, pointer, pointsLeft);
+  if (pointed) {
+    printf("pointer 1 %d %d %d %d %s\n", pointer.x, pointer.y, pointer.w, pointer.h, pointsLeft ? "left" : "up");
+  } else {
+    printf("pointer 0\n");
+  }
 
   std::vector<LevelSegment> segs;
   levelshape::segments(obj, lay, percent, handled ? &handle : nullptr, segs);

@@ -239,6 +239,17 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
   checkRect("track", got.track, want.track);
   checkSegment("emptyTrack", got.empty, want.emptyTrack);
   checkMaybeRect("handle", got.handle, want.handle);
+  // A bar's pointer (2026-09-28): a box and which way its tip faces. Older
+  // recordings have no pointer at all, which reads as none.
+  const wantPointer = want.pointer ?? null;
+  check("pointer present", got.pointer[0] === "1", wantPointer !== null);
+  if (got.pointer[0] === "1" && wantPointer) {
+    check("pointer.x", num(got.pointer[1]), wantPointer.x);
+    check("pointer.y", num(got.pointer[2]), wantPointer.y);
+    check("pointer.w", num(got.pointer[3]), wantPointer.w);
+    check("pointer.h", num(got.pointer[4]), wantPointer.h);
+    check("pointer.tip", got.pointer[5], wantPointer.tip);
+  }
 
   check("segments", got.seg.length, want.segments.length);
   want.segments.forEach((seg, i) => {

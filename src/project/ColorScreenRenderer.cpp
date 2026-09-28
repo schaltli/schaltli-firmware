@@ -1639,7 +1639,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
       ArcRaster::toRgb565(parseHexColor((settable || look.framed) ? fillHex : look.track));
   // A gauge's pointer is in the text's colour, as the bar's is.
   const ArcRaster::Rgb565 pointerColour = ArcRaster::toRgb565(parseHexColor(materialcolors::applyDepth(
-      obj.properties.textColor.isEmpty() ? String("#ffffff") : obj.properties.textColor)));
+      obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor)));
 
   // Nur den geclippten Ausschnitt durchrechnen. pixelBands() tastet jedes
   // Pixel 16-fach ab; auf einem 360er Ring sind das rund 380.000 Sektortests
