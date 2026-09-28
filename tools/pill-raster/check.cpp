@@ -36,6 +36,9 @@ int main() {
       b.rLow = rnd(0, 3) == 0 ? 0 : rnd(0, 45);
       b.rHigh = rnd(0, 3) == 0 ? 0 : rnd(0, 45);
       b.vertical = rnd(0, 1) == 1;
+      // Now and then a triangle - a bar's pointer - which the quick path must
+      // always hand to the sampling (2026-09-28).
+      if (rnd(0, 5) == 0) b.tip = (uint8_t)rnd(1, 4);
       bands.push_back(b);
     }
     std::vector<uint8_t> full(bands.size()), quick(bands.size());

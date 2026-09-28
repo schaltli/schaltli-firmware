@@ -325,6 +325,53 @@ inline LevelRect handleRect(const ScreenObject& obj, const LevelLayout& lay, flo
   return out;
 }
 
+// Between the track and a pointer's tip.
+constexpr int kPointerGap = 2;
+
+// A pointer's size, from the track's thickness: two thirds of it from tip to
+// base, and a base as wide as that is long - the proportions the user passed
+// on the sketch (2026-09-28). `room` is how much the object has beside the
+// track; a pointer that would not fit shrinks, one with no room is not drawn.
+// levelPointerSize in the designer's lib/level-shape.ts.
+inline bool pointerSize(int thick, int room, int& length, int& half) {
+  length = (2 * thick + 1) / 3;
+  if (length > room - kPointerGap) length = room - kPointerGap;
+  if (length < 1) return false;
+  half = (length + 1) / 2;
+  return true;
+}
+
+// The pointer a bar shows its setpoint with: a triangle beside the track,
+// pointing at the value - below a horizontal track, right of a vertical one.
+// A bar cannot be moved, so it has no handle. It sits in the room a handle
+// would take, and the track is not cut for it. Clamped into the slot along
+// the bar, like the handle. `pointsLeft` says which way it points: left for a
+// vertical bar, up for a horizontal one. levelPointerBand in the designer.
+inline bool pointerRect(const ScreenObject& obj, const LevelLayout& lay, float percent, LevelRect& out,
+                        bool& pointsLeft) {
+  const bool vertical = isVertical(obj);
+  const int room = vertical ? lay.slot.x + lay.slot.w - (lay.track.x + lay.track.w)
+                            : lay.slot.y + lay.slot.h - (lay.track.y + lay.track.h);
+  int length = 0, half = 0;
+  if (!pointerSize(thickness(obj), room, length, half)) return false;
+  const int edge = edgeFor(lay.track, vertical, fillsFromEnd(obj), percent);
+  const int base = 2 * half;
+  out.r = 0;
+  pointsLeft = vertical;
+  if (vertical) {
+    out.x = lay.track.x + lay.track.w + kPointerGap;
+    out.y = clampInt(edge - half, lay.slot.y, lay.slot.y + lay.slot.h - base);
+    out.w = length;
+    out.h = base;
+    return true;
+  }
+  out.x = clampInt(edge - half, lay.slot.x, lay.slot.x + lay.slot.w - base);
+  out.y = lay.track.y + lay.track.h + kPointerGap;
+  out.w = base;
+  out.h = length;
+  return true;
+}
+
 // The track, cut into the runs that actually get painted: filled up to the
 // value, unfilled beyond it, and nothing at all where the handle and its gap
 // sit.

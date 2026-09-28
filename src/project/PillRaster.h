@@ -74,7 +74,56 @@ struct Band {
   int32_t rHigh = 0;
   // True when the run's long axis is vertical.
   bool vertical = false;
+  // Not a run at all but a triangle filling the box: its tip at the middle of
+  // the side this names, its base along the opposite side. The radii and
+  // `vertical` mean nothing to it. TIP_NONE for every ordinary run.
+  //
+  // The pointer a bar or a gauge shows its setpoint with. A handle means "you
+  // can move this", and neither of them can be moved - the user: "ein
+  // anfasser bedeutet verschiebbarkeit" (2026-09-28). A point says the
+  // opposite: it cuts into the finger, "das bedeutet ruehr mich nicht an".
+  uint8_t tip = 0;
 };
+
+static const uint8_t TIP_NONE = 0;
+static const uint8_t TIP_UP = 1;
+static const uint8_t TIP_DOWN = 2;
+static const uint8_t TIP_LEFT = 3;
+static const uint8_t TIP_RIGHT = 4;
+
+// Whether a sub-sample, in 1/8 pixel, lies inside a triangle band
+// (insidePillTip in the designer's lib/pill-raster.ts).
+//
+// At depth d from the tip the triangle is w*d/h wide, so a point is inside
+// when twice its distance from the centreline, times h, is no more than w*d -
+// cross-multiplied, so there is nothing to divide and nothing to round. In 64
+// bits, since the product is of two lengths on the 1/8 lattice.
+inline bool insideTip(const Band& band, int32_t x, int32_t y) {
+  const int32_t S = SUBPIXEL_SCALE;
+  const int32_t x0 = band.x * S;
+  const int32_t y0 = band.y * S;
+  const int32_t x1 = x0 + band.w * S;
+  const int32_t y1 = y0 + band.h * S;
+  if (x < x0 || x >= x1 || y < y0 || y >= y1) return false;
+  const bool across = band.tip == TIP_UP || band.tip == TIP_DOWN;
+  const int32_t depth = band.tip == TIP_UP     ? y - y0
+                        : band.tip == TIP_DOWN ? y1 - y
+                        : band.tip == TIP_LEFT ? x - x0
+                                               : x1 - x;
+  int32_t off2 = across ? 2 * x - (x0 + x1) : 2 * y - (y0 + y1);
+  if (off2 < 0) off2 = -off2;
+  const int32_t length = across ? y1 - y0 : x1 - x0;
+  const int32_t width = across ? x1 - x0 : y1 - y0;
+  return (int64_t)off2 * (int64_t)length <= (int64_t)width * (int64_t)depth;
+}
+
+// Whether a triangle band holds a pixel's centre - how a panel without soft
+// edges draws one: whole pixels, by the same test the soft path samples with
+// (hardPill in the designer's paint-pills.ts).
+inline bool tipHoldsPixel(const Band& band, int32_t px, int32_t py) {
+  const int32_t S = SUBPIXEL_SCALE;
+  return insideTip(band, px * S + S / 2, py * S + S / 2);
+}
 
 // C++ integer division truncates toward zero where JS's Math.floor floors, and
 // the two disagree for a negative short side - so the rounding direction is
@@ -105,6 +154,7 @@ inline int32_t clampRadius(int32_t r, int32_t maxRadius) {
 // The designer's `Math.trunc(band.rLow)` has no counterpart here: its radii
 // arrive from JSON and can be fractional, these are already whole.
 inline bool insideBand(const Band& band, int32_t x, int32_t y) {
+  if (band.tip != TIP_NONE) return insideTip(band, x, y);
   const int32_t S = SUBPIXEL_SCALE;
   const int32_t x0 = band.x * S;
   const int32_t y0 = band.y * S;
@@ -185,6 +235,9 @@ inline void pixelBands(const std::vector<Band>& bands, int32_t px, int32_t py, u
 inline int pixelCover(const Band& band, int32_t px, int32_t py) {
   if (band.w <= 0 || band.h <= 0) return 0;
   if (px < band.x || px >= band.x + band.w || py < band.y || py >= band.y + band.h) return 0;
+  // A triangle's edges run across its whole box, so every pixel of it is
+  // sampled. It is a few dozen pixels.
+  if (band.tip != TIP_NONE) return 1;
   const int32_t maxRadius = floorDiv(band.w < band.h ? band.w : band.h, 2);
   const int32_t rLow = clampRadius(band.rLow, maxRadius);
   const int32_t rHigh = clampRadius(band.rHigh, maxRadius);

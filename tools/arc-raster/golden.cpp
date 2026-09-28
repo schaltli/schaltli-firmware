@@ -31,12 +31,12 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  int size = 0, thickness = 0, inset = 0, ts = 0, tw = 0, fstart = 0, fw = 0, handleAt = -1;
+  int size = 0, thickness = 0, inset = 0, ts = 0, tw = 0, fstart = 0, fw = 0, handleAt = -1, pointerAt = -1;
   int startCapFilled = 0, endCapFilled = 0, framed = 0, n = 0;
-  unsigned int cTrack = 0, cFill = 0, cHandle = 0, cBg = 0;
-  if (fscanf(f, "%d %d %d %d %d %d %d %d %d %d %d %x %x %x %x %d", &size, &thickness, &inset, &ts,
-             &tw, &fstart, &fw, &handleAt, &startCapFilled, &endCapFilled, &framed, &cTrack, &cFill,
-             &cHandle, &cBg, &n) != 16) {
+  unsigned int cTrack = 0, cFill = 0, cHandle = 0, cPointer = 0, cBg = 0;
+  if (fscanf(f, "%d %d %d %d %d %d %d %d %d %d %d %d %x %x %x %x %x %d", &size, &thickness, &inset, &ts,
+             &tw, &fstart, &fw, &handleAt, &pointerAt, &startCapFilled, &endCapFilled, &framed, &cTrack, &cFill,
+             &cHandle, &cPointer, &cBg, &n) != 18) {
     fprintf(stderr, "bad header\n");
     return 2;
   }
@@ -58,11 +58,13 @@ int main(int argc, char** argv) {
     geom.handle = ArcRaster::handleBand(size, thickness, inset, handleAt, tw);
     geom.hasHandle = true;
   }
+  if (pointerAt >= 0) geom.hasPointer = ArcRaster::pointerBand(size, thickness, inset, pointerAt, &geom.pointer);
   geom.framed = framed != 0;
 
   const ArcRaster::Rgb565 track = fromHex(cTrack);
   const ArcRaster::Rgb565 fill = fromHex(cFill);
   const ArcRaster::Rgb565 handle = fromHex(cHandle);
+  const ArcRaster::Rgb565 pointer = fromHex(cPointer);
   const ArcRaster::Rgb565 background = fromHex(cBg);
 
   for (int i = 0; i < n; i++) {
@@ -72,9 +74,9 @@ int main(int argc, char** argv) {
       return 2;
     }
     const ArcRaster::PixelBands b = ArcRaster::pixelBands(geom, px, py);
-    const int covered = b.fill + b.track + b.handle;
+    const int covered = b.fill + b.track + b.handle + b.pointer;
     const uint16_t mixed =
-        ArcRaster::blendBands(fill, b.fill, track, b.track, handle, b.handle, background,
+        ArcRaster::blendBands(fill, b.fill, track, b.track, handle, b.handle, pointer, b.pointer, background,
                               (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
     const ArcRaster::Rgb565 o = ArcRaster::toRgb565(mixed);
     // Bit replication back to 8 bits, which is what the BMP writer does when
@@ -83,7 +85,7 @@ int main(int argc, char** argv) {
     const unsigned int r8 = (o.r << 3) | (o.r >> 2);
     const unsigned int g8 = (o.g << 2) | (o.g >> 4);
     const unsigned int b8 = (o.b << 3) | (o.b >> 2);
-    printf("%d %d %d %u\n", b.fill, b.track, b.handle, (r8 << 16) | (g8 << 8) | b8);
+    printf("%d %d %d %d %u\n", b.fill, b.track, b.handle, b.pointer, (r8 << 16) | (g8 << 8) | b8);
   }
   fclose(f);
   return 0;

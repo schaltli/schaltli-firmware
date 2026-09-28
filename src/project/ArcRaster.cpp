@@ -255,6 +255,38 @@ Handle handleBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle6
   return h;
 }
 
+bool IRAM_ATTR inPointer(const Pointer& p, int32_t x, int32_t y) {
+  const int64_t depth = (int64_t)x * p.rx + (int64_t)y * p.ry - (int64_t)p.tip * ARC_SIN_SCALE;
+  if (depth < 0 || depth > (int64_t)p.length * ARC_SIN_SCALE) return false;
+  int64_t along = (int64_t)x * p.tx + (int64_t)y * p.ty;
+  if (along < 0) along = -along;
+  return along * p.length <= depth * p.half;
+}
+
+bool pointerBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, Pointer* out) {
+  const int32_t gap = 2;
+  int32_t length = (2 * thickness + 1) / 3;
+  if (length > inset - gap) length = inset - gap;
+  if (length < 1) return false;
+  const int32_t half = (length + 1) / 2;
+  const int32_t S = SUBPIXEL_SCALE;
+  direction(angle64, &out->rx, &out->ry);
+  direction(angle64 + 90 * ANGLE_SCALE, &out->tx, &out->ty);
+  out->tip = (size * S) / 2 - inset * S + gap * S;
+  out->length = length * S;
+  out->half = half * S;
+  return true;
+}
+
+// How far out anything can reach: the handle past the ring's edge, or a
+// pointer out to its base. Math.max(rOuter + reach, tip + length + 1) in the
+// designer's arcPixelBands.
+static int32_t outerReach(const RingGeometry& geom, int32_t rOuter, int32_t reach) {
+  const int32_t byHandle = rOuter + reach;
+  const int32_t byPointer = geom.hasPointer ? geom.pointer.tip + geom.pointer.length + 1 : 0;
+  return byHandle > byPointer ? byHandle : byPointer;
+}
+
 RowSpan rowSpan(const RingGeometry& geom, int32_t py) {
   RowSpan span;
 
@@ -266,7 +298,7 @@ RowSpan rowSpan(const RingGeometry& geom, int32_t py) {
   // allow for it - the same widening pixelBands() makes before its own two
   // short cuts, or this would throw away the very pixels it overhangs into.
   const int32_t reach = geom.hasHandle ? geom.handle.halfLength : 0;
-  const int32_t rReachOuter = rOuter + reach;
+  const int32_t rReachOuter = outerReach(geom, rOuter, reach);
   const int32_t rReachInner = (rInner - reach) > 0 ? (rInner - reach) : 0;
   const int32_t rOuter2 = rReachOuter > 0 ? rReachOuter * rReachOuter : 0;
   const int32_t rInner2 = rReachInner * rReachInner;
@@ -340,7 +372,7 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
   // away before it is ever tested, and the handle comes out as a sliver
   // trapped inside the band.
   const int32_t reach = geom.hasHandle ? geom.handle.halfLength : 0;
-  const int32_t rReachOuter = rOuter + reach;
+  const int32_t rReachOuter = outerReach(geom, rOuter, reach);
   const int32_t rReachInner = (rInner - reach) > 0 ? (rInner - reach) : 0;
   if (minD2 >= rReachOuter * rReachOuter) {
     if (probeEnabled()) { probe().earlyCalls++;
@@ -364,7 +396,9 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
   //     track, which is the one way this short cut could lie on this device;
   //   - the box is entirely outside both end caps, so neither the cap
   //     membership nor the cap rim can vary across it;
-  //   - the handle cannot reach the box at all;
+  //   - the handle cannot reach the box at all (the pointer needs no
+  //     condition: it stands outside the ring, and the first condition keeps
+  //     the box inside it);
   //   - and no sector edge passes through it.
   //
   // The box of sub-sample centres spans offsets 1..2*SUBSAMPLES-1, so its
@@ -409,6 +443,14 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
     for (int32_t i = 0; i < SUBSAMPLES; i++) {
       const int32_t x = px * S + 2 * i + 1 - centre;
       const int32_t d2 = x * x + y * y;
+
+      // Outside the ring, so it never competes with the band for a sample;
+      // first only so that it is decided once. d2 >= rOuter2 is only a cheap
+      // way out for the ring's own pixels: the tip is past the ring's edge.
+      if (geom.hasPointer && d2 >= rOuter2 && inPointer(geom.pointer, x, y)) {
+        bands.pointer++;
+        continue;
+      }
 
       // The handle first, and before the ring's own radii: it lies ACROSS the
       // band and stands out of it on both sides, which is what says "a thing
@@ -527,6 +569,25 @@ uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
   // unrounded divide here would bias every anti-aliased edge half a step
   // darker on one side. All inputs are non-negative, so a plain divide and
   // the designer's Math.floor agree.
+  const int32_t half = COVERAGE_MAX / 2;
+  Rgb565 out;
+  out.r = (uint8_t)((r + half) / COVERAGE_MAX);
+  out.g = (uint8_t)((g + half) / COVERAGE_MAX);
+  out.b = (uint8_t)((b + half) / COVERAGE_MAX);
+  return packRgb565(out);
+}
+
+uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
+                    const Rgb565& track, uint8_t trackCount,
+                    const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& pointer, uint8_t pointerCount,
+                    const Rgb565& background, uint8_t backgroundCount) {
+  const int32_t r = fill.r * fillCount + track.r * trackCount + handle.r * handleCount +
+                    pointer.r * pointerCount + background.r * backgroundCount;
+  const int32_t g = fill.g * fillCount + track.g * trackCount + handle.g * handleCount +
+                    pointer.g * pointerCount + background.g * backgroundCount;
+  const int32_t b = fill.b * fillCount + track.b * trackCount + handle.b * handleCount +
+                    pointer.b * pointerCount + background.b * backgroundCount;
   const int32_t half = COVERAGE_MAX / 2;
   Rgb565 out;
   out.r = (uint8_t)((r + half) / COVERAGE_MAX);

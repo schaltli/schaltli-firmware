@@ -1138,6 +1138,10 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
       parseHexColor((!obj.properties.writeTopic.isEmpty() || look.framed) ? fillHex : look.track);
   const uint16_t textColor =
       parseHexColor(obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor);
+  // A bar's pointer is in the text's colour - the fill's belongs to what a
+  // finger can move - quantised the way the designer quantises it.
+  const uint16_t pointerColor = parseHexColor(materialcolors::applyDepth(
+      obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor));
 
   const LevelFontMetrics metrics = levelMetrics(obj);
   const LevelLayout lay = levelshape::layout(obj, metrics);
@@ -1195,7 +1199,20 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   // - would leave a ring of track colour around it where the two meet, and the
   // same along the value's edge, which is the one place on a bar anybody looks
   // at.
-  auto paintBar = [&](const std::vector<LevelSegment>& runs, const LevelRect* handle) {
+  // The pointer, when there is one, as a triangle band: up under a horizontal
+  // bar, left beside a vertical one.
+  auto pointerBand = [&](const LevelRect& r, bool pointsLeft) {
+    PillRaster::Band band;
+    band.x = r.x;
+    band.y = r.y;
+    band.w = r.w;
+    band.h = r.h;
+    band.tip = pointsLeft ? PillRaster::TIP_LEFT : PillRaster::TIP_UP;
+    return band;
+  };
+
+  auto paintBar = [&](const std::vector<LevelSegment>& runs, const LevelRect* handle,
+                      const PillRaster::Band* pointer) {
 #if PILL_ANTIALIASED
     // A run's two ends: rounded where the track itself ends, square where
     // something cut it - the fill's edge, or the handle's gap. That is
@@ -1220,6 +1237,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     };
 
     std::vector<PaintedPill> painted;
+    if (pointer != nullptr) painted.push_back(pillOf(*pointer, pointerColor));
     if (handle != nullptr && handle->valid()) {
       PillRaster::Band band;
       band.x = handle->x;
@@ -1260,6 +1278,13 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     if (handle != nullptr && handle->valid()) {
       canvas_->fillRoundRect(handle->x, handle->y, handle->w, handle->h, handle->r, handleColor);
     }
+    if (pointer != nullptr) {
+      for (int32_t py = pointer->y; py < pointer->y + pointer->h; py++) {
+        for (int32_t px = pointer->x; px < pointer->x + pointer->w; px++) {
+          if (PillRaster::tipHoldsPixel(*pointer, px, py)) canvas_->drawPixel(px, py, pointerColor);
+        }
+      }
+    }
 #endif
   };
 
@@ -1299,7 +1324,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     drawHeader("", "", false);
     std::vector<LevelSegment> empty;
     empty.push_back(levelshape::emptyTrack(lay));
-    paintBar(empty, nullptr);
+    paintBar(empty, nullptr, nullptr);
     return true;
   }
 
@@ -1309,12 +1334,19 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
 
   const String markerTopic =
       obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
+  // A bar has no handle, only a pointer, and it points at a target the
+  // installation reports - never at a request, which is a finger's, nor at its
+  // own value. Whatever write topic it still carries makes no difference
+  // (2026-09-28).
+  const bool settable = isSettableLevel(obj);
   String rawMarker;
-  if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
+  if (!settable && obj.properties.setpointTopic.isEmpty()) {
+    // no marker
+  } else if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
     rawMarker = askedValue_;
   } else if (!obj.properties.setpointTopic.isEmpty()) {
     rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
-  } else if (isSettableLevel(obj) && !obj.properties.writeTopic.isEmpty()) {
+  } else if (settable && !obj.properties.writeTopic.isEmpty()) {
     // Only a slider rests a handle on its value - a bar never, whatever
     // topics it still carries.
     rawMarker = valueStr;
@@ -1330,13 +1362,20 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     if (markerPercent > 100.0f) markerPercent = 100.0f;
   }
 
+  // Only a slider has a handle. A bar shows the same target with a pointer
+  // beside the track instead, which leaves the track whole.
   LevelRect handle;
-  const bool hasHandle = hasMarker && lay.track.valid();
+  const bool hasHandle = hasMarker && lay.track.valid() && settable;
   if (hasHandle) handle = levelshape::handleRect(obj, lay, markerPercent);
+  LevelRect pointerBox;
+  bool pointsLeft = false;
+  const bool hasPointer = hasMarker && lay.track.valid() && !settable &&
+                          levelshape::pointerRect(obj, lay, markerPercent, pointerBox, pointsLeft);
+  const PillRaster::Band pointer = hasPointer ? pointerBand(pointerBox, pointsLeft) : PillRaster::Band();
 
   std::vector<LevelSegment> runs;
   levelshape::segments(obj, lay, fillPercentF, hasHandle ? &handle : nullptr, runs);
-  paintBar(runs, hasHandle ? &handle : nullptr);
+  paintBar(runs, hasHandle ? &handle : nullptr, hasPointer ? &pointer : nullptr);
 
   const bool asPercent = obj.properties.displayValue == "percentage";
   const String measured = asPercent ? String((int)(fillPercentF + 0.5f)) + "%" : valueStr;
@@ -1465,7 +1504,10 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   if (!noValue && canHaveHandle) {
     const String markerTopic =
         obj.properties.setpointTopic.isEmpty() ? obj.properties.topic : obj.properties.setpointTopic;
-    if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
+    if (!isSettableLevel(obj) && obj.properties.setpointTopic.isEmpty()) {
+      // A gauge points only at a target the installation reports, as a bar
+      // does.
+    } else if (!askedTopic_.isEmpty() && askedTopic_ == markerTopic && !askedValue_.isEmpty()) {
       rawMarker = askedValue_;
     } else if (!obj.properties.setpointTopic.isEmpty()) {
       rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
@@ -1555,8 +1597,14 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     // the handle, which is what separates the two.
     const int32_t at = ArcRaster::sweepForPercent(sweep64, setpointPercent);
     const int32_t angle64 = counterClockwise ? start64 + sweep64 - at : start64 + at;
-    geom.handle = ArcRaster::handleBand(size, thickness, inset, angle64, sweep64);
-    geom.hasHandle = true;
+    if (isSettableLevel(obj)) {
+      geom.handle = ArcRaster::handleBand(size, thickness, inset, angle64, sweep64);
+      geom.hasHandle = true;
+    } else {
+      // A gauge cannot be moved, so it points instead: a triangle outside the
+      // ring, in the room the inset keeps (arcPointerBand in the designer).
+      geom.hasPointer = ArcRaster::pointerBand(size, thickness, inset, angle64, &geom.pointer);
+    }
   }
 
   // One colour the author sets; everything else follows from it and from what
@@ -1589,6 +1637,9 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   const bool settable = !obj.properties.writeTopic.isEmpty();
   const ArcRaster::Rgb565 handleColour =
       ArcRaster::toRgb565(parseHexColor((settable || look.framed) ? fillHex : look.track));
+  // A gauge's pointer is in the text's colour, as the bar's is.
+  const ArcRaster::Rgb565 pointerColour = ArcRaster::toRgb565(parseHexColor(materialcolors::applyDepth(
+      obj.properties.textColor.isEmpty() ? String("#ffffff") : obj.properties.textColor)));
 
   // Nur den geclippten Ausschnitt durchrechnen. pixelBands() tastet jedes
   // Pixel 16-fach ab; auf einem 360er Ring sind das rund 380.000 Sektortests
@@ -1642,14 +1693,15 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         bandsCycles += esp_cpu_get_cycle_count() - c0;
         pixelsSeen++;
       }
-      const int32_t covered = bands.fill + bands.track + bands.handle;
+      const int32_t covered = bands.fill + bands.track + bands.handle + bands.pointer;
 
       // Nothing of the ring here: the pixel is left alone, which is what the
       // ring floating on the screen means - skip the draw, never mix.
       if (covered == 0) continue;
 
       const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, handleColour,
-                                                   bands.handle, mix, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+                                                   bands.handle, pointerColour, bands.pointer, mix,
+                                                   (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
       uint32_t d1 = profiling ? esp_cpu_get_cycle_count() : 0;
       canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
       if (profiling) {

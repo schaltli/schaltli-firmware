@@ -21,12 +21,12 @@ int main(int argc, char** argv) {
   FILE* f = fopen(argv[1], "r");
   if (f == NULL) return 2;
 
-  int size = 0, thickness = 0, inset = 0, ts = 0, tw = 0, fstart = 0, fw = 0, handleAt = -1;
+  int size = 0, thickness = 0, inset = 0, ts = 0, tw = 0, fstart = 0, fw = 0, handleAt = -1, pointerAt = -1;
   int startCapFilled = 0, endCapFilled = 0, framed = 0, n = 0;
-  unsigned int cTrack = 0, cFill = 0, cHandle = 0, cBg = 0;
-  if (fscanf(f, "%d %d %d %d %d %d %d %d %d %d %d %x %x %x %x %d", &size, &thickness, &inset, &ts,
-             &tw, &fstart, &fw, &handleAt, &startCapFilled, &endCapFilled, &framed, &cTrack, &cFill,
-             &cHandle, &cBg, &n) != 16) {
+  unsigned int cTrack = 0, cFill = 0, cHandle = 0, cPointer = 0, cBg = 0;
+  if (fscanf(f, "%d %d %d %d %d %d %d %d %d %d %d %d %x %x %x %x %x %d", &size, &thickness, &inset, &ts,
+             &tw, &fstart, &fw, &handleAt, &pointerAt, &startCapFilled, &endCapFilled, &framed, &cTrack, &cFill,
+             &cHandle, &cPointer, &cBg, &n) != 18) {
     return 2;
   }
   fclose(f);
@@ -48,6 +48,7 @@ int main(int argc, char** argv) {
     geom.handle = ArcRaster::handleBand(size, thickness, inset, handleAt, tw);
     geom.hasHandle = true;
   }
+  if (pointerAt >= 0) geom.hasPointer = ArcRaster::pointerBand(size, thickness, inset, pointerAt, &geom.pointer);
   geom.framed = framed != 0;
 
   long fastDisagree = 0, spanDropsCovered = 0, covered = 0, visited = 0;

@@ -127,6 +127,24 @@ struct PixelBands {
   // ring and became the slider's own handle: a pill lying across the band,
   // standing out of it on both sides, with a gap cut either side of it.
   uint8_t handle = 0;
+  // The setpoint pointer of a gauge, which has no handle (Pointer).
+  uint8_t pointer = 0;
+};
+
+// A gauge's setpoint pointer: a triangle outside the ring, its tip towards the
+// centre. A gauge cannot be moved, so it has no handle (2026-09-28). The bar's
+// pointer bent onto a ring, as the handle is the bar's handle bent onto one.
+// Tested in the ray's own frame, both products still scaled by ARC_SIN_SCALE
+// and never divided - they outgrow 32 bits on a large ring, so int64.
+// ArcPointer and inArcPointer in the designer's lib/arc-raster.ts.
+struct Pointer {
+  int32_t rx = 0;  // outwards from the centre at the setpoint's angle
+  int32_t ry = 0;
+  int32_t tx = 0;  // along the band
+  int32_t ty = 0;
+  int32_t tip = 0;     // from the centre to the tip, in 1/8 pixel
+  int32_t length = 0;  // from the tip to the base, in 1/8 pixel
+  int32_t half = 0;    // half the base, in 1/8 pixel
 };
 
 struct RingGeometry {
@@ -156,6 +174,8 @@ struct RingGeometry {
   bool endCapFilled = false;
   bool hasHandle = false;
   Handle handle;
+  bool hasPointer = false;
+  Pointer pointer;
   // The track is drawn as its own outline, one pixel wide, instead of as a
   // body - for a panel that cannot show the mixed colour the track would
   // otherwise be, which on this device is every panel. LevelShape.h answers
@@ -232,6 +252,14 @@ void pointAt(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, in
              int32_t* outY);
 Caps caps(int32_t size, int32_t thickness, int32_t inset, int32_t start64, int32_t sweep64);
 Handle handleBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, int32_t sweep64);
+bool inPointer(const Pointer& p, int32_t x, int32_t y);
+// A gauge's pointer at angle64: outside the ring, its tip two pixels off the
+// band's outer edge, in the room the inset keeps. Sized by the bar's rule -
+// two thirds of the thickness, a base as wide, shrunk into the room there is
+// (levelshape::pointerSize, which this repeats because this file must build
+// without Arduino.h for tools/arc-raster). False where there is no room.
+// arcPointerBand in the designer's render-arc-level.ts.
+bool pointerBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, Pointer* out);
 
 Rgb565 toRgb565(uint16_t packed);
 uint16_t packRgb565(const Rgb565& c);
@@ -241,6 +269,12 @@ uint16_t packRgb565(const Rgb565& c);
 uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
                     const Rgb565& track, uint8_t trackCount,
                     const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& background, uint8_t backgroundCount);
+// The same, with a gauge's pointer as a fourth band.
+uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
+                    const Rgb565& track, uint8_t trackCount,
+                    const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& pointer, uint8_t pointerCount,
                     const Rgb565& background, uint8_t backgroundCount);
 
 // Where along a sector a percentage sits, truncated - mirroring the

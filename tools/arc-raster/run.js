@@ -163,6 +163,7 @@ const geometryOf = (c) => ({
   fillStart64: c.fillStart64,
   fillSweep64: c.fillSweep64,
   handleAt64: c.handleAt64 === undefined ? -1 : c.handleAt64,
+  pointerAt64: c.pointerAt64 === undefined ? -1 : c.pointerAt64,
   startCapFilled: c.startCapFilled ? 1 : 0,
   endCapFilled: c.endCapFilled ? 1 : 0,
   framed: c.framed ? 1 : 0,
@@ -171,8 +172,9 @@ const geometryOf = (c) => ({
 function writeCase(g, pixels) {
   const header = [
     g.size, g.thickness, g.inset, g.trackStart64, g.trackSweep64, g.fillStart64, g.fillSweep64,
-    g.handleAt64, g.startCapFilled, g.endCapFilled, g.framed,
-    hex(C.track), hex(C.fill), hex(C.handle), hex(C.background),
+    g.handleAt64, g.pointerAt64 ?? -1, g.startCapFilled, g.endCapFilled, g.framed,
+    // A recording from before the pointer (2026-09-28) has no colour for it.
+    hex(C.track), hex(C.fill), hex(C.handle), hex(C.pointer ?? C.handle), hex(C.background),
     pixels ? pixels.length : 0,
   ].join(" ");
   const body = pixels ? pixels.map((p) => `${p[0]} ${p[1]}`).join("\n") + "\n" : "";
@@ -200,12 +202,13 @@ for (const fastPath of ["1", "0"]) {
     let bad = 0;
     let first = "";
     for (let i = 0; i < lines.length; i++) {
-      const [f, t, h, rgb] = lines[i].split(" ").map(Number);
-      if (f !== c.fill[i] || t !== c.track[i] || h !== c.handle[i] || rgb !== c.rgb[i]) {
+      const [f, t, h, p, rgb] = lines[i].split(" ").map(Number);
+      const wantP = c.pointer ? c.pointer[i] : 0;
+      if (f !== c.fill[i] || t !== c.track[i] || h !== c.handle[i] || p !== wantP || rgb !== c.rgb[i]) {
         if (bad === 0) {
           first =
-            `px=(${c.pixels[i]}) got ${f}/${t}/${h} #${rgb.toString(16).padStart(6, "0")}, ` +
-            `want ${c.fill[i]}/${c.track[i]}/${c.handle[i]} #${c.rgb[i].toString(16).padStart(6, "0")}`;
+            `px=(${c.pixels[i]}) got ${f}/${t}/${h}/${p} #${rgb.toString(16).padStart(6, "0")}, ` +
+            `want ${c.fill[i]}/${c.track[i]}/${c.handle[i]}/${wantP} #${c.rgb[i].toString(16).padStart(6, "0")}`;
         }
         bad++;
       }
@@ -243,6 +246,32 @@ for (const [size, thickness] of [[78, 12], [61, 5], [120, 22], [40, 8], [31, 1]]
         startCapFilled: fillDeg > 0 ? 1 : 0,
         endCapFilled: fillDeg >= 270 ? 1 : 0,
         framed: 1,
+      });
+    }
+  }
+}
+// A gauge's pointer instead of a handle, framed and not, at every eighth of
+// the scale: it stands outside the ring, so rowSpan's widening and the
+// uniform short cut are what it can catch out (2026-09-28).
+for (const [size, thickness] of [[78, 12], [120, 22], [40, 8]]) {
+  const inset = Math.max(
+    0,
+    Math.min(Math.ceil((thickness * 7) / 8), Math.floor(size / 2) - thickness - 1),
+  );
+  for (const framed of [0, 1]) {
+    for (let pointerDeg = 0; pointerDeg <= 270; pointerDeg += 34) {
+      swept.push({
+        size,
+        thickness,
+        inset,
+        trackStart64: 225 * DEG,
+        trackSweep64: 270 * DEG,
+        fillStart64: 225 * DEG,
+        fillSweep64: 100 * DEG,
+        pointerAt64: 225 * DEG + pointerDeg * DEG,
+        startCapFilled: 1,
+        endCapFilled: 0,
+        framed,
       });
     }
   }
