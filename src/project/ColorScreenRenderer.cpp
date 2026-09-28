@@ -1746,7 +1746,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   const BdfFont* font = fontFor(obj.properties.fontId);
   bool textTransparent = false;
   const uint16_t textColor = parseHexColor(
-      obj.properties.textColor.isEmpty() ? "#ffffff" : obj.properties.textColor, &textTransparent);
+      obj.properties.textColor.isEmpty() ? "#000000" : obj.properties.textColor, &textTransparent);
   if (textTransparent || font == nullptr) return true;
 
   const int16_t fontAscent = getFontAscentById(obj.properties.fontId);
