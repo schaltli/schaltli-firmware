@@ -2809,11 +2809,88 @@ int ColorScreenRenderer::levelDragRects(int screenIndex, const String& markerTop
       if (arcLevelCentreRect(o, &rx[count], &ry[count], &rw[count], &rh[count])) count++;
       continue;
     }
-    if (count + 1 > max) return -1;
+    if (count + 2 > max) return -1;
+    if (!oldValue.isEmpty() && !newValue.isEmpty()) {
+      const int n = barLevelDragRects(o, oldValue, newValue, &rx[count], &ry[count], &rw[count], &rh[count]);
+      if (n > 0) {
+        count += n;
+        continue;
+      }
+    }
     rx[count] = o.x;
     ry[count] = o.y;
     rw[count] = o.width;
     rh[count] = o.height;
+    count++;
+  }
+  return count;
+}
+
+int ColorScreenRenderer::barLevelDragRects(const ScreenObject& obj, const String& oldValue, const String& newValue,
+                                           int16_t* rx, int16_t* ry, int16_t* rw, int16_t* rh) {
+  if (!objecttypes::isLevel(obj.type)) return -1;
+  const LevelLayout lay = levelshape::layout(obj, levelMetrics(obj));
+  if (!lay.track.valid()) return -1;
+  const bool vertical = levelshape::isVertical(obj);
+  const bool fromEnd = levelshape::fillsFromEnd(obj);
+
+  // Everything that can move between the two values, as a span along the bar.
+  int lo = 1 << 30, hi = -(1 << 30);
+  auto take = [&](int a, int b) {
+    if (a < lo) lo = a;
+    if (b > hi) hi = b;
+  };
+  for (int pass = 0; pass < 2; pass++) {
+    float percent = interpolateCalibration((pass == 0 ? oldValue : newValue).toFloat(),
+                                           obj.properties.calibrationPoints);
+    if (percent < 0.0f) percent = 0.0f;
+    if (percent > 100.0f) percent = 100.0f;
+    const int edge = levelshape::edgeFor(lay.track, vertical, fromEnd, percent);
+    take(edge, edge);
+    const LevelRect handle = levelshape::handleRect(obj, lay, percent);
+    if (handle.valid()) {
+      if (vertical) take(handle.y, handle.y + handle.h);
+      else take(handle.x, handle.x + handle.w);
+    }
+    LevelRect pointer;
+    bool pointsLeft = false;
+    if (levelshape::pointerRect(obj, lay, percent, pointer, pointsLeft)) {
+      if (vertical) take(pointer.y, pointer.y + pointer.h);
+      else take(pointer.x, pointer.x + pointer.w);
+    }
+  }
+  // The glow round the fill's end, the handle's gap and the soft edges.
+  const int pad = levelglow::glowPx(obj.properties.glow) + (vertical ? lay.track.w : lay.track.h) / 2 + 4;
+  lo -= pad;
+  hi += pad;
+
+  int count = 0;
+  if (vertical) {
+    const int y0 = lo < obj.y ? obj.y : lo;
+    const int y1 = hi > obj.y + obj.height ? obj.y + obj.height : hi;
+    if (y1 <= y0) return -1;
+    rx[count] = obj.x;
+    ry[count] = (int16_t)y0;
+    rw[count] = obj.width;
+    rh[count] = (int16_t)(y1 - y0);
+  } else {
+    const int x0 = lo < obj.x ? obj.x : lo;
+    const int x1 = hi > obj.x + obj.width ? obj.x + obj.width : hi;
+    if (x1 <= x0) return -1;
+    rx[count] = (int16_t)x0;
+    ry[count] = obj.y;
+    rw[count] = (int16_t)(x1 - x0);
+    rh[count] = obj.height;
+  }
+  count++;
+
+  // The numbers: the header line, or the number's own column.
+  const LevelRect* text = lay.hasHeader ? &lay.header : (lay.hasValue ? &lay.value : nullptr);
+  if (text != nullptr && text->valid() && levelshape::showsNumber(obj)) {
+    rx[count] = (int16_t)text->x;
+    ry[count] = (int16_t)text->y;
+    rw[count] = (int16_t)text->w;
+    rh[count] = (int16_t)text->h;
     count++;
   }
   return count;

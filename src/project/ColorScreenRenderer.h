@@ -172,6 +172,12 @@ public:
   // The middle of a ring where its numbers stand - both of them, the asked one
   // and the measured one under it - across the whole hole.
   bool arcLevelCentreRect(const ScreenObject& obj, int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH);
+  // A bar or slider going from oldValue to newValue: the stretch of it between
+  // the two positions - fill edge, handle or pointer, and the glow's end -
+  // across the whole object, and the header or number column beside it.
+  // Writes up to two rectangles, returns how many, or -1 where it cannot say.
+  int barLevelDragRects(const ScreenObject& obj, const String& oldValue, const String& newValue, int16_t* rx,
+                        int16_t* ry, int16_t* rw, int16_t* rh);
 
   bool renderScreen(int screenIndex, const String& pressedButtonId = "", const String& pendingSwitchId = "",
                      int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
