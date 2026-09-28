@@ -78,6 +78,12 @@ static ProjectConfig sample() {
   lone.properties.strokeColorDark = "#445566";
   s.objects.push_back(lone);
 
+  // A level's second accent, the end of its gradient (2026-09-28).
+  ScreenObject level;
+  level.properties.fillEndColor = "#1fa37a";
+  level.properties.fillEndColorDark = "#3ee08f";
+  s.objects.push_back(level);
+
   p.screens.push_back(s);
   return p;
 }
@@ -94,6 +100,7 @@ static bool same(const ProjectConfig& a, const ProjectConfig& b) {
         y.objects[4].children[0].children[0].properties.fillColor)) return false;
   if (!(x.objects[5].properties.strokeColor == y.objects[5].properties.strokeColor)) return false;
   if (!(x.objects[5].properties.strokeColorDark == y.objects[5].properties.strokeColorDark)) return false;
+  if (!(x.objects[6].properties.fillEndColor == y.objects[6].properties.fillEndColor)) return false;
   return true;
 }
 
@@ -117,6 +124,7 @@ int main() {
   expect(s.objects[3].properties.valueIconPairs[0].path == "/PROJECT/assets/p-dark.bmp", "a live icon's pair");
   expect(s.objects[4].children[0].children[0].properties.fillColor == "#2b2b2b", "a tab-control's child");
   expect(s.objects[5].properties.strokeColor == "#445566", "a lone XDark counts as X");
+  expect(s.objects[6].properties.fillEndColor == "#3ee08f", "a level's gradient end");
 
   themevariant::apply(p, true);
   expect(s.backgroundColor == "#15202b", "dark twice is still dark, not light again");

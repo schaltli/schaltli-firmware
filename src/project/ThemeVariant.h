@@ -40,6 +40,7 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
   f(p.borderColor, p.borderColorDark);
   f(p.textColor, p.textColorDark);
   f(p.fillColor, p.fillColorDark);
+  f(p.fillEndColor, p.fillEndColorDark);
   f(p.strokeColor, p.strokeColorDark);
   f(p.switchColor, p.switchColorDark);
   f(obj.path, obj.pathDark);

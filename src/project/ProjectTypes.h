@@ -114,6 +114,7 @@ struct ObjectProperties {
   String textColorDark;
   String colorDark;
   String fillColorDark;
+  String fillEndColorDark;
   String strokeColorDark;
   String switchColorDark;
   String textAlign;                       // "left", "center", "right"
@@ -142,6 +143,12 @@ struct ObjectProperties {
   // object, exactly as every project made before this did.
   String label;
   String fillColor;                       // Color of filled portion of bar
+  // Where the fill runs to along its scale, from fillColor (a theme's second
+  // accent); empty is a flat fill. And how far a glow reaches around it, in
+  // pixels; 0 is none. Both written by the export only for 24 bit
+  // (designer lib/themes.ts withLevelLook, LevelGlow.h).
+  String fillEndColor;
+  int glow = 0;
   std::vector<CalibrationPoint> calibrationPoints;
 
   // arc-level properties. Shares topic, displayValue, fillColor,

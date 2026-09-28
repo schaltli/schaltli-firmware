@@ -6,6 +6,7 @@
 #include "RenderProfile.h"
 #include <esp_cpu.h>
 #include "ArcRaster.h"
+#include "LevelGlow.h"
 #include "ArcSinTable.h"  // ARC_SIN_SCALE - Skala von ArcRaster::direction()
 #include <algorithm>
 
@@ -999,13 +1000,16 @@ String ColorScreenRenderer::levelSubFontId(const ScreenObject& obj) {
 // Sixteen sub-samples a pixel, mixed in 5/6/5 - the arc's rules exactly.
 // See the declaration in ColorScreenRenderer.h for what the order of the runs
 // means and why they all arrive in one call.
-void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto) {
+void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto,
+                                     const PillShading* shading) {
   std::vector<PillRaster::Band> bands;
   std::vector<ArcRaster::Rgb565> colours;
   std::vector<uint16_t> packed;
   // Not std::vector<bool>: that one is a bit field with a proxy reference, and
   // this is read once per band per pixel.
   std::vector<uint8_t> paints;
+  std::vector<uint8_t> graded;
+  graded.reserve(painted.size());
   bands.reserve(painted.size());
   colours.reserve(painted.size());
   packed.reserve(painted.size());
@@ -1017,11 +1021,39 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
     colours.push_back(ArcRaster::toRgb565(p.colour));
     packed.push_back(p.colour);
     paints.push_back(p.paints ? 1 : 0);
+    graded.push_back(p.graded && shading != nullptr ? 1 : 0);
   }
   if (bands.empty()) return;
 
-  const PillRaster::Box bounds = PillRaster::bandsBounds(bands);
+  PillRaster::Box bounds = PillRaster::bandsBounds(bands);
+  const bool glowing = shading != nullptr && shading->glowPx > 0;
+  if (glowing) {
+    // Out to where the glow may reach, and no further than the object -
+    // paint-pills.ts, bound for bound.
+    const int32_t x0 = shading->boxX > bounds.x - 8 ? shading->boxX : bounds.x - 8;
+    const int32_t y0 = shading->boxY > bounds.y - 8 ? shading->boxY : bounds.y - 8;
+    const int32_t bx1 = bounds.x + bounds.w + 8, by1 = bounds.y + bounds.h + 8;
+    const int32_t x1 = shading->boxX + shading->boxW < bx1 ? shading->boxX + shading->boxW : bx1;
+    const int32_t y1 = shading->boxY + shading->boxH < by1 ? shading->boxY + shading->boxH : by1;
+    PillRaster::Box grown;
+    grown.x = x0 < bounds.x ? x0 : bounds.x;
+    grown.y = y0 < bounds.y ? y0 : bounds.y;
+    grown.w = (x1 > grown.x ? x1 : grown.x) - grown.x;
+    grown.h = (y1 > grown.y ? y1 : grown.y) - grown.y;
+    bounds = grown;
+  }
   if (bounds.w <= 0 || bounds.h <= 0) return;
+
+  // A pixel's step along the track, and its colour in the gradient.
+  auto stepAlong = [&](int32_t along) {
+    int32_t j = along - shading->trackStart;
+    if (j > shading->trackLength - 1) j = shading->trackLength - 1;
+    if (j < 0) j = 0;
+    return shading->fromEnd ? shading->trackLength - 1 - j : j;
+  };
+  auto gradedAt = [&](int32_t along) {
+    return levelglow::gradient565(shading->from, shading->to, stepAlong(along), shading->trackLength);
+  };
 
   // Only the clipped cut-through, for the reason renderArcLevel gives at
   // length: pixelBands() samples every pixel sixteen times against every run,
@@ -1055,22 +1087,54 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
       // rounding per run would bias it several times over.
       int32_t r = 0, g = 0, b = 0;
       int32_t covered = 0;
+      int32_t claimed = 0;
       int inked = 0;
       size_t only = 0;
+      ArcRaster::Rgb565 onlyColour;
       for (size_t i = 0; i < bands.size(); i++) {
         const uint8_t count = counts[i];
+        claimed += count;
         // A run that paints nothing still claims its sub-samples - that is
         // what makes a hole a hole - it simply contributes none of them to the
         // mixture, so they fall to the background below like any other
         // uncovered sub-sample.
         if (count == 0 || paints[i] == 0) continue;
-        r += (int32_t)colours[i].r * count;
-        g += (int32_t)colours[i].g * count;
-        b += (int32_t)colours[i].b * count;
+        const ArcRaster::Rgb565 colour = graded[i] ? gradedAt(shading->vertical ? py : px) : colours[i];
+        r += (int32_t)colour.r * count;
+        g += (int32_t)colour.g * count;
+        b += (int32_t)colour.b * count;
         covered += count;
         inked++;
         only = i;
+        onlyColour = colour;
       }
+
+      // The glow, mixed into what already stands there - drawn back to front,
+      // whatever lies under the control is on the canvas already.
+      ArcRaster::Rgb565 mixHere = mix;
+      int32_t level = 0;
+      if (glowing && claimed < PillRaster::COVERAGE_MAX) {
+        const int32_t S = ArcRaster::SUBPIXEL_SCALE;
+        const int32_t x = px * S + S / 2, y = py * S + S / 2;
+        const int64_t d2 =
+            shading->vertical
+                ? levelglow::segmentDistance2(x, y, shading->cross, shading->a, shading->cross, shading->b)
+                : levelglow::segmentDistance2(x, y, shading->a, shading->cross, shading->b, shading->cross);
+        level = levelglow::levelFromDistance2(d2, shading->half);
+        if (level > shading->glowPx) level = 0;
+      }
+      if (level > 0) {
+        const int32_t along = shading->vertical ? py : px;
+        const int32_t clamped = shading->fromEnd ? (along > shading->edge ? along : shading->edge)
+                                                 : (along < shading->edge - 1 ? along : shading->edge - 1);
+        const ArcRaster::Rgb565 under = ArcRaster::toRgb565(canvas_->getPixel((int16_t)px, (int16_t)py));
+        mixHere = levelglow::blend565(under, gradedAt(clamped), levelglow::ALPHA[level]);
+        if (covered == 0) {
+          canvas_->drawPixel((int16_t)px, (int16_t)py, ArcRaster::packRgb565(mixHere));
+          continue;
+        }
+      }
+
       // Nothing of the control here. The pixel is left alone rather than
       // painted with the background: a pill has no square of its own to own,
       // so whatever is behind it - a box, an image - still shows through.
@@ -1084,14 +1148,15 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
       // ((16c + 8) / 16 == c). It stays because the rule is shared, and
       // because it skips the arithmetic on most of the control's pixels.
       if (inked == 1 && covered == PillRaster::COVERAGE_MAX) {
-        canvas_->drawPixel((int16_t)px, (int16_t)py, packed[only]);
+        canvas_->drawPixel((int16_t)px, (int16_t)py,
+                           graded[only] ? ArcRaster::packRgb565(onlyColour) : packed[only]);
         continue;
       }
 
       const int32_t rest = PillRaster::COVERAGE_MAX - covered;
-      r += (int32_t)mix.r * rest;
-      g += (int32_t)mix.g * rest;
-      b += (int32_t)mix.b * rest;
+      r += (int32_t)mixHere.r * rest;
+      g += (int32_t)mixHere.g * rest;
+      b += (int32_t)mixHere.b * rest;
       // All operands are non-negative, so a plain divide floors - the same
       // thing Math.floor does on the designer's side.
       const int32_t half = PillRaster::COVERAGE_MAX / 2;
@@ -1107,7 +1172,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
 // Below 24 bit nothing is softened, so nothing calls this. Defined all the
 // same, because a declaration without a definition is a link error waiting for
 // the first caller that forgets the gate.
-void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t) {}
+void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t, const PillShading*) {}
 #endif  // PILL_ANTIALIASED
 
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
@@ -1211,9 +1276,49 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     return band;
   };
 
+  // The theme's look where the fill is its accent (designer lib/themes.ts):
+  // the fill runs from fillColor to fillEndColor along the track, one step per
+  // pixel of the track, and a weak glow lies around the filled part. Only where
+  // the two ends differ - a gradient from a colour to itself is a flat fill.
+  // `glowPercent` is the fill's, or negative for no glow.
+  const String endHex =
+      obj.properties.fillEndColor.isEmpty() ? String() : materialcolors::applyDepth(obj.properties.fillEndColor);
+  const bool gradient = PILL_ANTIALIASED && !endHex.isEmpty() && !look.framed && !endHex.equalsIgnoreCase(fillHex);
+  auto shadingFor = [&](float glowPercent) {
+    PillShading s;
+    s.from = ArcRaster::toRgb565(fillColor);
+    s.to = ArcRaster::toRgb565(parseHexColor(endHex));
+    s.vertical = vertical;
+    s.fromEnd = levelshape::fillsFromEnd(obj);
+    s.trackStart = vertical ? lay.track.y : lay.track.x;
+    const int32_t length = vertical ? lay.track.h : lay.track.w;
+    s.trackLength = length > 1 ? length : 1;
+    const int32_t glowPx = levelglow::glowPx(obj.properties.glow);
+    if (glowPx > 0 && glowPercent > 0.0f) {
+      // Around the filled part: a capsule on the track's centre line from the
+      // track's own end to the fill's edge, half the thickness wide.
+      const int32_t S = ArcRaster::SUBPIXEL_SCALE;
+      s.glowPx = glowPx;
+      s.edge = levelshape::edgeFor(lay.track, vertical, s.fromEnd, glowPercent);
+      s.half = (vertical ? lay.track.w : lay.track.h) * S / 2;
+      s.cross = vertical ? lay.track.x * S + lay.track.w * S / 2 : lay.track.y * S + lay.track.h * S / 2;
+      const int32_t lo = (s.fromEnd ? s.edge : s.trackStart) * S;
+      const int32_t hi = (s.fromEnd ? s.trackStart + s.trackLength : s.edge) * S;
+      const int32_t p = lo + s.half, q = hi - s.half;
+      s.a = p < q ? p : q;
+      s.b = p < q ? q : p;
+      s.boxX = obj.x;
+      s.boxY = obj.y;
+      s.boxW = obj.width;
+      s.boxH = obj.height;
+    }
+    return s;
+  };
+
   auto paintBar = [&](const std::vector<LevelSegment>& runs, const LevelRect* handle,
-                      const PillRaster::Band* pointer) {
+                      const PillRaster::Band* pointer, float glowPercent) {
 #if PILL_ANTIALIASED
+    const PillShading shading = shadingFor(glowPercent);
     // A run's two ends: rounded where the track itself ends, square where
     // something cut it - the fill's edge, or the handle's gap. That is
     // Material's 2 dp inner corner taken to its limit (LevelShape.h).
@@ -1248,11 +1353,24 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
       band.rHigh = handle->r;
       // It lies ACROSS the bar, so its own long axis is the other one.
       band.vertical = !vertical;
-      painted.push_back(pillOf(band, handleColor));
+      uint16_t colour = handleColor;
+      // Where the fill runs from one colour to another, a handle a finger
+      // moves takes the colour of the fill where it stands.
+      if (gradient && isSettableLevel(obj)) {
+        const int32_t along = vertical ? handle->y + handle->h / 2 : handle->x + handle->w / 2;
+        int32_t j = along - shading.trackStart;
+        if (j > shading.trackLength - 1) j = shading.trackLength - 1;
+        if (j < 0) j = 0;
+        if (shading.fromEnd) j = shading.trackLength - 1 - j;
+        colour = ArcRaster::packRgb565(levelglow::gradient565(shading.from, shading.to, j, shading.trackLength));
+      }
+      painted.push_back(pillOf(band, colour));
     }
     for (const LevelSegment& seg : runs) {
       if (seg.isFill) {
-        painted.push_back(pillOf(bandOf(seg), fillColor));
+        PaintedPill fill = pillOf(bandOf(seg), fillColor);
+        fill.graded = gradient;
+        painted.push_back(fill);
         continue;
       }
       // The unfilled track: a body in its mixed colour, or - where that colour
@@ -1269,8 +1387,10 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
       if (levelshape::frameInner(seg, vertical, inner)) painted.push_back(pillOf(bandOf(inner), trackColor));
       painted.push_back(pillOf(bandOf(seg), fillColor));
     }
-    paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)));
+    paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)),
+               gradient ? &shading : nullptr);
 #else
+    (void)glowPercent;
     for (const LevelSegment& seg : runs) {
       if (seg.isFill) drawRun(seg, fillColor);
       else drawTrackRun(seg);
@@ -1324,7 +1444,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     drawHeader("", "", false);
     std::vector<LevelSegment> empty;
     empty.push_back(levelshape::emptyTrack(lay));
-    paintBar(empty, nullptr, nullptr);
+    paintBar(empty, nullptr, nullptr, -1.0f);
     return true;
   }
 
@@ -1375,7 +1495,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
 
   std::vector<LevelSegment> runs;
   levelshape::segments(obj, lay, fillPercentF, hasHandle ? &handle : nullptr, runs);
-  paintBar(runs, hasHandle ? &handle : nullptr, hasPointer ? &pointer : nullptr);
+  paintBar(runs, hasHandle ? &handle : nullptr, hasPointer ? &pointer : nullptr, fillPercentF);
 
   const bool asPercent = obj.properties.displayValue == "percentage";
   const String measured = asPercent ? String((int)(fillPercentF + 0.5f)) + "%" : valueStr;
@@ -1457,11 +1577,16 @@ static int32_t arcThicknessFor(const ScreenObject& obj, int32_t size) {
 }
 
 static int32_t arcInsetFor(const ScreenObject& obj, int32_t size, int32_t thickness) {
-  if (obj.properties.writeTopic.isEmpty() && obj.properties.setpointTopic.isEmpty()) return 0;
   // (11/4 t - t) / 2, rounded up: half the handle's overhang. Written as
   // (7t + 7) / 8 because C++'s integer division floors for these and the
-  // designer's Math.ceil does not.
-  const int32_t wanted = (thickness * 7 + 7) / 8;
+  // designer's Math.ceil does not. And room for the glow a theme lays around
+  // the fill (LevelGlow.h), which stays inside the object's box like
+  // everything else it draws - arcInset in the designer.
+  const bool canHaveHandle = !obj.properties.writeTopic.isEmpty() || !obj.properties.setpointTopic.isEmpty();
+  const int32_t handleRoom = canHaveHandle ? (thickness * 7 + 7) / 8 : 0;
+  const int32_t glowRoom = levelglow::glowPx(obj.properties.glow);
+  const int32_t wanted = handleRoom > glowRoom ? handleRoom : glowRoom;
+  if (wanted == 0) return 0;
   const int32_t room = size / 2 - thickness - 1;
   const int32_t inset = wanted < room ? wanted : room;
   return inset > 0 ? inset : 0;
@@ -1641,6 +1766,41 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   const ArcRaster::Rgb565 pointerColour = ArcRaster::toRgb565(parseHexColor(materialcolors::applyDepth(
       obj.properties.textColor.isEmpty() ? String("#000000") : obj.properties.textColor)));
 
+  // The theme's look for a fill that is its accent (designer lib/themes.ts):
+  // the fill runs from fillColor to fillEndColor along the scale, and a weak
+  // glow lies around it. Steps are counted from the scale's zero, whichever
+  // way it fills. One renderer, one task: the 1 KB of boundaries lives here
+  // rather than on the stack.
+  static ArcRaster::Gradient gradient;
+  const bool hasGradient = !obj.properties.fillEndColor.isEmpty() && !look.framed;
+  if (hasGradient) ArcRaster::makeGradient(start64, sweep64, &gradient);
+  const ArcRaster::Rgb565 endColour =
+      hasGradient ? ArcRaster::toRgb565(parseHexColor(materialcolors::applyDepth(obj.properties.fillEndColor)))
+                  : fillColour;
+  const int32_t lastStep = ArcRaster::stepOfOffset(filled64 > 1 ? filled64 - 1 : 0, sweep64);
+  const int32_t glowLevels = levelglow::glowPx(obj.properties.glow);
+  const bool hasGlow = glowLevels > 0 && filled64 > 0 && !noValue && !look.framed;
+  ArcRaster::Glow glow;
+  if (hasGlow) {
+    glow.rMid = ArcRaster::midRadius(size, thickness, inset);
+    glow.half = thickness * ArcRaster::SUBPIXEL_SCALE / 2;
+    glow.fill = geom.fill;
+    ArcRaster::pointAt(size, thickness, inset, fillStart64, &glow.endX[0], &glow.endY[0]);
+    ArcRaster::pointAt(size, thickness, inset, fillStart64 + filled64, &glow.endX[1], &glow.endY[1]);
+    glow.stepFrom = 0;
+    glow.stepTo = lastStep;
+    geom.glowReach = glowLevels * ArcRaster::SUBPIXEL_SCALE;
+  }
+  // A handle a finger moves takes the colour of the fill where it stands.
+  ArcRaster::Rgb565 handleFill = handleColour;
+  if (hasGradient && geom.hasHandle && isSettableLevel(obj)) {
+    handleFill = levelglow::gradient565(
+        fillColour, endColour,
+        ArcRaster::stepOfOffset(ArcRaster::sweepForPercent(sweep64, setpointPercent), sweep64),
+        ArcRaster::GRADIENT_STEPS);
+  }
+  const int32_t centre = size * ArcRaster::SUBPIXEL_SCALE / 2;
+
   // Nur den geclippten Ausschnitt durchrechnen. pixelBands() tastet jedes
   // Pixel 16-fach ab; auf einem 360er Ring sind das rund 380.000 Sektortests
   // pro Vollbild und damit gemessene 250ms. Beim Neuzeichnen eines
@@ -1694,13 +1854,46 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         pixelsSeen++;
       }
       const int32_t covered = bands.fill + bands.track + bands.handle + bands.pointer;
+      // The pixel's centre, in 1/8 pixel from the ring's centre.
+      const int32_t cx = px * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
+      const int32_t cy = py * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
+      const int32_t glowK =
+          hasGlow && covered < ArcRaster::COVERAGE_MAX ? ArcRaster::glowLevel(glow, cx, cy, glowLevels) : 0;
 
       // Nothing of the ring here: the pixel is left alone, which is what the
       // ring floating on the screen means - skip the draw, never mix.
-      if (covered == 0) continue;
+      if (covered == 0 && glowK == 0) continue;
 
-      const uint16_t mixed = ArcRaster::blendBands(fillColour, bands.fill, trackColour, bands.track, handleColour,
-                                                   bands.handle, pointerColour, bands.pointer, mix,
+      ArcRaster::Rgb565 base = mix;
+      if (glowK > 0) {
+        // The glow is mixed into what already stands here - the screen, an
+        // icon behind the ring, another control: drawn back to front, it is
+        // on the canvas already.
+        ArcRaster::Rgb565 glowColour = fillColour;
+        if (hasGradient) {
+          int32_t step = ArcRaster::gradientStep(gradient, cx, cy);
+          if (counterClockwise) step = ArcRaster::GRADIENT_STEPS - 1 - step;
+          if (step < glow.stepFrom) step = glow.stepFrom;
+          if (step > glow.stepTo) step = glow.stepTo;
+          glowColour = levelglow::gradient565(fillColour, endColour, step, ArcRaster::GRADIENT_STEPS);
+        }
+        const ArcRaster::Rgb565 under = ArcRaster::toRgb565(canvas_->getPixel(obj.x + px, obj.y + py));
+        base = levelglow::blend565(under, glowColour, levelglow::ALPHA[glowK]);
+        if (covered == 0) {
+          canvas_->drawPixel(obj.x + px, obj.y + py, ArcRaster::packRgb565(base));
+          continue;
+        }
+      }
+
+      ArcRaster::Rgb565 fillHere = fillColour;
+      if (hasGradient && bands.fill > 0) {
+        int32_t step = ArcRaster::gradientStep(gradient, cx, cy);
+        if (counterClockwise) step = ArcRaster::GRADIENT_STEPS - 1 - step;
+        if (step > lastStep) step = lastStep;
+        fillHere = levelglow::gradient565(fillColour, endColour, step, ArcRaster::GRADIENT_STEPS);
+      }
+      const uint16_t mixed = ArcRaster::blendBands(fillHere, bands.fill, trackColour, bands.track, handleFill,
+                                                   bands.handle, pointerColour, bands.pointer, base,
                                                    (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
       uint32_t d1 = profiling ? esp_cpu_get_cycle_count() : 0;
       canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
@@ -2616,6 +2809,8 @@ bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const Strin
     const int32_t half = ArcRaster::handleBand(size, thickness, inset, start64, sweep64).halfLength;
     PAD += (half + ArcRaster::SUBPIXEL_SCALE - 1) / ArcRaster::SUBPIXEL_SCALE;
   }
+  // The glow round the fill's moving end reaches as far again.
+  PAD += levelglow::glowPx(obj.properties.glow);
   minX -= PAD; minY -= PAD; maxX += PAD; maxY += PAD;
   if (minX < 0) minX = 0;
   if (minY < 0) minY = 0;

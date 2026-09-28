@@ -386,6 +386,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.textColorDark = propsJson["textColorDark"] | "";
   props.colorDark = propsJson["colorDark"] | "";
   props.fillColorDark = propsJson["fillColorDark"] | "";
+  props.fillEndColorDark = propsJson["fillEndColorDark"] | "";
   props.strokeColorDark = propsJson["strokeColorDark"] | "";
   props.switchColorDark = propsJson["switchColorDark"] | "";
   props.textAlign = propsJson["textAlign"] | "left";
@@ -421,6 +422,8 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.displayValue = propsJson["displayValue"] | "none";
   props.label = propsJson["label"] | "";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
+  props.fillEndColor = propsJson["fillEndColor"] | "";
+  props.glow = propsJson["glow"] | 0;
   props.barThickness = propsJson["thickness"] | (propsJson["barThickness"] | 0);
   props.switchStyle = propsJson["switchStyle"] | "filled";
   props.switchColor = propsJson["switchColor"] | "";

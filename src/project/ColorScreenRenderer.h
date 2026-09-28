@@ -9,6 +9,7 @@
 #include "ColorAssetLoader.h"
 #include "LevelShape.h"
 #include "PillRaster.h"
+#include "ArcRaster.h"
 #include <functional>
 
 // Color (RGB565) counterpart of schaltli-eink's ScreenRenderer -
@@ -58,6 +59,35 @@ struct PaintedPill {
   PillRaster::Band band;
   uint16_t colour = 0;
   bool paints = true;
+  // Painted in the gradient of the PillShading handed to paintPills rather
+  // than in `colour` - a fill that runs from one colour to another along its
+  // bar (LevelGlow.h).
+  bool graded = false;
+};
+
+// A bar's fill as a gradient, and the glow around its filled part - what
+// PaintedPill.colourAt and PillGlow are in the designer's paint-pills.ts, as
+// numbers rather than callbacks. Positions are whole pixels along the track's
+// axis, the glow's capsule in 1/8 pixel.
+struct PillShading {
+  ArcRaster::Rgb565 from;
+  ArcRaster::Rgb565 to;
+  bool vertical = false;
+  bool fromEnd = false;
+  int32_t trackStart = 0;
+  int32_t trackLength = 1;
+  // The glow: none where glowPx is 0.
+  int32_t glowPx = 0;
+  int32_t edge = 0;
+  int32_t half = 0;
+  int32_t cross = 0;
+  int32_t a = 0;
+  int32_t b = 0;
+  // The object's own box, which the glow never leaves.
+  int32_t boxX = 0;
+  int32_t boxY = 0;
+  int32_t boxW = 0;
+  int32_t boxH = 0;
 };
 
 class ColorScreenRenderer {
@@ -230,7 +260,8 @@ private:
   //
   // Only ever called where PILL_ANTIALIASED is 1. Below 24 bit the callers
   // keep their whole-pixel path; see PillRaster.h for why that is a decision.
-  void paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto);
+  void paintPills(const std::vector<PaintedPill>& painted, uint16_t mixInto,
+                  const PillShading* shading = nullptr);
 
   // The background renderScreen() filled before drawing any object.
   uint16_t currentScreenBg_ = 0xFFFF;

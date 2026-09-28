@@ -278,6 +278,88 @@ bool pointerBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle64
   return true;
 }
 
+int64_t diamond(int64_t ux, int64_t uy) {
+  const int64_t ONE = 65536;
+  if (ux == 0 && uy == 0) return 0;
+  // Every quotient below has a non-negative numerator and a positive
+  // denominator, so C++'s truncation is the designer's Math.floor.
+  if (uy >= 0) {
+    if (ux >= 0) return (uy * ONE) / (ux + uy);
+    return ONE + (-ux * ONE) / (-ux + uy);
+  }
+  if (ux < 0) return 2 * ONE + (-uy * ONE) / (-ux - uy);
+  return 3 * ONE + (ux * ONE) / (ux - uy);
+}
+
+static int64_t diamondFrom(int32_t sx, int32_t sy, int32_t x, int32_t y) {
+  return diamond((int64_t)sx * x + (int64_t)sy * y, (int64_t)sx * y - (int64_t)sy * x);
+}
+
+void makeGradient(int32_t start64, int32_t sweep64, Gradient* out) {
+  direction(start64, &out->sx, &out->sy);
+  for (int32_t i = 1; i < GRADIENT_STEPS; i++) {
+    int32_t dx = 0, dy = 0;
+    // floor, as the designer's Math.floor: both operands non-negative.
+    direction(start64 + (int32_t)(((int64_t)sweep64 * i) / GRADIENT_STEPS), &dx, &dy);
+    out->bounds[i - 1] = diamondFrom(out->sx, out->sy, dx, dy);
+  }
+  if (sweep64 >= FULL_TURN) {
+    out->end = 4 * 65536;
+  } else {
+    int32_t ex = 0, ey = 0;
+    direction(start64 + sweep64, &ex, &ey);
+    out->end = diamondFrom(out->sx, out->sy, ex, ey);
+  }
+}
+
+int32_t gradientStep(const Gradient& g, int32_t x, int32_t y) {
+  const int64_t p = diamondFrom(g.sx, g.sy, x, y);
+  if (p > g.end) return (p - g.end > 4 * 65536 - p) ? 0 : GRADIENT_STEPS - 1;
+  int32_t lo = 0, hi = GRADIENT_STEPS - 1;
+  while (lo < hi) {
+    const int32_t mid = (lo + hi) >> 1;
+    if (g.bounds[mid] <= p) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+int32_t stepOfOffset(int32_t offset64, int32_t sweep64) {
+  if (sweep64 <= 0) return 0;
+  int32_t s = (int32_t)(((int64_t)offset64 * GRADIENT_STEPS) / sweep64);
+  if (s < 0) s = 0;
+  if (s > GRADIENT_STEPS - 1) s = GRADIENT_STEPS - 1;
+  return s;
+}
+
+int32_t glowLevel(const Glow& g, int32_t x, int32_t y, int32_t levels) {
+  const int64_t d2 = (int64_t)x * x + (int64_t)y * y;
+  int32_t best = 0;
+  if (inSector(g.fill, x, y)) {
+    for (int32_t k = 1; k <= levels; k++) {
+      const int64_t outer = g.rMid + g.half + k * 8;
+      const int64_t inner = g.rMid - g.half - k * 8;
+      if (d2 < outer * outer && (inner <= 0 || d2 >= inner * inner)) {
+        best = k;
+        break;
+      }
+    }
+  }
+  for (int i = 0; i < 2; i++) {
+    const int64_t dx = x - g.endX[i], dy = y - g.endY[i];
+    const int64_t c2 = dx * dx + dy * dy;
+    const int32_t limit = best == 0 ? levels : best - 1;
+    for (int32_t k = 1; k <= limit; k++) {
+      const int64_t r = g.half + k * 8;
+      if (c2 < r * r) {
+        best = k;
+        break;
+      }
+    }
+  }
+  return best;
+}
+
 // How far out anything can reach: the handle past the ring's edge, or a
 // pointer out to its base. Math.max(rOuter + reach, tip + length + 1) in the
 // designer's arcPixelBands.
@@ -298,8 +380,12 @@ RowSpan rowSpan(const RingGeometry& geom, int32_t py) {
   // allow for it - the same widening pixelBands() makes before its own two
   // short cuts, or this would throw away the very pixels it overhangs into.
   const int32_t reach = geom.hasHandle ? geom.handle.halfLength : 0;
-  const int32_t rReachOuter = outerReach(geom, rOuter, reach);
-  const int32_t rReachInner = (rInner - reach) > 0 ? (rInner - reach) : 0;
+  // A glow reaches beyond the band on both sides; the renderer decides it,
+  // but only visits the pixels this span lets through.
+  int32_t rReachOuter = outerReach(geom, rOuter, reach);
+  if (rOuter + geom.glowReach > rReachOuter) rReachOuter = rOuter + geom.glowReach;
+  const int32_t innerReach = reach > geom.glowReach ? reach : geom.glowReach;
+  const int32_t rReachInner = (rInner - innerReach) > 0 ? (rInner - innerReach) : 0;
   const int32_t rOuter2 = rReachOuter > 0 ? rReachOuter * rReachOuter : 0;
   const int32_t rInner2 = rReachInner * rReachInner;
 

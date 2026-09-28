@@ -176,6 +176,10 @@ struct RingGeometry {
   Handle handle;
   bool hasPointer = false;
   Pointer pointer;
+  // How far a glow reaches beyond the band on either side, in 1/8 pixel - 0
+  // without one. Only rowSpan() needs it: the renderer decides the glow
+  // itself (glowLevel), but has to be walked over the pixels it falls on.
+  int32_t glowReach = 0;
   // The track is drawn as its own outline, one pixel wide, instead of as a
   // body - for a panel that cannot show the mixed colour the track would
   // otherwise be, which on this device is every panel. LevelShape.h answers
@@ -253,6 +257,36 @@ void pointAt(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, in
 Caps caps(int32_t size, int32_t thickness, int32_t inset, int32_t start64, int32_t sweep64);
 Handle handleBand(int32_t size, int32_t thickness, int32_t inset, int32_t angle64, int32_t sweep64);
 bool inPointer(const Pointer& p, int32_t x, int32_t y);
+
+// A ring whose fill runs from one colour to another along its scale
+// (designer lib/arc-raster.ts, "gradient and glow"): a point's step out of
+// GRADIENT_STEPS, decided by the "diamond" pseudo-angle of the point in the
+// start ray's frame - integers only, no atan.
+static const int32_t GRADIENT_STEPS = 128;
+struct Gradient {
+  int32_t sx = 0;
+  int32_t sy = 0;
+  int64_t bounds[GRADIENT_STEPS - 1];
+  // The scale's end; a point beyond it lies in the gap and takes the nearer end.
+  int64_t end = 0;
+};
+int64_t diamond(int64_t ux, int64_t uy);
+void makeGradient(int32_t start64, int32_t sweep64, Gradient* out);
+int32_t gradientStep(const Gradient& g, int32_t x, int32_t y);
+int32_t stepOfOffset(int32_t offset64, int32_t sweep64);
+
+// The glow around a ring's fill: radially along the filled sector and round
+// its two ends, in 1/8 pixel from the centre.
+struct Glow {
+  int32_t rMid = 0;
+  int32_t half = 0;
+  Sector fill;
+  int32_t endX[2] = {0, 0};
+  int32_t endY[2] = {0, 0};
+  int32_t stepFrom = 0;
+  int32_t stepTo = 0;
+};
+int32_t glowLevel(const Glow& g, int32_t x, int32_t y, int32_t levels);
 // A gauge's pointer at angle64: outside the ring, its tip two pixels off the
 // band's outer edge, in the room the inset keeps. Sized by the bar's rule -
 // two thirds of the thickness, a base as wide, shrunk into the room there is

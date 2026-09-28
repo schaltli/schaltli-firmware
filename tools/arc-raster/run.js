@@ -40,6 +40,9 @@
 //      with exhaustive sampling, and rowSpan never drops a covered pixel.
 //      Those two are firmware-only optimisations with no counterpart in the
 //      designer, so the golden cannot see them.
+//   3. glow - a ring's gradient step and glow level per recorded pixel, and
+//      the colours the two mix (the golden's "glowCases" and "glowColours",
+//      2026-09-28); and that rowSpan, widened by the glow, drops none of it.
 //
 // Needs a desktop C++ compiler. On this machine that is the Visual Studio
 // Build Tools; g++ or clang++ on PATH are used instead when present. With
@@ -146,6 +149,7 @@ function build(name) {
 
 const goldenExe = build("golden");
 const selftestExe = build("selftest");
+const glowExe = build("glow");
 
 // --- the cases --------------------------------------------------------------
 
@@ -310,6 +314,55 @@ for (const g of swept) {
   selfCheck(g, `framed ${g.size}x${g.thickness} fill=${g.fillSweep64 / DEG}`, true);
 }
 console.log(`  ok   ${swept.length} swept framed geometries`);
+
+// --- 3: gradient and glow ---------------------------------------------------
+
+console.log("\nGradient and glow against the designer's recording:");
+if (!recorded.glowCases || !recorded.glowColours) {
+  console.log("  FAIL the golden file has no glow cases - regenerate it (build-arc-golden.js)");
+  failures++;
+} else {
+  for (const c of recorded.glowCases) {
+    const header = [c.size, c.thickness, c.inset, c.start64, c.sweep64, c.fromEnd ? 1 : 0, c.filled64, c.levels,
+      c.pixels.length].join(" ");
+    fs.writeFileSync(CASE_FILE, header + "\n" + c.pixels.map((p) => `${p[0]} ${p[1]}`).join("\n") + "\n");
+    const r = spawnSync(glowExe, ["ring", CASE_FILE], { encoding: "utf8", maxBuffer: 1 << 28 });
+    if (r.status !== 0) {
+      console.log(`  FAIL ${c.name}: exit ${r.status} ${(r.stderr || "").trim()}`);
+      failures++;
+      continue;
+    }
+    const lines = r.stdout.trim().split(/\r?\n/);
+    let bad = 0;
+    let first = "";
+    for (let i = 0; i < c.pixels.length; i++) {
+      const [step, level] = (lines[i] || "").split(" ").map(Number);
+      if (step !== c.step[i] || level !== c.level[i]) {
+        if (bad === 0) first = `px=(${c.pixels[i]}) got ${step}/${level}, want ${c.step[i]}/${c.level[i]}`;
+        bad++;
+      }
+    }
+    if (bad) {
+      console.log(`  FAIL ${c.name}: ${bad} of ${c.pixels.length} pixels differ\n        first ${first}`);
+      failures++;
+    } else {
+      console.log(`  ok   ${c.name}`);
+    }
+  }
+  const samples = recorded.glowColours;
+  fs.writeFileSync(
+    CASE_FILE,
+    samples.map((q) => [...q.from, ...q.to, q.step, q.steps, q.alpha, ...q.under].join(" ")).join("\n") + "\n",
+  );
+  const out = execFileSync(glowExe, ["colour", CASE_FILE], { encoding: "utf8" }).trim().split(/\r?\n/);
+  const wrong = samples.filter((q, i) => out[i] !== [...q.gradient, ...q.blended].join(" "));
+  if (wrong.length) {
+    console.log(`  FAIL ${wrong.length} of ${samples.length} colour samples differ`);
+    failures++;
+  } else {
+    console.log(`  ok   ${samples.length} colour samples`);
+  }
+}
 
 console.log(
   failures === 0

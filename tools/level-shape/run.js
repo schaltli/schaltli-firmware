@@ -156,6 +156,7 @@ function writeCase(input, metrics) {
         word(props.writeTopic),
         word(props.setpointTopic),
         props.fontSize ?? 0,
+        props.glow ?? 0,
       ].join(" "),
       [metrics.ascent, metrics.descent, metrics.capHeight].join(" "),
       typeof props.label === "string" ? props.label : "",

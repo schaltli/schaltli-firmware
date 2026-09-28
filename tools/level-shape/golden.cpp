@@ -6,7 +6,7 @@
 //   line 1: type x y width height
 //   line 2: percent setpointPercent          (setpoint < 0 means "none")
 //   line 3: fillColor background displayValue barDirection barThickness
-//           hasIcon writeTopic setpointTopic fontSize   ("-" for empty)
+//           hasIcon writeTopic setpointTopic fontSize glow   ("-" for empty)
 //   line 4: ascent descent capHeight
 //   line 5: the label, as the whole rest of the line ("" for none)
 //
@@ -70,11 +70,11 @@ int main(int argc, char** argv) {
   const String background = readWord(in);
   const String displayValue = readWord(in);
   const String barDirection = readWord(in);
-  int barThickness = 0, hasIconFlag = 0, fontSizeProp = 0;
+  int barThickness = 0, hasIconFlag = 0, fontSizeProp = 0, glowProp = 0;
   in >> barThickness >> hasIconFlag;
   const String writeTopic = readWord(in);
   const String setpointTopic = readWord(in);
-  in >> fontSizeProp;
+  in >> fontSizeProp >> glowProp;
 
   LevelFontMetrics metrics;
   in >> metrics.ascent >> metrics.descent >> metrics.capHeight;
@@ -101,6 +101,7 @@ int main(int argc, char** argv) {
   obj.properties.barThickness = barThickness;
   obj.properties.writeTopic = writeTopic;
   obj.properties.setpointTopic = setpointTopic;
+  obj.properties.glow = glowProp;
   obj.properties.label = String(label.c_str());
   if (fontSizeProp > 0) obj.properties.fontSize = fontSizeProp;
 

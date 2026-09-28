@@ -272,7 +272,11 @@ inline LevelLayout layout(const ScreenObject& obj, const LevelFontMetrics& m) {
 
   const int thick = thickness(obj);
   const int across = vertical ? lay.bar.w : lay.bar.h;
-  const int wanted = hasHandle(obj) ? handleLength(thick) : thick;
+  // Room for a glow on both sides of the track as well (LevelGlow.h), which
+  // a handle's own room already gives where there is a handle.
+  const int handleOrTrack = hasHandle(obj) ? handleLength(thick) : thick;
+  const int glowRoom = thick + 2 * (obj.properties.glow > 8 ? 8 : (obj.properties.glow > 0 ? obj.properties.glow : 0));
+  const int wanted = handleOrTrack > glowRoom ? handleOrTrack : glowRoom;
   int size = wanted < across ? wanted : across;
   if (size < 0) size = 0;
   const int offset = (!vertical && lay.hasHeader) ? 0 : (across - size) / 2;
