@@ -1314,7 +1314,9 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
     rawMarker = askedValue_;
   } else if (!obj.properties.setpointTopic.isEmpty()) {
     rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
-  } else if (!obj.properties.writeTopic.isEmpty()) {
+  } else if (isSettableLevel(obj) && !obj.properties.writeTopic.isEmpty()) {
+    // Only a slider rests a handle on its value - a bar never, whatever
+    // topics it still carries.
     rawMarker = valueStr;
   }
   String trimmedMarker = rawMarker;
@@ -1459,10 +1461,6 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // here first, otherwise a setpoint topic's reported value. Am Topic, nicht am
   // Objekt: zwei Regler auf einem Dimmer sind ein Wert, und beide zeigen, was
   // von ihm verlangt wurde (Entscheidung 6c).
-  //
-  // Deliberately without the bar's fallback to the measured value itself: the
-  // handle would then appear on a ring the moment a value arrived, and a ring
-  // that reserved no room for one draws it outside its own rectangle.
   String rawMarker;
   if (!noValue && canHaveHandle) {
     const String markerTopic =
@@ -1471,6 +1469,15 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
       rawMarker = askedValue_;
     } else if (!obj.properties.setpointTopic.isEmpty()) {
       rawMarker = projectLoader_.getTopicValue(obj.properties.setpointTopic);
+    } else if (isSettableLevel(obj) && !obj.properties.writeTopic.isEmpty()) {
+      // A dial that can be set rests its handle on the reported value when
+      // nothing is asked, as a slider does: the handle is what says it can be
+      // moved. Until 2026-09-28 a ring left that fallback out, for fear of a
+      // handle standing outside a ring that reserved no room - which the
+      // can-have-handle test above already rules out: only a ring with a write or
+      // setpoint topic gets here, and such a ring reserves the room. A gauge
+      // never rests one, whatever topics it still carries.
+      rawMarker = valueStr;
     }
   }
   String trimmedMarker = rawMarker;
