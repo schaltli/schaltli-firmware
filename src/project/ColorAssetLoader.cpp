@@ -1,6 +1,7 @@
 #include "ColorAssetLoader.h"
 #include "RenderProfile.h"
 #include <LittleFS.h>
+#include <esp_heap_caps.h>
 #include <vector>
 
 namespace ColorAssetLoader {
@@ -47,6 +48,45 @@ size_t bmpCacheBytes = 0;
 // waere 259KB und verdraengt genau die kleinen Symbole, um die es geht.
 const size_t BMP_CACHE_MAX_ENTRY = 32 * 1024;
 const size_t BMP_CACHE_MAX_TOTAL = 192 * 1024;
+
+// Ausser mit PSRAM, das alle drei Boards haben: dort passt auch ein Bild, das
+// den ganzen Screen bedeckt - seit 2026-09-28 der Weg, einem Screen mehr als
+// eine Farbe hinterzulegen (designer #16). Ungecacht las jede Aenderung eines
+// Werts darueber das ganze Bild neu aus dem Flash, 260 KB auf dem Knob und
+// 770 KB auf dem 4.3B, bis zehnmal pro Sekunde beim Ziehen eines Dimmers
+// (designer #23). Grosse Eintraege kommen nur, wenn der Speicher wirklich frei
+// ist, mit Reserve fuer alles andere.
+const size_t BMP_CACHE_MAX_ENTRY_PSRAM = 2 * 1024 * 1024;
+const size_t BMP_CACHE_MAX_TOTAL_PSRAM = 4 * 1024 * 1024;
+const size_t BMP_CACHE_PSRAM_RESERVE = 512 * 1024;
+
+bool mayCache(size_t bytes) {
+  if (bytes <= BMP_CACHE_MAX_ENTRY && bmpCacheBytes + bytes <= BMP_CACHE_MAX_TOTAL) return true;
+  if (!psramFound()) return false;
+  if (bytes > BMP_CACHE_MAX_ENTRY_PSRAM || bmpCacheBytes + bytes > BMP_CACHE_MAX_TOTAL_PSRAM) return false;
+  return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) >= bytes + BMP_CACHE_PSRAM_RESERVE;
+}
+
+// Welche Zeilen und Spalten eines Bilds bei (x, y) auf dem Canvas ueberhaupt
+// sichtbar sind: das Bild geschnitten mit dem Clip und dem Canvas selbst.
+// Neu gezeichnet wird meist nur ein kleiner Ausschnitt, und drawPixel()
+// verwirft zwar alles ausserhalb - aber erst, nachdem jedes Pixel des ganzen
+// Bilds dafuer angefasst wurde. Die Grenzen sind halboffen: [c0, c1), [r0, r1).
+bool visibleSpan(const ClippedCanvas16* canvas, int16_t x, int16_t y, int32_t w, int32_t h, int32_t& c0,
+                 int32_t& c1, int32_t& r0, int32_t& r1) {
+  int32_t left = 0, top = 0, right = canvas->width(), bottom = canvas->height();
+  if (canvas->clipActive()) {
+    left = canvas->clipX();
+    top = canvas->clipY();
+    right = left + canvas->clipW();
+    bottom = top + canvas->clipH();
+  }
+  c0 = left - x > 0 ? left - x : 0;
+  r0 = top - y > 0 ? top - y : 0;
+  c1 = right - x < w ? right - x : w;
+  r1 = bottom - y < h ? bottom - y : h;
+  return c0 < c1 && r0 < r1;
+}
 
 // Returns the cached raw grayscale bytes for path, reading+caching from
 // LittleFS on first request for that path. nullptr if the file can't be
@@ -108,9 +148,11 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
   for (const auto& hit : bmpCache) {
     if (hit.path != path) continue;
     RenderProfile::Scope s("  bmp blit (cached)");
+    int32_t c0, c1, r0, r1;
+    if (!visibleSpan(canvas, x, y, hit.width, hit.height, c0, c1, r0, r1)) return true;
     const uint16_t* px = hit.pixels.data();
-    for (int32_t row = 0; row < hit.height; row++) {
-      for (int32_t col = 0; col < hit.width; col++) {
+    for (int32_t row = r0; row < r1; row++) {
+      for (int32_t col = c0; col < c1; col++) {
         canvas->drawPixel(x + col, y + row, px[row * hit.width + col]);
       }
     }
@@ -194,7 +236,7 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
   // Beim ersten Zeichnen gleich mitschreiben, statt die Datei spaeter ein
   // zweites Mal zu lesen.
   const size_t braucht = (size_t)width * (size_t)height * sizeof(uint16_t);
-  const bool cachen = braucht <= BMP_CACHE_MAX_ENTRY && bmpCacheBytes + braucht <= BMP_CACHE_MAX_TOTAL;
+  const bool cachen = mayCache(braucht);
   BmpCacheEntry neu;
   if (cachen) {
     neu.path = path;
@@ -203,12 +245,26 @@ bool drawBMPToCanvas(ClippedCanvas16* canvas, const String& path, int16_t x, int
     neu.pixels.resize((size_t)width * (size_t)height);
   }
 
-  for (int32_t row = 0; row < height; row++) {
+  // Wird das Bild gecacht, einmal ganz gelesen. Sonst nur die Zeilen und
+  // Spalten, die der Ausschnitt braucht - der Rest des Bilds kostet dann
+  // nichts, auch kein Lesen aus dem Flash.
+  int32_t c0 = 0, c1 = width, r0 = 0, r1 = height;
+  const bool sichtbar = visibleSpan(canvas, x, y, width, height, c0, c1, r0, r1);
+  if (cachen) {
+    c0 = 0;
+    c1 = width;
+    r0 = 0;
+    r1 = height;
+  } else if (!sichtbar) {
+    r1 = r0;
+  }
+
+  for (int32_t row = r0; row < r1; row++) {
     int32_t readRow = flip ? (height - 1 - row) : row;
     bmpFile.seek(dataOffset + (readRow * rowSize));
     bmpFile.readBytes((char*)rowBuffer, rowSize);
 
-    for (int32_t col = 0; col < width; col++) {
+    for (int32_t col = c0; col < c1; col++) {
       uint16_t rgb565;
       if (bpp == 24) {
         uint8_t b = rowBuffer[col * 3];
@@ -245,8 +301,10 @@ bool drawGrayscaleMaskToCanvas(ClippedCanvas16* canvas, const String& path, int1
   uint16_t fgR = (fgColor >> 11) & 0x1F, fgG = (fgColor >> 5) & 0x3F, fgB = fgColor & 0x1F;
   uint16_t bgR = (bgColor >> 11) & 0x1F, bgG = (bgColor >> 5) & 0x3F, bgB = bgColor & 0x1F;
 
-  for (int32_t row = 0; row < entry->height; row++) {
-    for (int32_t col = 0; col < entry->width; col++) {
+  int32_t c0, c1, r0, r1;
+  if (!visibleSpan(canvas, x, y, entry->width, entry->height, c0, c1, r0, r1)) return true;
+  for (int32_t row = r0; row < r1; row++) {
+    for (int32_t col = c0; col < c1; col++) {
       uint8_t gray = entry->gray[(size_t)row * entry->width + col];  // 0 = full fgColor, 255 = full bgColor (see convertToGrayscale())
       if (gray == 255) continue;  // fully background - skip, the tablet fill already drawn there is correct as-is
       uint16_t r = (fgR * (255 - gray) + bgR * gray) / 255;

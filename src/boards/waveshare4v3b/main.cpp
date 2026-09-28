@@ -855,6 +855,38 @@ static void setupNetworking()
       out += "\n" + PanelBenchmark::run(panel.back(), canvas->getBuffer(), PANEL_W, PANEL_H);
       renderAndPresent("after benchmark");
     }
+    else if (setArg.startsWith("regionbench=") && canvas && renderer)
+    {
+      // ?set=regionbench=x,y,w,h: what redrawing one rectangle of the current
+      // screen costs - the path a value change takes - first call and the
+      // best of five after it. Put in for a screen-sized icon behind a live
+      // value (designer #23): the first call may fill the image cache, every
+      // later one is what a dimmer being dragged over it pays each time.
+      int v[4] = {0, 0, 0, 0};
+      String rest = setArg.substring(String("regionbench=").length());
+      for (int i = 0; i < 4; i++)
+      {
+        const int comma = rest.indexOf(',');
+        v[i] = (comma < 0 ? rest : rest.substring(0, comma)).toInt();
+        rest = comma < 0 ? String("") : rest.substring(comma + 1);
+      }
+      uint32_t t0 = micros();
+      renderer->renderScreenRegion(currentScreen, v[0], v[1], v[2], v[3]);
+      const uint32_t first = micros() - t0;
+      uint32_t best = UINT32_MAX, worst = 0;
+      for (int i = 0; i < 5; i++)
+      {
+        t0 = micros();
+        renderer->renderScreenRegion(currentScreen, v[0], v[1], v[2], v[3]);
+        const uint32_t d = micros() - t0;
+        if (d < best) best = d;
+        if (d > worst) worst = d;
+      }
+      renderAndPresent("after regionbench");
+      out += "\nregionbench " + String(v[0]) + "," + String(v[1]) + " " + String(v[2]) + "x" + String(v[3]) +
+             ": first " + String(first / 1000.0f, 1) + " ms, best " + String(best / 1000.0f, 1) + " ms, worst " +
+             String(worst / 1000.0f, 1) + " ms\n";
+    }
     else if (setArg == "render=1" && canvas && renderer)
     {
       // What a value change actually costs, measured before anything is
