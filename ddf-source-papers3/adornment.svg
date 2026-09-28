@@ -29,14 +29,71 @@
   download mode, so there is nothing a screen design could bind to
   (decision 9 of the 2026-09-13 PaperS3 grilling).
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="624" viewBox="0 0 1120 624">
-  <path
-    fill-rule="evenodd"
-    fill="#d4d4d4"
-    stroke="#9a9a9a"
-    stroke-width="2"
-    d="M18,1 H1102 A17,17 0 0 1 1119,18 V606 A17,17 0 0 1 1102,623 H18 A17,17 0 0 1 1,606 V18 A17,17 0 0 1 18,1 Z
-       M80,42 H1040 V582 H80 Z"
-  />
-  <rect id="screen" x="80" y="42" width="960" height="540" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="1120" height="624" viewBox="0 0 1120 624">
+  <defs>
+    <!-- Case: light plastic lit from above, a shade darker at the bottom. -->
+    <linearGradient id="case-shade" x1="0" y1="0" x2="0" y2="624" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#eeeeee" />
+      <stop offset="1" stop-color="#c8c8c8" />
+    </linearGradient>
+    <!-- Panel surround: the e-paper sits a little below the case, so its
+         border is in shadow at the top and catches light at the bottom. -->
+    <linearGradient id="panel-recess" x1="0" y1="30" x2="0" y2="594" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#b4b4b4" />
+      <stop offset="0.12" stop-color="#bfbfbf" />
+      <stop offset="1" stop-color="#d6d6d6" />
+    </linearGradient>
+    <linearGradient id="rim-light" x1="0" y1="0" x2="0" y2="624" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95" />
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0.25" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Case with the screen punched out. Outer subpath: the rounded shell,
+       corners 17px. Inner subpath: the active area at 80,42, 960x540, wound
+       so evenodd removes it. No stroke on this path: a stroke would run
+       along the hole's edge too and paint into the screen. -->
+  <path id="case"
+        fill-rule="evenodd"
+        fill="url(#case-shade)"
+        d="M18,0 H1102 A18,18 0 0 1 1120,18 V606 A18,18 0 0 1 1102,624 H18 A18,18 0 0 1 0,606 V18 A18,18 0 0 1 18,0 Z
+           M80,42 H1040 V582 H80 Z" />
+
+  <!-- Outline, so the light case holds its shape on a light canvas; inset
+       by half its width so nothing crosses the document edge. -->
+  <path id="case-outline"
+        fill="none"
+        stroke="#9a9a9a"
+        stroke-width="1.5"
+        d="M18,0.75 H1102 A17.25,17.25 0 0 1 1119.25,18 V606 A17.25,17.25 0 0 1 1102,623.25 H18
+           A17.25,17.25 0 0 1 0.75,606 V18 A17.25,17.25 0 0 1 18,0.75 Z" />
+  <!-- Rim highlight just inside the outline: bright along the top,
+       fading out towards the bottom. -->
+  <path id="case-rim"
+        fill="none"
+        stroke="url(#rim-light)"
+        stroke-width="1.5"
+        d="M18,2.25 H1102 A15.75,15.75 0 0 1 1117.75,18 V606 A15.75,15.75 0 0 1 1102,621.75 H18
+           A15.75,15.75 0 0 1 2.25,606 V18 A15.75,15.75 0 0 1 18,2.25 Z" />
+
+  <!-- The e-paper panel's own border, 12px around the active area with
+       slightly rounded outer corners. A ring (evenodd), not a rect, for the
+       same reason as the case. -->
+  <path id="panel-border"
+        fill-rule="evenodd"
+        fill="url(#panel-recess)"
+        d="M72,30 H1048 A4,4 0 0 1 1052,34 V590 A4,4 0 0 1 1048,594 H72 A4,4 0 0 1 68,590 V34 A4,4 0 0 1 72,30 Z
+           M80,42 H1040 V582 H80 Z" />
+  <!-- Where case meets panel: a lit lower edge, a shaded upper one. -->
+  <path fill="none" stroke="#ffffff" stroke-opacity="0.8" stroke-width="1" d="M72,594.5 H1048" />
+  <path fill="none" stroke="#8a8a8a" stroke-opacity="0.8" stroke-width="1" d="M72,29.5 H1048" />
+
+  <!-- Measurement-only marker. No fill, no stroke: the hole above is what
+       is visible, this is what the designer measures. -->
+  <rect id="screen" x="80" y="42" width="960" height="540"
+        fill="none" stroke="none"
+        inkscape:label="screen" />
 </svg>
