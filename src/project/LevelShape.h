@@ -15,8 +15,12 @@
 // repo. In short: one colour, a track whose unfilled part is mixed from it and
 // the screen behind it (or an outline where the two cannot be told apart), a
 // thickness the author sets, one handle with a gap cut around it wherever it
-// stands, and - when the object carries a name or an icon - a header line
-// measured from the object's own font.
+// stands, and the number in a column of its own at the bar's far end.
+//
+// There used to be a header line above the bar carrying a name and an icon. A
+// Bar and a Slider have neither since 2026-09-29 (designer commit 84f3fb7): a
+// label beside one is a Text object, an icon an Icon object, and the export
+// never sends either. What is left here is exactly what was drawn without one.
 
 #include <Arduino.h>
 
@@ -45,8 +49,8 @@ struct LevelSegment : LevelRect {
   bool roundEnd = false;
 };
 
-// The vertical measure of the object's font: everything the header is built
-// from. The renderer fills this from the BdfFont the object names - never from
+// The vertical measure of the object's font: everything the number's column is
+// built from. The renderer fills this from the BdfFont the object names - never from
 // properties.fontSize, which nothing keeps in step with the font.
 struct LevelFontMetrics {
   int ascent = 11;
@@ -62,15 +66,9 @@ struct LevelTrackLook {
 };
 
 struct LevelLayout {
-  bool hasHeader = false;
-  LevelRect header;
-  int baseline = 0;  // the row every piece of the header's text stands on
-  bool hasIcon = false;
-  LevelRect icon;
-  bool hasText = false;
-  LevelRect text;  // the header's text run: after the icon, to the right edge
+  int baseline = 0;  // the row the number stands on, in the middle of its column
   bool hasValue = false;
-  LevelRect value;  // the number's own column, beside a bar with no header
+  LevelRect value;  // the number's own column beside the bar
   LevelRect bar;    // what is left over for the bar
   LevelRect slot;   // the band of it the bar takes, across
   LevelRect track;  // the track inside that
@@ -83,11 +81,8 @@ namespace levelshape {
 // move every value's position and silently change what every existing
 // calibration means.
 constexpr int kPaddingAlong = 4;
-// The slot between the header's parts, and between the bar and its number.
+// The slot between the bar and its number.
 constexpr int kGap = 6;
-// The empty row between the header line and the bar, so a handle never touches
-// a letter.
-constexpr int kHeaderGap = 1;
 // Material's own track, and what an unset barThickness means.
 constexpr int kDefaultThickness = 16;
 
@@ -109,22 +104,7 @@ inline int fontSize(const ScreenObject& obj) {
   return size > 0 ? size : 14;
 }
 
-inline bool hasName(const ScreenObject& obj) {
-  String label = obj.properties.label;
-  label.trim();
-  return !label.isEmpty();
-}
-
-inline bool hasIcon(const ScreenObject& obj) { return !obj.path.isEmpty(); }
-
 inline bool showsNumber(const ScreenObject& obj) { return obj.properties.displayValue != "none"; }
-
-// Whether the object can ever show a second, measured number beside the
-// commanded one - which is to say, whether it has a commanded value at all.
-inline bool showsSub(const ScreenObject& obj) {
-  if (!showsNumber(obj)) return false;
-  return !obj.properties.writeTopic.isEmpty() || !obj.properties.setpointTopic.isEmpty();
-}
 
 // How thick the track is, across the bar: the author's barThickness, and
 // Material's 16 when there is none.
@@ -151,9 +131,9 @@ inline int handleLength(int thick) { return (thick * 11) / 4; }
 // since it cannot stand out of a bar that is not there; its width runs along
 // the bar, where nothing is short of room.
 //
-// Measuring from the clamped slot instead is what made a bar with a header -
-// whose slot is only what is left under the text - draw a 3 px handle with a
-// 2 px gap where the designer draws 4 and 6. The 4.3B conformance run saw that
+// Measuring from the clamped slot instead is what made a bar squeezed flat - it
+// was a header above it then that left the slot short - draw a 3 px handle
+// with a 2 px gap where the designer draws 4 and 6. The 4.3B conformance run saw that
 // on 2026-09-22 as 170 differing pixels, all of them the two track runs beside
 // the handle and the handle's own outline. The designer's levelHandleSpan is
 // this function (lib/level-shape.ts).
@@ -164,7 +144,7 @@ inline int lineHeight(const LevelFontMetrics& m) { return m.ascent + m.descent; 
 
 // One digit, as all four renderers agree to guess it: 0.62 of the line height.
 // A guess, and only where it decides where the bar ends - the number column
-// beside a bar with no header.
+// beside the bar.
 inline int digitWidth(int line) {
   const int w = (line * 62) / 100;
   return w < 1 ? 1 : w;
@@ -182,16 +162,7 @@ inline int handleGap(int across) {
   return gap < 2 ? 2 : gap;
 }
 
-// How tall the header line is - 0 when there is neither a name nor an icon.
-// Exactly one line of the font, so a letter is never cut off at either end.
-inline int headerHeight(const ScreenObject& obj, const LevelFontMetrics& m) {
-  if (!hasName(obj) && !hasIcon(obj)) return 0;
-  const int wanted = lineHeight(m);
-  const int room = obj.height > 0 ? obj.height : 0;
-  return wanted < room ? wanted : room;
-}
-
-// The number column beside a bar with no header. Five digits, capped at 40 %.
+// The number column beside the bar. Five digits, capped at 40 %.
 inline int valueWidth(const ScreenObject& obj, const LevelFontMetrics& m) {
   if (!showsNumber(obj)) return 0;
   const int wanted = digitWidth(lineHeight(m)) * 5;
@@ -223,36 +194,14 @@ inline LevelLayout layout(const ScreenObject& obj, const LevelFontMetrics& m) {
   const int h = obj.height;
   const bool vertical = isVertical(obj);
   const int line = lineHeight(m);
-  const int headerH = headerHeight(obj, m);
 
   LevelLayout lay;
   lay.baseline = y + m.ascent;
-  int barX = x, barY = y, barW = w, barH = h;
+  int barW = w, barH = h;
 
-  if (headerH > 0) {
-    lay.hasHeader = true;
-    lay.header = LevelRect{x, y, w, headerH, 0};
-    int left = x;
-    if (hasIcon(obj)) {
-      // As tall as a capital and standing on the same baseline, so it reads as
-      // a letter of the name rather than a picture beside it.
-      int size = m.capHeight;
-      const int quarter = w / 4;
-      if (size > quarter) size = quarter;
-      if (size < 1) size = 1;
-      lay.hasIcon = true;
-      lay.icon = LevelRect{left, lay.baseline - size, size, size, 0};
-      left = lay.icon.x + size + kGap;
-    }
-    if (x + w - left > 0) {
-      lay.hasText = true;
-      lay.text = LevelRect{left, y, x + w - left, headerH, 0};
-    }
-    barY = y + headerH + kHeaderGap;
-    barH = h - headerH - kHeaderGap;
-  } else if (showsNumber(obj)) {
-    // No header: the number goes at the far end of the bar's own axis. Right
-    // for a horizontal bar whichever way it fills, so a column of bars lines up
+  if (showsNumber(obj)) {
+    // The number goes at the far end of the bar's own axis. Right for a
+    // horizontal bar whichever way it fills, so a column of bars lines up
     // regardless of their directions.
     lay.hasValue = true;
     if (vertical) {
@@ -268,7 +217,7 @@ inline LevelLayout layout(const ScreenObject& obj, const LevelFontMetrics& m) {
     lay.baseline = lay.value.y + (lay.value.h - line) / 2 + m.ascent;
   }
 
-  lay.bar = LevelRect{barX, barY, barW > 0 ? barW : 0, barH > 0 ? barH : 0, 0};
+  lay.bar = LevelRect{x, y, barW > 0 ? barW : 0, barH > 0 ? barH : 0, 0};
 
   const int thick = thickness(obj);
   const int across = vertical ? lay.bar.w : lay.bar.h;
@@ -279,7 +228,7 @@ inline LevelLayout layout(const ScreenObject& obj, const LevelFontMetrics& m) {
   const int wanted = handleOrTrack > glowRoom ? handleOrTrack : glowRoom;
   int size = wanted < across ? wanted : across;
   if (size < 0) size = 0;
-  const int offset = (!vertical && lay.hasHeader) ? 0 : (across - size) / 2;
+  const int offset = (across - size) / 2;
   lay.slot = vertical ? LevelRect{lay.bar.x + offset, lay.bar.y, size, lay.bar.h, 0}
                       : LevelRect{lay.bar.x, lay.bar.y + offset, lay.bar.w, size, 0};
   lay.track = trackInside(lay.slot, vertical, thick);

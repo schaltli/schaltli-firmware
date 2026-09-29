@@ -6,9 +6,8 @@
 //   line 1: type x y width height
 //   line 2: percent setpointPercent          (setpoint < 0 means "none")
 //   line 3: fillColor background displayValue barDirection barThickness
-//           hasIcon writeTopic setpointTopic fontSize glow   ("-" for empty)
+//           writeTopic setpointTopic fontSize glow   ("-" for empty)
 //   line 4: ascent descent capHeight
-//   line 5: the label, as the whole rest of the line ("" for none)
 //
 // The font metrics are an INPUT, not an answer: on the device they come from
 // the BdfFont the project ships, in the browser from the font the designer
@@ -70,18 +69,14 @@ int main(int argc, char** argv) {
   const String background = readWord(in);
   const String displayValue = readWord(in);
   const String barDirection = readWord(in);
-  int barThickness = 0, hasIconFlag = 0, fontSizeProp = 0, glowProp = 0;
-  in >> barThickness >> hasIconFlag;
+  int barThickness = 0, fontSizeProp = 0, glowProp = 0;
+  in >> barThickness;
   const String writeTopic = readWord(in);
   const String setpointTopic = readWord(in);
   in >> fontSizeProp >> glowProp;
 
   LevelFontMetrics metrics;
   in >> metrics.ascent >> metrics.descent >> metrics.capHeight;
-
-  std::string label;
-  std::getline(in, label);  // the tail of the metrics line
-  std::getline(in, label);
 
   ScreenObject obj;
   obj.type = String(type.c_str());
@@ -91,10 +86,6 @@ int main(int argc, char** argv) {
   obj.width = w;
   obj.height = h;
   obj.zIndex = 1;
-  // The icon is a baked bitmap on the object itself, not a property - the
-  // export flattens it there (lib/project-zip.ts), so `path` is what this side
-  // asks about where the designer asks about properties.iconAssetId.
-  obj.path = hasIconFlag != 0 ? String("assets/icon.bin") : String("");
   obj.properties.fillColor = fillColor;
   obj.properties.displayValue = displayValue;
   obj.properties.barDirection = barDirection.isEmpty() ? String("left-to-right") : barDirection;
@@ -102,7 +93,6 @@ int main(int argc, char** argv) {
   obj.properties.writeTopic = writeTopic;
   obj.properties.setpointTopic = setpointTopic;
   obj.properties.glow = glowProp;
-  obj.properties.label = String(label.c_str());
   if (fontSizeProp > 0) obj.properties.fontSize = fontSizeProp;
 
   const LevelLayout lay = levelshape::layout(obj, metrics);
@@ -113,16 +103,12 @@ int main(int argc, char** argv) {
   const bool settable = obj.type == "slider" || obj.type == "dial";
   const bool handled = levelshape::hasHandle(obj) && settable;
 
-  printf("flags %d %d %d %d %d %d %d\n", vertical ? 1 : 0,
+  printf("flags %d %d %d %d %d %d\n", vertical ? 1 : 0,
          levelshape::fillsFromEnd(obj) ? 1 : 0, levelshape::thickness(obj), levelshape::hasHandle(obj) ? 1 : 0,
-         levelshape::showsNumber(obj) ? 1 : 0, levelshape::headerHeight(obj, metrics),
-         levelshape::valueWidth(obj, metrics));
+         levelshape::showsNumber(obj) ? 1 : 0, levelshape::valueWidth(obj, metrics));
   printf("metrics %d %d %d\n", metrics.ascent, metrics.descent, metrics.capHeight);
 
-  printMaybeRect("header", lay.hasHeader, lay.header);
   printf("baseline %d\n", lay.baseline);
-  printMaybeRect("icon", lay.hasIcon, lay.icon);
-  printMaybeRect("text", lay.hasText, lay.text);
   printMaybeRect("value", lay.hasValue, lay.value);
   printRect("bar", lay.bar);
   printRect("slot", lay.slot);

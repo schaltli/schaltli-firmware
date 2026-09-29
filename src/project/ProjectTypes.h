@@ -137,11 +137,6 @@ struct ObjectProperties {
   // level-indicator properties
   String barDirection;                    // "left-to-right", "right-to-left", "bottom-to-top", "top-to-bottom"
   String displayValue;                    // "none", "percentage", "value"
-  // The name drawn on the header line above the bar, with the icon in `path`
-  // beside it (docs/2026-09-19-slider-look.md in the designer repo). Empty is
-  // the normal case and means no header at all - the bar then fills the whole
-  // object, exactly as every project made before this did.
-  String label;
   String fillColor;                       // Color of filled portion of bar
   // Where the fill runs to along its scale, from fillColor (a theme's second
   // accent); empty is a flat fill. And how far a glow reaches around it, in

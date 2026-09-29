@@ -227,18 +227,18 @@ private:
   bool renderLabel(const ScreenObject& obj);
   bool renderMQTTDataField(const ScreenObject& obj);
   bool renderLevelIndicator(const ScreenObject& obj);
-  // One run of text inside a box of the level indicator's header, pushed
-  // against one of its edges and centred in its height. Mirrors
-  // drawLevelTextIn() in the designer's render-level-indicator.ts.
-  // The object's font, as the header line's measure - ascent, descent and the
-  // height of a capital (which is what an icon beside a label is).
+  // The object's font, as the number column's measure - ascent, descent and
+  // the height of a capital.
   LevelFontMetrics levelMetrics(const ScreenObject& obj);
 
+  // One run of text inside the level indicator's number column, clipped to it.
+  // Mirrors drawLevelTextIn() in the designer's render-level-indicator.ts.
   void drawLevelText(const String& text, const LevelRect& clip, int x, int baseline, const String& fontId,
                      uint16_t color);
-  // The smaller font the measured value is written in, out of the project's
-  // own list - a BDF font cannot be scaled, so "smaller" means another font.
-  // Mirrors levelSubFont() in lib/level-shape.ts.
+  // The smaller font a ring's measured value is written in, out of the
+  // project's own list - a BDF font cannot be scaled, so "smaller" means
+  // another font. Mirrors levelSubFont() in the designer's
+  // render-level-indicator.ts.
   String levelSubFontId(const ScreenObject& obj);
   // The round counterpart of the bar. `mixInto` is what its anti-aliased
   // edges blend against where the object's own background is transparent -

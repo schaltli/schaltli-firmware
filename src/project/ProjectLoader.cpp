@@ -420,7 +420,6 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // someone else owns. Same two-name reading as arcThickness below.
   props.barDirection = propsJson["direction"] | (propsJson["barDirection"] | "left-to-right");
   props.displayValue = propsJson["displayValue"] | "none";
-  props.label = propsJson["label"] | "";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
   props.fillEndColor = propsJson["fillEndColor"] | "";
   props.glow = propsJson["glow"] | 0;

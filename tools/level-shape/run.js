@@ -20,7 +20,7 @@
 // same recording serves any port of the rules.
 //
 // The font metrics are an input rather than an answer, exactly as in the
-// recorder: where the header sits depends on the font's own ascent and descent,
+// recorder: where the number sits depends on the font's own ascent and descent,
 // and that is the BDF's answer on the device and the browser's in the designer.
 // What is compared is the layout rule.
 //
@@ -152,14 +152,12 @@ function writeCase(input, metrics) {
         word(props.displayValue),
         word(props.barDirection),
         props.barThickness ?? 0,
-        props.iconAssetId ? 1 : 0,
         word(props.writeTopic),
         word(props.setpointTopic),
         props.fontSize ?? 0,
         props.glow ?? 0,
       ].join(" "),
       [metrics.ascent, metrics.descent, metrics.capHeight].join(" "),
-      typeof props.label === "string" ? props.label : "",
       "",
     ].join("\n"),
   );
@@ -185,6 +183,10 @@ function run(input, metrics) {
 
 let failures = 0;
 
+function recordedWithHeader(want) {
+  return Boolean((want.headerHeight ?? 0) !== 0 || want.layout.header || want.layout.icon || want.layout.text);
+}
+
 for (const [name, entry] of Object.entries(recorded.cases)) {
   const want = entry.shape;
   const got = run(entry.input, want.metrics);
@@ -201,7 +203,7 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
     check(`${label}.h`, num(mine[3]), theirs.h);
     check(`${label}.r`, num(mine[4]), theirs.r);
   };
-  // The designer says "no header" / "no handle" with null; this side says it
+  // The designer says "no number" / "no handle" with null; this side says it
   // with a flag, so the absence is compared before the numbers are.
   const checkMaybeRect = (label, mine, theirs) => {
     check(`${label} present`, mine[0] === "1", theirs !== null && theirs !== undefined);
@@ -214,13 +216,26 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
     check(`${label}.roundEnd`, mine[7] === "1", theirs.roundEnd);
   };
 
-  const [vertical, fromEnd, thickness, hasHandle, showsNumber, headerHeight, valueWidth] = got.flags;
+  // A Bar and a Slider have had no header line since 2026-09-29 (designer
+  // commit 84f3fb7), and LevelShape.h no longer lays one out. The recorder
+  // still writes the fields as nothing, for the app's golden test; a case that
+  // carries a header is a recording made before that day, and says so rather
+  // than failing on every rectangle below it.
+  if (recordedWithHeader(want)) {
+    failures++;
+    console.log(
+      `  FAIL ${name}: recorded with a header line, which no bar has any more - ` +
+        `record the golden file again (node hil/android/fixtures/build-level-golden.js in the designer)`,
+    );
+    continue;
+  }
+
+  const [vertical, fromEnd, thickness, hasHandle, showsNumber, valueWidth] = got.flags;
   check("vertical", vertical === "1", want.vertical);
   check("fillsFromEnd", fromEnd === "1", want.fillsFromEnd);
   check("thickness", num(thickness), want.thickness);
   check("hasHandle", hasHandle === "1", want.hasHandle);
   check("showsNumber", showsNumber === "1", want.showsNumber);
-  check("headerHeight", num(headerHeight), want.headerHeight);
   check("valueWidth", num(valueWidth), want.valueWidth);
 
   // An input, echoed back: it only proves the case file reached the program
@@ -229,10 +244,7 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
   check("metrics.descent", num(got.metrics[1]), want.metrics.descent);
   check("metrics.capHeight", num(got.metrics[2]), want.metrics.capHeight);
 
-  checkMaybeRect("layout.header", got.header, want.layout.header);
   check("layout.baseline", num(got.baseline[0]), want.layout.baseline);
-  checkMaybeRect("layout.icon", got.icon, want.layout.icon);
-  checkMaybeRect("layout.text", got.text, want.layout.text);
   checkMaybeRect("layout.value", got.value, want.layout.value);
   checkRect("layout.bar", got.bar, want.layout.bar);
   checkRect("layout.slot", got.slot, want.layout.slot);
@@ -283,10 +295,11 @@ console.log(
 // its slot exactly the handle's asked-for length - so a port measuring the
 // handle from the slot and a port measuring it from the thickness arrived at
 // the same numbers, and no case could tell them apart. The 4.3B's conformance
-// bar is NOT such an object: it carries a name, so its slot is only what is
-// left under the header, and that is where LevelShape.h was wrong.
+// bar was NOT such an object: it carried a name then, so its slot was only
+// what was left under the header, and that is where LevelShape.h was wrong.
 //
-// The recording has two such cases now - slider-squeezed-by-its-header and
+// The recording has two such cases now - slider-squeezed-flat (the same slot,
+// without the header that no bar has had since 2026-09-29) and
 // slider-vertical-squeezed-across - and they catch that defect on their own:
 // put it back into LevelShape.h and the plain comparison above fails both,
 // before this block runs at all. So this is no longer the only thing standing
@@ -316,13 +329,13 @@ let invariantFailures = 0;
 
 for (const [name, entry] of Object.entries(recorded.cases)) {
   const want = entry.shape;
-  if (!want.hasHandle || !want.handle) continue;
+  if (!want.hasHandle || !want.handle || recordedWithHeader(want)) continue;
   const vertical = want.vertical;
   // What the handle asks for, which is what the slot is being squeezed below.
   const span = Math.trunc((want.thickness * 11) / 4);
   const barAcross = vertical ? want.layout.bar.w : want.layout.bar.h;
-  // What the object spends on things other than the bar - a header, or the
-  // number's own row - so that shrinking the object shrinks the bar by as much.
+  // What the object spends on things other than the bar - the number's own
+  // row - so that shrinking the object shrinks the bar by as much.
   const overhead = (vertical ? entry.input.width : entry.input.height) - barAcross;
   const targets = [...new Set([span - 4, Math.trunc((span * 2) / 3), Math.trunc(span / 2)])]
     .filter((t) => t >= want.thickness + 2 && t < span)

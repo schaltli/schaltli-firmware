@@ -955,8 +955,7 @@ LevelFontMetrics ColorScreenRenderer::levelMetrics(const ScreenObject& obj) {
 }
 
 // One piece of text, its left end at `x` and standing on `baseline`, clipped to
-// `clip`. Every piece on a header line stands on the one baseline, whatever
-// font it is in.
+// `clip`.
 void ColorScreenRenderer::drawLevelText(const String& text, const LevelRect& clip, int x, int baseline,
                                         const String& fontId, uint16_t color) {
   if (text.isEmpty() || !clip.valid()) return;
@@ -1225,12 +1224,6 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   const LevelLayout lay = levelshape::layout(obj, metrics);
   const bool vertical = levelshape::isVertical(obj);
 
-  if (lay.hasIcon && lay.icon.valid()) {
-    if (!ColorAssetLoader::drawBMPToCanvas(canvas_, obj.path, lay.icon.x, lay.icon.y)) {
-      canvas_->drawRect(lay.icon.x, lay.icon.y, lay.icon.w, lay.icon.h, textColor);
-    }
-  }
-
 #if !PILL_ANTIALIASED
   // The whole-pixel path, unchanged since before the rasterizer existed and
   // kept line for line: below 24 bit there is nothing to mix into, so this is
@@ -1421,40 +1414,11 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
 #endif
   };
 
-  // The header's text: the numbers against the right edge at their measured
-  // width, the name into whatever is left. Nothing is reserved, so a number is
-  // never cut off; where the line is too short it is the name that gives way.
-  auto drawHeader = [&](const String& commanded, const String& measured, bool withNumbers) {
-    if (!lay.hasText || !lay.text.valid()) return;
-    const BdfFont* ownFont = fontFor(obj.properties.fontId);
-    int right = lay.text.x + lay.text.w;
-    if (withNumbers && levelshape::showsNumber(obj) && ownFont != nullptr) {
-      const int width = measureTrueTextWidth(commanded, ownFont);
-      drawLevelText(commanded, lay.text, right - width, lay.baseline, obj.properties.fontId, textColor);
-      right -= width + levelshape::kGap;
-      if (levelshape::showsSub(obj) && measured != commanded) {
-        const String subId = levelSubFontId(obj);
-        const BdfFont* subFont = fontFor(subId);
-        const String sub = "(" + measured + ")";
-        if (subFont != nullptr) {
-          const int subWidth = measureTrueTextWidth(sub, subFont);
-          drawLevelText(sub, lay.text, right - subWidth, lay.baseline, subId, textColor);
-          right -= subWidth + levelshape::kGap;
-        }
-      }
-    }
-    if (!levelshape::hasName(obj) || right <= lay.text.x) return;
-    LevelRect nameBox = lay.text;
-    nameBox.w = right - lay.text.x;
-    drawLevelText(obj.properties.label, nameBox, lay.text.x, lay.baseline, obj.properties.fontId, textColor);
-  };
-
   String trimmedValue = valueStr;
   trimmedValue.trim();
   if (trimmedValue.isEmpty()) {
-    // Nothing has arrived: the empty track and the name, and neither fill nor
-    // number. An empty fill would claim an empty tank.
-    drawHeader("", "", false);
+    // Nothing has arrived: the empty track, and neither fill nor number. An
+    // empty fill would claim an empty tank.
     std::vector<LevelSegment> empty;
     empty.push_back(levelshape::emptyTrack(lay));
     paintBar(empty, nullptr, nullptr, -1.0f);
@@ -1515,12 +1479,7 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   const String commanded =
       hasMarker ? (asPercent ? String((int)(markerPercent + 0.5f)) + "%" : rawMarker) : measured;
 
-  if (lay.hasText) {
-    drawHeader(commanded, measured, true);
-    return true;
-  }
-
-  // No header: the number in its own column at the far end of the bar.
+  // The number in its own column at the far end of the bar.
   if (lay.hasValue && lay.value.valid() && levelshape::showsNumber(obj)) {
     const BdfFont* ownFont = fontFor(obj.properties.fontId);
     if (ownFont != nullptr) {
@@ -1944,12 +1903,11 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
     RenderProfile::add("  arc: uniform x" + String(pr.uniformCalls), pr.uniformCycles / 240);
   }
 
-  // The numbers, the way the bar says them: the big one is the COMMANDED value
+  // The numbers: the big one is the COMMANDED value
   // - where the handle points, and what a finger just changed - and the
   // measured one appears under it in brackets, smaller, only when it says
   // something the big one does not. A ring puts the two one above the other
-  // rather than side by side: it has the room, and it has no header line to lay
-  // them out on.
+  // rather than side by side: it has the room.
   if (noValue) return true;
   const bool asPercent = obj.properties.displayValue == "percentage";
   if (!asPercent && obj.properties.displayValue != "value") return true;
@@ -2884,8 +2842,8 @@ int ColorScreenRenderer::barLevelDragRects(const ScreenObject& obj, const String
   }
   count++;
 
-  // The numbers: the header line, or the number's own column.
-  const LevelRect* text = lay.hasHeader ? &lay.header : (lay.hasValue ? &lay.value : nullptr);
+  // The number's own column.
+  const LevelRect* text = lay.hasValue ? &lay.value : nullptr;
   if (text != nullptr && text->valid() && levelshape::showsNumber(obj)) {
     rx[count] = (int16_t)text->x;
     ry[count] = (int16_t)text->y;
