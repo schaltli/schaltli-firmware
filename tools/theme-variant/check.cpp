@@ -82,6 +82,11 @@ static ProjectConfig sample() {
   ScreenObject level;
   level.properties.fillEndColor = "#1fa37a";
   level.properties.fillEndColorDark = "#3ee08f";
+  // Its track and the edge round it, the theme's roles since 2026-09-30.
+  level.properties.trackColor = "#b3a8d2";
+  level.properties.trackColorDark = "#766b8f";
+  level.properties.trackEdgeColor = "transparent";
+  level.properties.trackEdgeColorDark = "transparent";
   s.objects.push_back(level);
 
   p.screens.push_back(s);
@@ -101,6 +106,7 @@ static bool same(const ProjectConfig& a, const ProjectConfig& b) {
   if (!(x.objects[5].properties.strokeColor == y.objects[5].properties.strokeColor)) return false;
   if (!(x.objects[5].properties.strokeColorDark == y.objects[5].properties.strokeColorDark)) return false;
   if (!(x.objects[6].properties.fillEndColor == y.objects[6].properties.fillEndColor)) return false;
+  if (!(x.objects[6].properties.trackColor == y.objects[6].properties.trackColor)) return false;
   return true;
 }
 
@@ -125,6 +131,8 @@ int main() {
   expect(s.objects[4].children[0].children[0].properties.fillColor == "#2b2b2b", "a tab-control's child");
   expect(s.objects[5].properties.strokeColor == "#445566", "a lone XDark counts as X");
   expect(s.objects[6].properties.fillEndColor == "#3ee08f", "a level's gradient end");
+  expect(s.objects[6].properties.trackColor == "#766b8f", "a level's track");
+  expect(s.objects[6].properties.trackEdgeColor == "transparent", "a level's track edge, none in both");
 
   themevariant::apply(p, true);
   expect(s.backgroundColor == "#15202b", "dark twice is still dark, not light again");

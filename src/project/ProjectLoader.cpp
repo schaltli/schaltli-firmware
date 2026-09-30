@@ -387,6 +387,8 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.colorDark = propsJson["colorDark"] | "";
   props.fillColorDark = propsJson["fillColorDark"] | "";
   props.fillEndColorDark = propsJson["fillEndColorDark"] | "";
+  props.trackColorDark = propsJson["trackColorDark"] | "";
+  props.trackEdgeColorDark = propsJson["trackEdgeColorDark"] | "";
   props.strokeColorDark = propsJson["strokeColorDark"] | "";
   props.switchColorDark = propsJson["switchColorDark"] | "";
   props.textAlign = propsJson["textAlign"] | "left";
@@ -422,6 +424,8 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.displayValue = propsJson["displayValue"] | "none";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
   props.fillEndColor = propsJson["fillEndColor"] | "";
+  props.trackColor = propsJson["trackColor"] | "";
+  props.trackEdgeColor = propsJson["trackEdgeColor"] | "";
   props.glow = propsJson["glow"] | 0;
   props.barThickness = propsJson["thickness"] | (propsJson["barThickness"] | 0);
   props.switchStyle = propsJson["switchStyle"] | "filled";
@@ -434,7 +438,6 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // arc-level properties. The defaults are the designer's own: half past
   // seven round to half past four, the thermostat shape.
   props.setpointTopic = propsJson["setpointTopic"] | "";
-  props.trackColor = propsJson["trackColor"] | "#303030";
   props.markerColor = propsJson["markerColor"] | "#ffffff";
   props.arcDirection = propsJson["direction"] | "cw";
   props.minAngle = propsJson["minAngle"] | 225;
@@ -445,7 +448,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // a ring was thought to be a thing of its own, and that survived exactly as
   // long as it took to put a dial and a slider on one screen.
   props.arcThickness = propsJson["thickness"] | props.barThickness;
-  // Retired on 2026-09-22 along with trackColor and markerColor above: the
+  // Retired on 2026-09-22 along with markerColor above: the
   // setpoint is the bar's own handle now, and its size follows the thickness.
   // Still parsed, because old project files carry it and nothing here rewrites
   // a file someone else owns - nothing reads it any more.

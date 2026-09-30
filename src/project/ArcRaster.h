@@ -123,6 +123,8 @@ struct Handle {
 struct PixelBands {
   uint8_t fill = 0;
   uint8_t track = 0;
+  // The inside of a framed track under a theme's edge (framedBody).
+  uint8_t body = 0;
   // Called `marker` until 2026-09-22, when it stopped being a wedge of the
   // ring and became the slider's own handle: a pill lying across the band,
   // standing out of it on both sides, with a gap cut either side of it.
@@ -185,6 +187,10 @@ struct RingGeometry {
   // otherwise be, which on this device is every panel. LevelShape.h answers
   // the same question the same way for the bar.
   bool framed = false;
+  // The frame's width in pixels (LevelShape.h trackPaint's edgeWidth), and
+  // whether a framed track's inside is painted in its own colour (body).
+  int32_t frameWidth = 1;
+  bool framedBody = false;
 };
 
 // Which pixels of one row can be covered at all, so a caller can skip the
@@ -305,6 +311,13 @@ uint16_t packRgb565(const Rgb565& c);
 uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
                     const Rgb565& track, uint8_t trackCount,
                     const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& background, uint8_t backgroundCount);
+// The same, with a framed track's body and a gauge's pointer.
+uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
+                    const Rgb565& track, uint8_t trackCount,
+                    const Rgb565& body, uint8_t bodyCount,
+                    const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& pointer, uint8_t pointerCount,
                     const Rgb565& background, uint8_t backgroundCount);
 // The same, with a gauge's pointer as a fourth band.
 uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,

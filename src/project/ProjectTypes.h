@@ -115,6 +115,8 @@ struct ObjectProperties {
   String colorDark;
   String fillColorDark;
   String fillEndColorDark;
+  String trackColorDark;
+  String trackEdgeColorDark;
   String strokeColorDark;
   String switchColorDark;
   String textAlign;                       // "left", "center", "right"
@@ -144,6 +146,12 @@ struct ObjectProperties {
   // (designer lib/themes.ts withLevelLook, LevelGlow.h).
   String fillEndColor;
   int glow = 0;
+  // A level's empty track and the edge round it, from the theme's roles
+  // track and trackEdge (designer lib/themes.ts, 2026-09-30). Empty: derived
+  // as before - the fill mixed halfway to the background (LevelShape.h
+  // trackPaint). "transparent" edge: none.
+  String trackColor;
+  String trackEdgeColor;
   std::vector<CalibrationPoint> calibrationPoints;
 
   // arc-level properties. Shares topic, displayValue, fillColor,
@@ -151,7 +159,6 @@ struct ObjectProperties {
   // above - it is the same readout on a circular track, and the value
   // mapping is deliberately the identical interpolation.
   String setpointTopic;                   // Optional second value, drawn as a marker; empty = no marker
-  String trackColor;                      // The unfilled part of the ring
   String markerColor;                     // The setpoint marker
   String arcDirection;                    // "cw" (default) or "ccw" - which way round the scale runs
   int minAngle;                           // Whole degrees, 0 at twelve o'clock, where the scale starts

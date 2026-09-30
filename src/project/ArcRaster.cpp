@@ -72,13 +72,13 @@ static bool IRAM_ATTR inCap(const Cap& cap, int32_t x, int32_t y) {
   return dx * dx + dy * dy <= cap.r * cap.r;
 }
 
-// Whether a point inside a cap is within the frame's own pixel of its edge.
-// One half of what draws the outline on a 1-bit panel; the other half is the
-// outer/inner radius test in pixelBands().
-static bool IRAM_ATTR capEdge(const Cap& cap, int32_t x, int32_t y) {
+// Whether a point inside a cap is within the frame of its edge, `frame` in 1/8
+// pixel. One half of what draws the outline; the other half is the outer/inner
+// radius test in pixelBands().
+static bool IRAM_ATTR capEdge(const Cap& cap, int32_t x, int32_t y, int32_t frame) {
   const int32_t dx = x - cap.cx;
   const int32_t dy = y - cap.cy;
-  const int32_t inner = cap.r - FRAME;
+  const int32_t inner = cap.r - frame;
   return dx * dx + dy * dy >= inner * inner;
 }
 
@@ -501,9 +501,11 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
   const int32_t rInner = rOuter - geom.thickness * S;
   const int32_t rOuter2 = rOuter * rOuter;
   const int32_t rInner2 = rInner > 0 ? rInner * rInner : 0;
-  // Where the frame's own pixel ends, when the track is an outline.
-  const int32_t rOuterInner2 = (rOuter - FRAME) * (rOuter - FRAME);
-  const int32_t rInnerOuter2 = (rInner + FRAME) * (rInner + FRAME);
+  // Where the frame ends, when the track is an outline: FRAME per pixel of
+  // its width (a theme's edge is 2).
+  const int32_t frame = FRAME * geom.frameWidth;
+  const int32_t rOuterInner2 = (rOuter - frame) * (rOuter - frame);
+  const int32_t rInnerOuter2 = (rInner + frame) * (rInner + frame);
 
   // Two exact short cuts before sampling - not approximations, so they are
   // part of the shared algorithm rather than a judgement call either side
@@ -598,6 +600,7 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
       if (inSector(geom.track, boxCx, boxCy)) {
         if (inSector(geom.fill, boxCx, boxCy)) bands.fill = COVERAGE_MAX;
         else if (!geom.framed) bands.track = COVERAGE_MAX;
+        else if (geom.framedBody) bands.body = COVERAGE_MAX;
       }
       if (probeEnabled()) { probe().uniformCalls++;
       probe().uniformCycles += esp_cpu_get_cycle_count() - probeStart; }
@@ -710,9 +713,10 @@ PixelBands IRAM_ATTR pixelBands(const RingGeometry& geom, int32_t px, int32_t py
       // itself around nothing. That is the same rule as the bar's
       // levelshape::frameInner, which leaves the run's cut end square.
       const bool onRadius = inside && (d2 >= rOuterInner2 || d2 <= rInnerOuter2);
-      const bool onCapRim = !inside && ((inStartCap && capEdge(geom.startCap, x, y)) ||
-                                        (inEndCap && capEdge(geom.endCap, x, y)));
+      const bool onCapRim = !inside && ((inStartCap && capEdge(geom.startCap, x, y, frame)) ||
+                                        (inEndCap && capEdge(geom.endCap, x, y, frame)));
       if (onRadius || onCapRim) bands.track++;
+      else if (geom.framedBody) bands.body++;
     }
   }
 
@@ -764,6 +768,26 @@ uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
   const int32_t g = fill.g * fillCount + track.g * trackCount + handle.g * handleCount +
                     pointer.g * pointerCount + background.g * backgroundCount;
   const int32_t b = fill.b * fillCount + track.b * trackCount + handle.b * handleCount +
+                    pointer.b * pointerCount + background.b * backgroundCount;
+  const int32_t half = COVERAGE_MAX / 2;
+  Rgb565 out;
+  out.r = (uint8_t)((r + half) / COVERAGE_MAX);
+  out.g = (uint8_t)((g + half) / COVERAGE_MAX);
+  out.b = (uint8_t)((b + half) / COVERAGE_MAX);
+  return packRgb565(out);
+}
+
+uint16_t blendBands(const Rgb565& fill, uint8_t fillCount,
+                    const Rgb565& track, uint8_t trackCount,
+                    const Rgb565& body, uint8_t bodyCount,
+                    const Rgb565& handle, uint8_t handleCount,
+                    const Rgb565& pointer, uint8_t pointerCount,
+                    const Rgb565& background, uint8_t backgroundCount) {
+  const int32_t r = fill.r * fillCount + track.r * trackCount + body.r * bodyCount + handle.r * handleCount +
+                    pointer.r * pointerCount + background.r * backgroundCount;
+  const int32_t g = fill.g * fillCount + track.g * trackCount + body.g * bodyCount + handle.g * handleCount +
+                    pointer.g * pointerCount + background.g * backgroundCount;
+  const int32_t b = fill.b * fillCount + track.b * trackCount + body.b * bodyCount + handle.b * handleCount +
                     pointer.b * pointerCount + background.b * backgroundCount;
   const int32_t half = COVERAGE_MAX / 2;
   Rgb565 out;

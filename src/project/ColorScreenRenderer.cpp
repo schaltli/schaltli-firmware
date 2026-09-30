@@ -1195,9 +1195,13 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   // own any more (designer docs/2026-09-19-slider-look.md, decision 12).
   const String fillHex = materialcolors::applyDepth(
       obj.properties.fillColor.isEmpty() ? String("#4CAF50") : obj.properties.fillColor);
-  const LevelTrackLook look = levelshape::trackLook(fillHex, currentScreenBgHex_);
+  // The track's colour and edge are the theme's where the export carries them
+  // (levelshape::trackPaint).
+  const levelshape::LevelTrackPaint look =
+      levelshape::trackPaint(obj.properties.trackColor, obj.properties.trackEdgeColor, fillHex, currentScreenBgHex_);
   const uint16_t fillColor = parseHexColor(fillHex);
   const uint16_t trackColor = parseHexColor(look.track);
+  const uint16_t edgeColor = parseHexColor(look.edge);
   // A handle a finger can move keeps the bar's own colour - handle and filled
   // track are one object that the gap separates - and one that only reports the
   // installation's target takes the track's colour and steps back. The user, on
@@ -1255,9 +1259,9 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
       drawRun(seg, trackColor);
       return;
     }
-    drawRun(seg, fillColor);
+    drawRun(seg, edgeColor);
     LevelSegment inner;
-    if (levelshape::frameInner(seg, vertical, inner)) drawRun(inner, trackColor);
+    if (levelshape::frameInner(seg, vertical, inner, look.edgeWidth)) drawRun(inner, trackColor);
   };
 #endif
 
@@ -1390,8 +1394,9 @@ bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
         continue;
       }
       LevelSegment inner;
-      if (levelshape::frameInner(seg, vertical, inner)) painted.push_back(pillOf(bandOf(inner), trackColor));
-      painted.push_back(pillOf(bandOf(seg), fillColor));
+      if (levelshape::frameInner(seg, vertical, inner, look.edgeWidth))
+        painted.push_back(pillOf(bandOf(inner), trackColor));
+      painted.push_back(pillOf(bandOf(seg), edgeColor));
     }
     paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)),
                gradient ? &shading : nullptr);
@@ -1711,8 +1716,11 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // old project files and are simply not read.
   const String fillHex = materialcolors::applyDepth(
       obj.properties.fillColor.isEmpty() ? String("#4CAF50") : obj.properties.fillColor);
-  const LevelTrackLook look = levelshape::trackLook(fillHex, currentScreenBgHex_);
+  const levelshape::LevelTrackPaint look =
+      levelshape::trackPaint(obj.properties.trackColor, obj.properties.trackEdgeColor, fillHex, currentScreenBgHex_);
   geom.framed = look.framed;
+  geom.frameWidth = look.edgeWidth;
+  geom.framedBody = look.body;
 
   // What the anti-aliased edges mix into: the screen's own colour, which the
   // designer knows too, so both mix into the same thing. Over a background
@@ -1724,7 +1732,9 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // as an outline in the bar's own colour instead of a body in a colour nobody
   // would see. A track you cannot see is not a track.
   const ArcRaster::Rgb565 trackColour =
-      ArcRaster::toRgb565(parseHexColor(look.framed ? fillHex : look.track));
+      ArcRaster::toRgb565(parseHexColor(look.framed ? look.edge : look.track));
+  // Inside a theme's edge the track keeps its colour (trackPaint's body).
+  const ArcRaster::Rgb565 bodyColour = ArcRaster::toRgb565(parseHexColor(look.track));
   // A handle a finger can move keeps the bar's own colour - handle and filled
   // track are one object that the gap separates - and one that only reports the
   // installation's target takes the track's colour and steps back. The user,
@@ -1832,7 +1842,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
         bandsCycles += esp_cpu_get_cycle_count() - c0;
         pixelsSeen++;
       }
-      const int32_t covered = bands.fill + bands.track + bands.handle + bands.pointer;
+      const int32_t covered = bands.fill + bands.track + bands.body + bands.handle + bands.pointer;
       // The pixel's centre, in 1/8 pixel from the ring's centre.
       const int32_t cx = px * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
       const int32_t cy = py * ArcRaster::SUBPIXEL_SCALE + ArcRaster::SUBPIXEL_SCALE / 2 - centre;
@@ -1877,9 +1887,9 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
       ArcRaster::Rgb565 fillHere = fillColour;
       if (hasGradient && bands.fill > 0) fillHere = stepColour[step > lastStep ? lastStep : step];
       if (profiling) shadeCycles += esp_cpu_get_cycle_count() - s0;
-      const uint16_t mixed = ArcRaster::blendBands(fillHere, bands.fill, trackColour, bands.track, handleFill,
-                                                   bands.handle, pointerColour, bands.pointer, base,
-                                                   (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
+      const uint16_t mixed = ArcRaster::blendBands(fillHere, bands.fill, trackColour, bands.track, bodyColour,
+                                                   bands.body, handleFill, bands.handle, pointerColour,
+                                                   bands.pointer, base, (uint8_t)(ArcRaster::COVERAGE_MAX - covered));
       uint32_t d1 = profiling ? esp_cpu_get_cycle_count() : 0;
       canvas_->drawPixel(obj.x + px, obj.y + py, mixed);
       if (profiling) {

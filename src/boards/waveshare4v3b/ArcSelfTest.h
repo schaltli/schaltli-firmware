@@ -142,7 +142,7 @@ inline String run(bool &ok)
         ArcRaster::fastPathEnabled() = true;
         totalPixels++;
 
-        if (fast.fill != slow.fill || fast.track != slow.track || fast.handle != slow.handle)
+        if (fast.fill != slow.fill || fast.track != slow.track || fast.body != slow.body || fast.handle != slow.handle)
         {
           mismatch++;
           if (mismatch <= 3)

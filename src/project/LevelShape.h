@@ -427,26 +427,65 @@ inline LevelTrackLook trackLook(const String& fillColor, const String& backgroun
   return look;
 }
 
+// What a level's empty track is painted with (designer lib/level-shape.ts
+// levelTrackPaint, 2026-09-30): its colour and an edge are the theme's, carried
+// in trackColor and trackEdgeColor. An edge frames the track, EDGE_WIDTH px, the
+// body in the track's colour. Without one, a track that cannot be told from
+// the background - all of 1 bit - is framed in the fill's colour, 1 px, with no
+// body, as before. Without a trackColor the track is derived (trackLook).
+constexpr int EDGE_WIDTH = 2;
+
+struct LevelTrackPaint {
+  String track;
+  bool framed = false;
+  String edge;
+  int edgeWidth = 1;
+  bool body = false;
+};
+
+inline bool isHexColour(const String& s) { return s.length() == 7 && s[0] == '#'; }
+
+inline LevelTrackPaint trackPaint(const String& trackColor, const String& trackEdgeColor,
+                                  const String& fillHex, const String& background) {
+  LevelTrackPaint paint;
+  const LevelTrackLook derived = trackLook(fillHex, background);
+  paint.track = isHexColour(trackColor) ? materialcolors::applyDepth(trackColor) : derived.track;
+  if (isHexColour(trackEdgeColor)) {
+    paint.framed = true;
+    paint.edge = materialcolors::applyDepth(trackEdgeColor);
+    paint.edgeWidth = EDGE_WIDTH;
+    paint.body = true;
+    return paint;
+  }
+  const materialcolors::Rgb t = materialcolors::channels(paint.track);
+  const materialcolors::Rgb b = materialcolors::channels(materialcolors::applyDepth(background));
+  paint.framed = !t.valid || !b.valid || (t.r == b.r && t.g == b.g && t.b == b.b);
+  paint.edge = fillHex;
+  paint.edgeWidth = 1;
+  paint.body = false;
+  return paint;
+}
+
 // The inside of a framed run: the run itself, taken in by one pixel across, and
 // along it only at an end that is the track's own. At an end that was cut the
 // frame is left open, so it is one path that stops straight where the handle
 // begins rather than a string of small pills each closing with a rounded cap.
-inline bool frameInner(const LevelSegment& seg, bool vertical, LevelSegment& out) {
-  const int a0 = seg.roundStart ? 1 : 0;
-  const int a1 = seg.roundEnd ? 1 : 0;
+inline bool frameInner(const LevelSegment& seg, bool vertical, LevelSegment& out, int width = 1) {
+  const int a0 = seg.roundStart ? width : 0;
+  const int a1 = seg.roundEnd ? width : 0;
   out = seg;
   if (vertical) {
-    out.x = seg.x + 1;
+    out.x = seg.x + width;
     out.y = seg.y + a0;
-    out.w = seg.w - 2;
+    out.w = seg.w - 2 * width;
     out.h = seg.h - a0 - a1;
   } else {
     out.x = seg.x + a0;
-    out.y = seg.y + 1;
+    out.y = seg.y + width;
     out.w = seg.w - a0 - a1;
-    out.h = seg.h - 2;
+    out.h = seg.h - 2 * width;
   }
-  out.r = seg.r > 1 ? seg.r - 1 : 0;
+  out.r = seg.r > width ? seg.r - width : 0;
   return out.w > 0 && out.h > 0;
 }
 
