@@ -96,7 +96,11 @@ private:
     int16_t bbw, bbh, bbox, bboy;
     uint16_t rowCount;
     uint16_t bitsPerRow;
-    uint32_t rowOffset;  // into rows_
+    // A row takes as many 32-bit words as its hex digits need, so a glyph
+    // may be wider than 32 px (2026-09-30: FreeUniversal 42, DSEG7). Word 0
+    // of a row holds its rightmost 32 bits.
+    uint16_t wordsPerRow;
+    uint32_t rowOffset;  // into rows_, in words
   };
 
   const Glyph* find(uint16_t codepoint) const;
@@ -110,7 +114,7 @@ private:
   // end. When it is false, find() scans linearly instead - correct for any
   // order, and no BDF seen so far needs it.
   bool sorted_ = true;
-  uint32_t* rows_ = nullptr;  // PSRAM, one entry per bitmap row
+  uint32_t* rows_ = nullptr;  // PSRAM, wordsPerRow words per bitmap row
   uint32_t glyphCount_ = 0;
   uint32_t rowCount_ = 0;
   int16_t fontAscent_ = 0;

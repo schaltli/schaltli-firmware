@@ -65,18 +65,34 @@ bool isHexLine(const char* s, size_t len) {
   return true;
 }
 
-uint32_t parseHexRow(const char* s, size_t len) {
-  uint32_t v = 0;
-  for (size_t i = 0; i < len; i++) {
-    const char c = s[i];
+// The 32-bit words a row of `len` hex digits takes.
+uint16_t wordsFor(size_t len) {
+  return (uint16_t)((len + 7) / 8);
+}
+
+// Parses a hex row into `words`, word 0 holding its rightmost 32 bits.
+// Until 2026-09-30 a row was one uint32_t, and a glyph wider than 32 px -
+// FreeUniversal 42's "D", every digit of DSEG7 - lost its left part: the
+// designer's lib/bdffont.ts had the same limit and the same fix.
+void parseHexRow(const char* s, size_t len, uint32_t* words) {
+  const uint16_t n = wordsFor(len);
+  for (uint16_t w = 0; w < n; w++) words[w] = 0;
+  for (size_t j = 0; j < len; j++) {
+    // j counts hex digits from the right end of the row.
+    const char c = s[len - 1 - j];
     uint32_t d;
     if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
     else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
     else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
-    else break;
-    v = (v << 4) | d;
+    else d = 0;
+    words[j / 8] |= d << ((j % 8) * 4);
   }
-  return v;
+}
+
+// Bit `bit` of a row counted from its right end; 0 beyond the row.
+bool rowBit(const uint32_t* words, uint16_t wordsPerRow, int bit) {
+  if (bit < 0 || (bit >> 5) >= (int)wordsPerRow) return false;
+  return ((words[bit >> 5] >> (bit & 31)) & 0x01) != 0;
 }
 
 }  // namespace
@@ -122,7 +138,7 @@ bool BdfFont::parse(const char* text, size_t length) {
         inChar = false;
         inBitmap = false;
       } else if (inBitmap) {
-        if (isHexLine(line, len)) rows++;
+        if (isHexLine(line, len)) rows += wordsFor(len);
       } else if (startsWith(line, len, "BITMAP")) {
         inBitmap = true;
       }
@@ -133,7 +149,7 @@ bool BdfFont::parse(const char* text, size_t length) {
   glyphs_ = (Glyph*)heap_caps_malloc((size_t)glyphs * sizeof(Glyph), MALLOC_CAP_SPIRAM);
   rows_ = (uint32_t*)heap_caps_malloc((size_t)(rows == 0 ? 1 : rows) * sizeof(uint32_t), MALLOC_CAP_SPIRAM);
   if (glyphs_ == nullptr || rows_ == nullptr) {
-    Serial.printf("[bdf] no PSRAM for %u glyphs / %u rows\n", (unsigned)glyphs, (unsigned)rows);
+    Serial.printf("[bdf] no PSRAM for %u glyphs / %u row words\n", (unsigned)glyphs, (unsigned)rows);
     release();
     return false;
   }
@@ -191,12 +207,14 @@ bool BdfFont::parse(const char* text, size_t length) {
     }
 
     if (inBitmap) {
-      if (isHexLine(line, len) && rowIndex < rows) {
+      if (isHexLine(line, len) && rowIndex + wordsFor(len) <= rows) {
         // BDF pads each row to whole hex digits, and the designer derives
         // its shift width from that padded length rather than from BBw -
         // drawGlyph depends on matching it exactly.
         current.bitsPerRow = (uint16_t)(len * 4);
-        rows_[rowIndex++] = parseHexRow(line, len);
+        current.wordsPerRow = wordsFor(len);
+        parseHexRow(line, len, &rows_[rowIndex]);
+        rowIndex += current.wordsPerRow;
         current.rowCount++;
       }
       continue;
@@ -318,10 +336,13 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
   const int16_t oy = (int16_t)(by - g->bboy - g->bbh);
 
   for (uint16_t row = 0; row < g->rowCount; row++) {
-    const uint32_t bits = rows_[g->rowOffset + row];
+    const uint32_t* words = &rows_[g->rowOffset + (uint32_t)row * g->wordsPerRow];
     // Blank rows are most of a glyph's box - the space above an 'a', below
-    // everything without a descender - and skipping them costs one test.
-    if (bits == 0) continue;
+    // everything without a descender - and skipping them costs a test per
+    // word.
+    bool blank = true;
+    for (uint16_t w = 0; w < g->wordsPerRow && blank; w++) blank = words[w] == 0;
+    if (blank) continue;
 
     const int16_t y = (int16_t)(oy + (int16_t)row);
     // Emitted as horizontal runs rather than one drawPixel per lit pixel.
@@ -340,7 +361,7 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
     // projects identical.
     int runStart = -1;
     for (int bit = (int)g->bitsPerRow, x = 0; bit >= 0; bit--, x++) {
-      const bool on = ((bits >> bit) & 0x01) != 0;
+      const bool on = rowBit(words, g->wordsPerRow, bit);
       if (on) {
         if (runStart < 0) runStart = x;
       } else if (runStart >= 0) {
