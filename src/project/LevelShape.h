@@ -443,7 +443,7 @@ struct LevelTrackPaint {
   bool body = false;
 };
 
-inline bool isHexColour(const String& s) { return s.length() == 7 && s[0] == '#'; }
+inline bool isHexColour(const String& s) { return s.length() == 7 && s.charAt(0) == '#'; }
 
 inline LevelTrackPaint trackPaint(const String& trackColor, const String& trackEdgeColor,
                                   const String& fillHex, const String& background) {
