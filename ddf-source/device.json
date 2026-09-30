@@ -9,7 +9,9 @@
   "screen": {
     "width": 360,
     "height": 360,
-    "colorDepth": "24bit"
+    "colorDepth": "24bit",
+    "widthMm": 45.68,
+    "heightMm": 45.68
   },
   "adornment": {
     "svgPath": "adornment.svg"
@@ -22,7 +24,9 @@
       "file": "fonts/helvR08.bdf",
       "size": 12,
       "ascent": 10,
-      "descent": 2
+      "descent": 2,
+      "family": "Helvetica",
+      "weight": "regular"
     },
     {
       "id": "font-helvR12",
@@ -31,7 +35,9 @@
       "file": "fonts/helvR12.bdf",
       "size": 18,
       "ascent": 14,
-      "descent": 4
+      "descent": 4,
+      "family": "Helvetica",
+      "weight": "regular"
     },
     {
       "id": "font-helvR18",
@@ -40,7 +46,9 @@
       "file": "fonts/helvR18.bdf",
       "size": 27,
       "ascent": 22,
-      "descent": 5
+      "descent": 5,
+      "family": "Helvetica",
+      "weight": "regular"
     },
     {
       "id": "font-helvR24",
@@ -49,7 +57,9 @@
       "file": "fonts/helvR24.bdf",
       "size": 35,
       "ascent": 28,
-      "descent": 7
+      "descent": 7,
+      "family": "Helvetica",
+      "weight": "regular"
     },
     {
       "id": "font-helvB08",
@@ -58,7 +68,9 @@
       "file": "fonts/helvB08.bdf",
       "size": 12,
       "ascent": 10,
-      "descent": 2
+      "descent": 2,
+      "family": "Helvetica",
+      "weight": "bold"
     },
     {
       "id": "font-helvB12",
@@ -67,7 +79,9 @@
       "file": "fonts/helvB12.bdf",
       "size": 18,
       "ascent": 14,
-      "descent": 4
+      "descent": 4,
+      "family": "Helvetica",
+      "weight": "bold"
     },
     {
       "id": "font-helvB18",
@@ -76,7 +90,9 @@
       "file": "fonts/helvB18.bdf",
       "size": 27,
       "ascent": 22,
-      "descent": 5
+      "descent": 5,
+      "family": "Helvetica",
+      "weight": "bold"
     },
     {
       "id": "font-helvB24",
@@ -85,7 +101,9 @@
       "file": "fonts/helvB24.bdf",
       "size": 35,
       "ascent": 28,
-      "descent": 7
+      "descent": 7,
+      "family": "Helvetica",
+      "weight": "bold"
     },
     {
       "id": "font-courR12",
@@ -94,7 +112,9 @@
       "file": "fonts/courR12.bdf",
       "size": 15,
       "ascent": 12,
-      "descent": 3
+      "descent": 3,
+      "family": "Courier",
+      "weight": "regular"
     },
     {
       "id": "font-courR18",
@@ -103,7 +123,20 @@
       "file": "fonts/courR18.bdf",
       "size": 22,
       "ascent": 17,
-      "descent": 5
+      "descent": 5,
+      "family": "Courier",
+      "weight": "regular"
+    }
+  ],
+  "typography": [
+    {
+      "name": "Standard",
+      "styles": {
+        "caption": "Helvetica",
+        "label": "Helvetica",
+        "title": "Helvetica",
+        "display": "Helvetica"
+      }
     }
   ],
   "supportedObjectTypes": [
