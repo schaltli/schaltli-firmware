@@ -44,7 +44,7 @@
 // designer verifies this hash against what it downloads and refuses the
 // fetch on a mismatch, so a stale hash does not degrade auto-discovery, it
 // ends it.
-#define DDF_HASH "cec2fd3b4cc36d29"
+#define DDF_HASH "fc00061f17099eb7"
 
 // The system generation this firmware understands - the single version
 // number shared by the designer's project file, its device export, and the
