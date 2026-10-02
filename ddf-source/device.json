@@ -9,6 +9,7 @@
   "screen": {
     "width": 360,
     "height": 360,
+    "shape": "round",
     "colorDepth": "24bit",
     "widthMm": 45.68,
     "heightMm": 45.68
