@@ -2590,6 +2590,57 @@ const ScreenObject* ColorScreenRenderer::findObjectById(int screenIndex, const S
                       [this](const ScreenObject& tabControl) { return getActivePanel(tabControl); });
 }
 
+namespace {
+// The first settable level among these objects, in their order, looking into
+// a nested switcher's visible panel as findByIdWalk does.
+const ScreenObject* firstSettableLevel(const std::vector<ScreenObject>& objects,
+                                       const std::function<const ScreenObject*(const ScreenObject&)>& activePanelOf) {
+  for (const auto& o : objects) {
+    if (ColorScreenRenderer::isSettableLevel(o)) return &o;
+    if (o.type == "switcher") {
+      const ScreenObject* panel = activePanelOf(o);
+      const ScreenObject* found = panel != nullptr ? firstSettableLevel(panel->children, activePanelOf) : nullptr;
+      if (found != nullptr) return found;
+    }
+  }
+  return nullptr;
+}
+}  // namespace
+
+const ScreenObject* ColorScreenRenderer::adjustableLevel(int screenIndex, const String& targetId) const {
+  int16_t objX = 0;
+  int16_t objY = 0;
+  const ScreenObject* target = findObjectById(screenIndex, targetId, objX, objY);
+  if (target == nullptr) return nullptr;
+  if (isSettableLevel(*target)) return target;
+  if (target->type != "switcher") return nullptr;
+  const ScreenObject* panel = getActivePanel(*target);
+  if (panel == nullptr) return nullptr;
+  return firstSettableLevel(panel->children, [this](const ScreenObject& s) { return getActivePanel(s); });
+}
+
+bool ColorScreenRenderer::adjustedLevelValue(const ScreenObject& level, const String& current, bool up, float& next) {
+  float minValue = 0.0f;
+  float maxValue = 100.0f;
+  if (level.properties.calibrationPoints.size() >= 2) {
+    minValue = maxValue = level.properties.calibrationPoints[0].value;
+    for (const auto& p : level.properties.calibrationPoints) {
+      minValue = fminf(minValue, p.value);
+      maxValue = fmaxf(maxValue, p.value);
+    }
+  }
+  const float step = level.properties.step > 0.0f ? level.properties.step : 1.0f;
+  String trimmed = current;
+  trimmed.trim();
+  const float from = trimmed.isEmpty() ? minValue : trimmed.toFloat();
+  const float snapped = roundf((from + (up ? step : -step)) / step) * step;
+  // A step that does not divide the range tops out below the maximum, as a
+  // finger does.
+  const float highest = minValue + floorf((maxValue - minValue) / step + 1e-4f) * step;
+  next = fminf(highest, fmaxf(minValue, snapped));
+  return fabsf(next - from) > 1e-4f;
+}
+
 const ScreenObject* ColorScreenRenderer::hitTestTappable(int screenIndex, int16_t x, int16_t y,
                                                           int16_t& objX, int16_t& objY) const {
   if (!projectLoader_.isLoaded()) return nullptr;

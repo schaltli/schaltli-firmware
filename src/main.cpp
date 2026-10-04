@@ -124,6 +124,7 @@ static bool renderScreenIndex(int index);
 // Definiert bei der Latenz-Spur weiter unten; dispatchButtonAction steht davor.
 static void latMark(const char *tag, const char *info);
 static void enterSetupMode();
+static void adjustLevel(const ButtonAction &action);
 static void dispatchInput(const char *buttonId);
 
 // ---------------------------------------------------------------- display
@@ -568,6 +569,11 @@ static void dispatchButtonAction(const ButtonAction &action) {
     }
   } else if (action.type == "goto-setup-mode") {
     enterSetupMode();
+  } else if (action.type == "adjust-level") {
+    // A detent moves a slider or dial one step and writes the absolute value,
+    // so the receiver never has to understand "increment" (designer
+    // docs/device-contract.md §5, 2026-10-04).
+    adjustLevel(action);
   }
 }
 
@@ -1484,6 +1490,40 @@ static void endLevelDrag() {
     menuBackdropReady = false;
     renderScreenIndex(currentScreenIndex);
   }
+}
+
+// Eine Raste am Ring (oder eine Taste mit "adjust-level"): der Regler geht
+// eine Stufe weiter, und geschrieben wird der absolute Wert - wie beim
+// Loslassen eines Fingers, nur ohne Zug. Gezaehlt wird vom Wert, den der
+// Regler zeigt: dem angeforderten, solange einer gilt, sonst dem gemeldeten.
+// Sonst ginge beim schnellen Drehen jede Raste vom selben alten Wert aus, und
+// Rasten gingen verloren. Jede Raste ein Write, ohne Sammelzeit (2026-10-04,
+// am Geraet zu pruefen). Am Ende des Bereichs passiert nichts.
+static void adjustLevel(const ButtonAction &action) {
+  if (screenRenderer == nullptr || !projectLoader.isLoaded()) return;
+  // Liegt ein Finger auf einem Regler, gehoert ihm der Wert.
+  if (!levelDragObjId.isEmpty()) return;
+  const ScreenObject *level = screenRenderer->adjustableLevel(currentScreenIndex, action.targetObjectId);
+  if (level == nullptr || level->properties.writeTopic.isEmpty()) return;
+
+  const String markerTopic =
+      level->properties.setpointTopic.isEmpty() ? level->properties.topic : level->properties.setpointTopic;
+  String current = screenRenderer->askedValueFor(markerTopic);
+  if (current.isEmpty()) current = projectLoader.getTopicValue(markerTopic);
+  float next = 0.0f;
+  if (!ColorScreenRenderer::adjustedLevelValue(*level, current, action.direction != "down", next)) return;
+  const String payload = formatLevelPayload(next);
+
+  levelAskedTopic = markerTopic;
+  screenRenderer->setAskedValue(levelAskedTopic, payload);
+  canvasPresenter.invalidateSlots();
+  menuBackdropReady = false;
+  renderScreenIndex(currentScreenIndex);
+  mqttClient.publish(level->properties.writeTopic, payload, false);
+  Serial.printf("[level] Raste %s -> %s = %s\n", action.direction.c_str(), level->properties.writeTopic.c_str(),
+                payload.c_str());
+  levelAwaitValue = payload;
+  levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
 }
 
 static void pollTouchGesturesInner() {

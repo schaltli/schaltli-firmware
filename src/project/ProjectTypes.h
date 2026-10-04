@@ -95,6 +95,11 @@ struct ButtonAction {
   // degrade, never break" convention unknown object types already follow, so
   // a project built against a newer device still runs here.
   String deviceActionId;
+  // for "adjust-level" (designer docs/device-contract.md §5, 2026-10-04): the
+  // slider or dial - or the switcher whose visible panel holds one - a press
+  // moves one step, and which way ("up"/"down"). main.cpp's adjustLevel().
+  String targetObjectId;
+  String direction;
 };
 
 // Base properties for screen objects

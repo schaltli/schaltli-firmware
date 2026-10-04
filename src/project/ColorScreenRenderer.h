@@ -420,6 +420,20 @@ private:
   // still means the end of that bar, not "nothing here".
   const ScreenObject* findObjectById(int screenIndex, const String& id, int16_t& objX, int16_t& objY) const;
 
+  // «Adjust a slider or dial» (docs/device-contract.md §5 in the designer
+  // repo, 2026-10-04): the slider or dial a press moves - the target itself,
+  // or for a switcher the first settable level, in object order, of the panel
+  // it shows now. nullptr when the target is not on screen or its panel holds
+  // none: the press does nothing.
+  const ScreenObject* adjustableLevel(int screenIndex, const String& targetId) const;
+
+  // The value one press writes, from the value shown (`current`, "" for none
+  // yet: the range's minimum): one step up or down onto the grid a finger
+  // snaps to (roundf(value / step) * step), clamped to the outer calibration
+  // points (default 0-100). False at the end of the range - nothing to write.
+  // The designer's lib/adjust-level.ts adjustedValue() does the same.
+  static bool adjustedLevelValue(const ScreenObject& level, const String& current, bool up, float& next);
+
   // What a finger asked one object for, drawn as its setpoint marker until
   // the installation answers (docs/2026-09-17-settable-level.md in the
   // designer repo, decision 6c: the finger moves the marker, the fill keeps
