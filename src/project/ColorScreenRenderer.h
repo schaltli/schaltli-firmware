@@ -427,10 +427,13 @@ private:
   // none: the press does nothing.
   const ScreenObject* adjustableLevel(int screenIndex, const String& targetId) const;
 
-  // The value one press writes, from the value shown (`current`, "" for none
-  // yet: the range's minimum): one step up or down onto the grid a finger
-  // snaps to (roundf(value / step) * step), clamped to the outer calibration
-  // points (default 0-100). False at the end of the range - nothing to write.
+  // The value one press writes, from the value shown (`current`): one step up
+  // or down onto the grid a finger snaps to (roundf(value / step) * step),
+  // clamped to the outer calibration points (default 0-100). False at the end
+  // of the range, and while no value is known yet (after a restart, before
+  // the installation said anything) - nothing to write: stepping a heater
+  // from a guessed minimum would surprise more than a ring that waits
+  // (decided 2026-10-04).
   // The designer's lib/adjust-level.ts adjustedValue() does the same.
   static bool adjustedLevelValue(const ScreenObject& level, const String& current, bool up, float& next);
 

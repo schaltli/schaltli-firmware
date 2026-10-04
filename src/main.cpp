@@ -124,7 +124,8 @@ static bool renderScreenIndex(int index);
 // Definiert bei der Latenz-Spur weiter unten; dispatchButtonAction steht davor.
 static void latMark(const char *tag, const char *info);
 static void enterSetupMode();
-static void adjustLevel(const ButtonAction &action);
+static void adjustLevel(const ButtonAction &action, int32_t steps);
+static void dispatchDetents(const char *buttonId, int32_t count);
 static void dispatchInput(const char *buttonId);
 
 // ---------------------------------------------------------------- display
@@ -573,7 +574,7 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // A detent moves a slider or dial one step and writes the absolute value,
     // so the receiver never has to understand "increment" (designer
     // docs/device-contract.md §5, 2026-10-04).
-    adjustLevel(action);
+    adjustLevel(action, 1);
   }
 }
 
@@ -1497,9 +1498,14 @@ static void endLevelDrag() {
 // Loslassen eines Fingers, nur ohne Zug. Gezaehlt wird vom Wert, den der
 // Regler zeigt: dem angeforderten, solange einer gilt, sonst dem gemeldeten.
 // Sonst ginge beim schnellen Drehen jede Raste vom selben alten Wert aus, und
-// Rasten gingen verloren. Jede Raste ein Write, ohne Sammelzeit (2026-10-04,
-// am Geraet zu pruefen). Am Ende des Bereichs passiert nichts.
-static void adjustLevel(const ButtonAction &action) {
+// Rasten gingen verloren. Am Ende des Bereichs passiert nichts, und ohne
+// bekannten Wert auch nicht.
+//
+// `steps` Rasten auf einmal: was beim schnellen Drehen auflief, waehrend der
+// Screen gezeichnet wurde. Sie werden ein Sprung, ein Bild, ein Write - eine
+// Raste kostet 70-100 ms Zeichnen, und einzeln abgearbeitet hinkte der Regler
+// dem Ring hinterher (2026-10-04, am Geraet: "etwas sluggisch").
+static void adjustLevel(const ButtonAction &action, int32_t steps) {
   if (screenRenderer == nullptr || !projectLoader.isLoaded()) return;
   // Liegt ein Finger auf einem Regler, gehoert ihm der Wert.
   if (!levelDragObjId.isEmpty()) return;
@@ -1510,9 +1516,15 @@ static void adjustLevel(const ButtonAction &action) {
       level->properties.setpointTopic.isEmpty() ? level->properties.topic : level->properties.setpointTopic;
   String current = screenRenderer->askedValueFor(markerTopic);
   if (current.isEmpty()) current = projectLoader.getTopicValue(markerTopic);
-  float next = 0.0f;
-  if (!ColorScreenRenderer::adjustedLevelValue(*level, current, action.direction != "down", next)) return;
-  const String payload = formatLevelPayload(next);
+  bool moved = false;
+  for (int32_t i = 0; i < steps; i++) {
+    float next = 0.0f;
+    if (!ColorScreenRenderer::adjustedLevelValue(*level, current, action.direction != "down", next)) break;
+    current = formatLevelPayload(next);
+    moved = true;
+  }
+  if (!moved) return;
+  const String payload = current;
 
   levelAskedTopic = markerTopic;
   screenRenderer->setAskedValue(levelAskedTopic, payload);
@@ -1520,8 +1532,8 @@ static void adjustLevel(const ButtonAction &action) {
   menuBackdropReady = false;
   renderScreenIndex(currentScreenIndex);
   mqttClient.publish(level->properties.writeTopic, payload, false);
-  Serial.printf("[level] Raste %s -> %s = %s\n", action.direction.c_str(), level->properties.writeTopic.c_str(),
-                payload.c_str());
+  Serial.printf("[level] %d Raste(n) %s -> %s = %s\n", (int)steps, action.direction.c_str(),
+                level->properties.writeTopic.c_str(), payload.c_str());
   levelAwaitValue = payload;
   levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
 }
@@ -2179,7 +2191,19 @@ static void pollEncoder() {
 
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
   latMark("knob", buttonId);
-  for (int32_t i = 0; i < abs(detents); i++) dispatchInput(buttonId);
+  dispatchDetents(buttonId, abs(detents));
+}
+
+// Mehrere Rasten auf einmal: ein Regler nimmt sie als einen Sprung
+// (adjustLevel), jede andere Aktion laeuft einmal pro Raste, wie bisher.
+static void dispatchDetents(const char *buttonId, int32_t count) {
+  if (!projectLoader.isLoaded() || count <= 0) return;
+  const ButtonAction action = projectLoader.getButtonAction(currentScreenIndex, String(buttonId));
+  if (action.type == "adjust-level") {
+    adjustLevel(action, count);
+    return;
+  }
+  for (int32_t i = 0; i < count; i++) dispatchInput(buttonId);
 }
 
 static void dispatchInput(const char *buttonId) {
@@ -2786,8 +2810,8 @@ static void setupWiFi() {
       });
       testInterface.setSettingsChangedHandler(applyDeviceSettings);
       testInterface.setScreenListHandler(buildScreenListJson);
-      testInterface.setInputHandler([](const String &buttonId, bool deferRender) {
-        dispatchInput(buttonId.c_str());
+      testInterface.setInputHandler([](const String &buttonId, bool deferRender, int count) {
+        dispatchDetents(buttonId.c_str(), count);
         // The navigation rate limit is there for a physical turn, where the
         // next detent is milliseconds away. An HTTP caller is not turning
         // anything: it dispatches one input and photographs the panel the

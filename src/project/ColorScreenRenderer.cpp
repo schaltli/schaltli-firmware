@@ -2632,7 +2632,8 @@ bool ColorScreenRenderer::adjustedLevelValue(const ScreenObject& level, const St
   const float step = level.properties.step > 0.0f ? level.properties.step : 1.0f;
   String trimmed = current;
   trimmed.trim();
-  const float from = trimmed.isEmpty() ? minValue : trimmed.toFloat();
+  if (trimmed.isEmpty()) return false;
+  const float from = trimmed.toFloat();
   const float snapped = roundf((from + (up ? step : -step)) / step) * step;
   // A step that does not divide the range tops out below the maximum, as a
   // finger does.

@@ -70,7 +70,9 @@ public:
   // returns, so by default the resulting frame has to be on the panel by
   // then, whatever navFrameMs happens to be set to. Only a test that is
   // deliberately bursting - measuring the rate limit itself - passes true.
-  using InputHandler = std::function<void(const String& buttonId, bool deferRender)>;
+  // `count` is how many detents arrived at once (POST /api/input count=N,
+  // default 1): what a fast turn hands the firmware between two polls.
+  using InputHandler = std::function<void(const String& buttonId, bool deferRender, int count)>;
 
   // One synthetic touch sample, fed to the firmware as if the panel had
   // reported it. Exists because a gesture is not otherwise reachable from a
