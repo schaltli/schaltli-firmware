@@ -14,3 +14,8 @@ ddf-source*/** -text
 # on 2026-09-27) every build rewrote them, the tree was never clean - which a
 # release needs - and the DDF freshness check called two of them stale.
 src/boards/*/ddf_zip.h text eol=lf
+
+# A byte-for-byte copy of schaltli-designer's lib/placeholders/vectors.json,
+# compared byte for byte by test/test_placeholders - both are kept LF, or
+# core.autocrlf would make the copy differ on one checkout and not the other.
+test/test_placeholders/placeholder-vectors.json text eol=lf
