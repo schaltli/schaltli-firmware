@@ -50,6 +50,7 @@
 #include "project/ProjectLoader.h"
 #include "project/ThemeVariant.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/Placeholders.h"
 #include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
 #include "project/ColorAssetLoader.h"
@@ -2292,6 +2293,14 @@ static void collectTopics(const std::vector<ScreenObject> &objects, std::vector<
   for (const auto &obj : objects) {
     addTopic(obj.properties.topic, outTopics);
     addTopic(obj.properties.setpointTopic, outTopics);
+    // And every topic a text's placeholder names - a text has no binding, so
+    // without this its topics were never subscribed and it showed `??` for
+    // good (designer docs/2026-10-05-placeholder-devices.md).
+    if (obj.type == "text" && placeholders::mayContainPlaceholder(obj.properties.text.c_str())) {
+      for (const std::string &reference : placeholders::referencedTopics(obj.properties.text.c_str())) {
+        addTopic(String(reference.c_str()), outTopics);
+      }
+    }
     if (!obj.children.empty()) collectTopics(obj.children, outTopics);
   }
 }
@@ -2303,6 +2312,7 @@ static bool screenUsesTopic(const std::vector<ScreenObject> &objects, const Stri
   for (const auto &obj : objects) {
     if (!obj.properties.topic.isEmpty() && stripJsonPath(obj.properties.topic) == topic) return true;
     if (!obj.properties.setpointTopic.isEmpty() && stripJsonPath(obj.properties.setpointTopic) == topic) return true;
+    if (ColorScreenRenderer::textNamesTopic(obj, topic)) return true;
     if (!obj.children.empty() && screenUsesTopic(obj.children, topic)) return true;
   }
   return false;
@@ -2387,7 +2397,6 @@ static void clearDeployTrigger() {
 // zeichnet der Aufrufer ein Vollbild.
 static bool renderTopicChangePartial(const String &topic, const String &oldValue) {
   if (screenRenderer == nullptr || !projectLoader.isLoaded()) return false;
-  if (oldValue.isEmpty()) return false;
 
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
@@ -2402,8 +2411,25 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
     // Verschachtelte Objekte sind nicht eingegrenzt - Kindkoordinaten sind
     // relativ zum Elternobjekt.
     if (!obj.children.empty()) return false;
+    // Ein Text, dessen Platzhalter das Topic nennt: sein ganzes Feld, wie
+    // jedes Textfeld. Er hat keine Bindung und fiele unten durch - und neben
+    // einem gebundenen Objekt am selben Topic wurde nur dieses neu
+    // gezeichnet, der Text behielt den alten Wert (wie auf dem 4.3B,
+    // 2026-10-05).
+    if (ColorScreenRenderer::textNamesTopic(obj, topic)) {
+      if (anzahl + 1 > MAX_RECHTECKE) return false;
+      rx[anzahl] = obj.x;
+      ry[anzahl] = obj.y;
+      rw[anzahl] = obj.width;
+      rh[anzahl] = obj.height;
+      anzahl++;
+      continue;
+    }
     if (obj.properties.topic.isEmpty()) continue;
     if (stripJsonPath(obj.properties.topic) != topic) continue;
+    // Der erste Wert eines gebundenen Objekts: nichts, wogegen sich ein
+    // Ausschnitt abgrenzen liesse. Ein Text oben braucht keinen alten Wert.
+    if (oldValue.isEmpty()) return false;
 
     if (objecttypes::isArc(obj.type)) {
       const String newValue = projectLoader.getTopicValue(obj.properties.topic);
