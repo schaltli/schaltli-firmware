@@ -41,7 +41,10 @@
 #define SYSTEM_GENERATION_MAJOR 1
 // 1: reads the dark variant (XDark) of a 1.1 export and, on a colour board,
 // follows schaltli/state/theme (designer docs/device-contract.md 2.3, 4).
-#define SYSTEM_GENERATION_MINOR 1
+// 2: resolves the placeholders in a text - topics, device model and id, the
+// project's separators (designer docs/device-contract.md 2.4). The designer
+// warns before deploying a project with placeholders to a device below it.
+#define SYSTEM_GENERATION_MINOR 2
 
 // Where DeployManager promotes a verified deploy download to, and the
 // recovery endpoint reads back from.
