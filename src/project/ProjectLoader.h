@@ -19,6 +19,7 @@ public:
   bool isLoaded() const override { return loaded_; }
   String getTopicValue(const String& topic) const override;
   void setTopicValue(const String& topic, const String& value) override;
+  bool hasTopicValue(const String& topic) const override;
   ButtonAction getButtonAction(int screenIndex, const String& buttonId) const override;
   void applyThemeVariant(bool dark) override;
 

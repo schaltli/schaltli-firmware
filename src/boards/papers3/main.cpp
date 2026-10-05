@@ -519,6 +519,9 @@ static bool setupPanelAndProject()
 
   displayAdapter = new PanelDisplayAdapter(*canvas, panel, panel.width(), panel.height());
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+  // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
+  // The id is fixed at construction, so it is there before the first draw.
+  renderer->setDeviceId(mqttClient.getClientId());
 
   if (!LittleFS.begin(true))
   {

@@ -160,6 +160,8 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
   project_.screenWidth = doc["screenWidth"] | 300;
   project_.screenHeight = doc["screenHeight"] | 400;
   project_.exportColorDepth = doc["exportColorDepth"] | "1bit";
+  project_.decimalSeparator = doc["decimalSeparator"] | ".";
+  project_.thousandsSeparator = doc["thousandsSeparator"] | "'";
   
   // Parse topics
   if (doc["topics"].is<JsonArray>()) {
@@ -591,9 +593,19 @@ void ProjectLoader::setTopicValue(const String& topic, const String& value) {
   for (auto& t : project_.topics) {
     if (t.topic == topic) {
       t.currentValue = value;
+      t.arrived = true;
       return;
     }
   }
+}
+
+bool ProjectLoader::hasTopicValue(const String& topicOrPath) const {
+  const int hashIndex = topicOrPath.indexOf('#');
+  const String realTopic = hashIndex >= 0 ? topicOrPath.substring(0, hashIndex) : topicOrPath;
+  for (const auto& t : project_.topics) {
+    if (t.topic == realTopic) return t.arrived;
+  }
+  return false;
 }
 
 namespace {

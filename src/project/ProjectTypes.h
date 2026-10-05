@@ -389,6 +389,11 @@ struct MQTTTopic {
   String type;                            // "numeric", "string", "boolean", "json"
   std::vector<String> examples;
   String currentValue;                    // Current value (updated by MQTT later) - for "json", the whole raw payload
+  // Whether a message has arrived on this topic since the project loaded. A
+  // placeholder's `??` fallback stands only for a value that never arrived;
+  // an empty message that did arrive shows empty (designer
+  // docs/2026-09-25-text-placeholders.md).
+  bool arrived = false;
   std::vector<JsonSubtopic> subtopics;     // only meaningful when type == "json"
 };
 
@@ -413,6 +418,11 @@ struct ProjectConfig {
   std::vector<Font> fonts;
   std::vector<Screen> screens;
   std::vector<HardwareButtonDef> hardwareButtons;
+  // How a placeholder's F and N formats write a number (designer
+  // docs/device-contract.md 2.4): one character each, the thousands one may
+  // be empty. An export from before 2026-10-05 has neither: Switzerland's.
+  String decimalSeparator = ".";
+  String thousandsSeparator = "'";
   // Which variant the pairs above currently hold, and which pairs
   // ThemeVariant.h swapped to get there - kept so that exactly those are
   // swapped back.

@@ -108,6 +108,20 @@ public:
   // target.
   void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
 
+  // What `{device:id}` shows in a text: the MQTT client id, which the
+  // renderer has no way to know by itself. Until it is set, empty.
+  void setDeviceId(const String& id) { deviceId_ = id; }
+
+  // A text with its placeholders resolved - `{topic:…}` from the topic's
+  // last value, `{device:model}` and `{device:id}`, the project's
+  // separators (designer docs/2026-10-05-placeholder-devices.md). A text
+  // without a `{` comes back as it is.
+  String resolvePlaceholders(const String& text) const;
+
+  // Whether a text object names `topic` (bare, no `#json.path`) in a
+  // placeholder - what a partial redraw asks when that topic changes.
+  static bool textNamesTopic(const ScreenObject& obj, const String& topic);
+
   // Parses every font the loaded project references, up front.
   //
   // Fonts load lazily on first use otherwise, and that first use is inside
@@ -218,6 +232,7 @@ private:
 
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
+  String deviceId_;
   DdfFontStore fontStore_;
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,

@@ -8,6 +8,8 @@
 #include "ArcRaster.h"
 #include "LevelGlow.h"
 #include "ArcSinTable.h"  // ARC_SIN_SCALE - Skala von ArcRaster::direction()
+#include "Placeholders.h"
+#include "DeviceInfo.h"  // DEVICE_MODEL, this board's own
 #include <algorithm>
 
 // Matches JavaScript's Math.round() exactly, including its tie-breaking
@@ -472,8 +474,43 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
 }
 
 bool ColorScreenRenderer::renderLabel(const ScreenObject& obj) {
-  drawTextBox(obj, obj.properties.text, true);
+  drawTextBox(obj, resolvePlaceholders(obj.properties.text), true);
   return true;
+}
+
+String ColorScreenRenderer::resolvePlaceholders(const String& text) const {
+  const std::string source(text.c_str());
+  if (!placeholders::mayContainPlaceholder(source)) return text;
+  const ProjectConfig& project = projectLoader_.getProject();
+  placeholders::Separators separators;
+  separators.decimal = project.decimalSeparator.c_str();
+  separators.thousands = project.thousandsSeparator.c_str();
+  auto lookup = [this](const placeholders::Reference& reference) -> std::optional<std::string> {
+    if (reference.ns == "topic") {
+      const String topic(reference.path.c_str());
+      // Never arrived is not the same as empty: only the first takes `??`.
+      if (!projectLoader_.hasTopicValue(topic)) return std::nullopt;
+      return std::string(projectLoader_.getTopicValue(topic).c_str());
+    }
+    if (reference.ns == "device") {
+      if (reference.path == "model") return std::string(DEVICE_MODEL);
+      return std::string(deviceId_.c_str());
+    }
+    // project: is written in by the export and never arrives here.
+    return std::nullopt;
+  };
+  return String(placeholders::resolve(source, lookup, separators).c_str());
+}
+
+bool ColorScreenRenderer::textNamesTopic(const ScreenObject& obj, const String& topic) {
+  if (obj.type != "text") return false;
+  const std::string text(obj.properties.text.c_str());
+  if (!placeholders::mayContainPlaceholder(text)) return false;
+  for (const std::string& reference : placeholders::referencedTopics(text)) {
+    const size_t hash = reference.find('#');
+    if (topic == (hash == std::string::npos ? reference : reference.substr(0, hash)).c_str()) return true;
+  }
+  return false;
 }
 
 bool ColorScreenRenderer::renderBox(const ScreenObject& obj) {

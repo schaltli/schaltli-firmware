@@ -587,6 +587,9 @@ static void setupRenderStack()
                 (unsigned)ESP.getFreePsram());
 
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+  // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
+  // The id is fixed at construction, so it is there before the first draw.
+  renderer->setDeviceId(mqttClient.getClientId());
 
   // A second canvas of the same size, so the incoming screen can be drawn
   // while the outgoing one is still on the panel. Taken at boot rather than
@@ -1470,6 +1473,30 @@ static bool renderValueChangesPartial()
     // relative to its parent, and getting that wrong leaves a stale
     // rectangle on the glass rather than failing loudly.
     if (!obj.children.empty()) return false;
+
+    // A text whose placeholder names a changed topic (designer
+    // docs/2026-10-05-placeholder-devices.md). It has no binding of its own,
+    // so the loop below would pass it by - and when another object on the
+    // screen is bound to the same topic, only that one was redrawn and the
+    // text kept the old value. Its whole box, as for any other text; no old
+    // value is needed for that.
+    if (obj.type == "text")
+    {
+      bool named = false;
+      for (int i = 0; i < pendingTopicCount && !named; i++)
+      {
+        named = ColorScreenRenderer::textNamesTopic(obj, pendingTopics[i].topic);
+      }
+      if (!named) continue;
+      if (rects + 1 > MAX_RECTS) return false;
+      rx[rects] = obj.x;
+      ry[rects] = obj.y;
+      rw[rects] = obj.width;
+      rh[rects] = obj.height;
+      rects++;
+      continue;
+    }
+
     if (obj.properties.topic.isEmpty()) continue;
 
     const String objTopic = stripJsonPath(obj.properties.topic);

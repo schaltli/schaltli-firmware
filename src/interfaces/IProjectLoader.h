@@ -37,6 +37,13 @@ public:
   virtual void setTopicValue(const String& topic, const String& value) = 0;
 
   /**
+   * Whether a message has arrived on the topic (a "<topic>#<path>" composite
+   * names its topic) since the project loaded - what a placeholder's `??`
+   * fallback asks; getTopicValue() answers "" either way.
+   */
+  virtual bool hasTopicValue(const String& topic) const = 0;
+
+  /**
    * Resolve the effective action for a button (e.g. "button-0") on a given
    * screen: that screen's own override if it has one, else the project-
    * wide default for that button id, else a default-constructed
