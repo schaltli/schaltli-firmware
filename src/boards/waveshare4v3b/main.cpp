@@ -1609,7 +1609,7 @@ static bool renderValueChangesPartial()
 // reaches up to the window at every size: dimming only outside the final
 // fence first left a bright band between the two while it grew (the user,
 // 2026-10-06). Closing draws the screen underneath again, whole.
-static const int POPUP_GROW_FRAMES = 4;
+static const int POPUP_GROW_FRAMES = 6;
 
 static void openPopupAt(int index)
 {
