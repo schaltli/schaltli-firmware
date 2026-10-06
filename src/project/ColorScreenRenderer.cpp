@@ -2782,6 +2782,12 @@ void ColorScreenRenderer::drawPopupBorder(const Screen& popup, int borderPx) {
   }
 }
 
+void ColorScreenRenderer::dimCanvas() {
+  uint16_t* buffer = canvas_->getBuffer();
+  const size_t n = (size_t)canvas_->width() * canvas_->height();
+  for (size_t i = 0; i < n; i++) buffer[i] = halveRgb565(buffer[i]);
+}
+
 // Halves every pixel outside the fence: a black scrim at 50 %, what an RGB
 // board sets the screen underneath an open popup back with. Row by row, the
 // inside of a circle as one span, so the cost is one pass over the canvas.

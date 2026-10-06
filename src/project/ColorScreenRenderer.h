@@ -122,6 +122,10 @@ public:
   // frame itself.
   uint16_t rgb565Of(const String& hex, bool* isTransparent = nullptr) const { return parseHexColor(hex, isTransparent); }
   void dimOutsidePopupFence();
+  // Every pixel of the canvas at half: the scrim over the whole screen, for a
+  // board whose popup grows from its button - the scrim reaches up to the
+  // window at every size on the way, not only at the last.
+  void dimCanvas();
 
   // What `{device:id}` shows in a text: the MQTT client id, which the
   // renderer has no way to know by itself. Until it is set, empty.

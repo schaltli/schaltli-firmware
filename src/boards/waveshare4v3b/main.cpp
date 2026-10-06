@@ -1603,10 +1603,12 @@ static bool renderValueChangesPartial()
 // ------------------------------------------------------------------ popups
 //
 // A popup over the current screen (designer docs/device-contract.md 2.5). On
-// this board: the screen set back to half, then a frame growing as a rectangle
-// from the button that opened it to the fence - rectangles only, no pixels
-// scaled, a few frames - and the popup's content at the end. Closing draws the
-// screen underneath again, whole.
+// this board: the whole screen set back to half, then a window growing as a
+// rectangle from the button that opened it to the fence - rectangles only, no
+// pixels scaled, a few frames - and the popup's content at the end. The scrim
+// reaches up to the window at every size: dimming only outside the final
+// fence first left a bright band between the two while it grew (the user,
+// 2026-10-06). Closing draws the screen underneath again, whole.
 static const int POPUP_GROW_FRAMES = 4;
 
 static void openPopupAt(int index)
@@ -1625,7 +1627,12 @@ static void openPopupAt(int index)
   if (!replacing && popupOriginKnown)
   {
     renderer->renderScreen(currentScreen);
-    renderer->dimOutsidePopupFence();
+    renderer->dimCanvas();
+    // The dimmed screen kept, to put back under the finished popup: the
+    // growing rectangles cover what lies outside a round fence's circle.
+    const size_t bytes = (size_t)PANEL_W * PANEL_H * sizeof(uint16_t);
+    const bool kept = spareCanvas != nullptr && spareCanvas->getBuffer() != nullptr;
+    if (kept) memcpy(spareCanvas->getBuffer(), canvas->getBuffer(), bytes);
     panel.blit(canvas->getBuffer());
     const PopupFence &f = project.popupFence;
     bool transparent = false;
@@ -1644,6 +1651,15 @@ static void openPopupAt(int index)
       canvas->fillRect(x, y, r - x, b - y, ground);
       for (int i = 0; i < POPUP_BORDER_PX; i++) canvas->drawRect(x + i, y + i, r - x - 2 * i, b - y - 2 * i, edge);
       panel.blitRegion(canvas->getBuffer(), x, y, r - x, b - y);
+    }
+    if (kept)
+    {
+      memcpy(canvas->getBuffer(), spareCanvas->getBuffer(), bytes);
+    }
+    else
+    {
+      renderer->renderScreen(currentScreen);
+      renderer->dimOutsidePopupFence();
     }
     renderer->renderPopup(openPopup, POPUP_BORDER_PX);
     renderGeneration++;
