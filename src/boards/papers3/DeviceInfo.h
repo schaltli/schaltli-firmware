@@ -44,7 +44,9 @@
 // 2: resolves the placeholders in a text - topics, device model and id, the
 // project's separators (designer docs/device-contract.md 2.4). The designer
 // warns before deploying a project with placeholders to a device below it.
-#define SYSTEM_GENERATION_MINOR 2
+// 3: opens and closes popups - popups[], popupFence, open-popup, close-popup
+// (designer docs/device-contract.md 2.5).
+#define SYSTEM_GENERATION_MINOR 3
 
 // Where DeployManager promotes a verified deploy download to, and the
 // recovery endpoint reads back from.

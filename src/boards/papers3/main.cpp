@@ -53,6 +53,19 @@ static PanelDisplayAdapter *displayAdapter = nullptr;
 static ProjectLoader projectLoader;
 static ColorScreenRenderer *renderer = nullptr;
 static int currentScreen = 0;
+// The popup open over currentScreen, as an index after the screens
+// (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
+// 2.5). This board's own state, never on MQTT.
+static int openPopup = -1;
+static String lastPopup = "none since boot";
+// The screen or popup a finger acts on now.
+static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreen; }
+// How an open popup stands out on e-ink, where a grey wash over the screen
+// would cost a full refresh and look dirty in 16 levels: a hard black shadow
+// down and to the right, and a black edge. The screen underneath stays as it
+// is (designer docs/device-contract.md 2.5).
+static const int POPUP_SHADOW_PX = 10;
+static const int POPUP_EDGE_PX = 4;
 
 static NvsConfigStorage configStorage;
 static WiFiSetupServer *wifiSetupServer = nullptr;
@@ -156,7 +169,14 @@ static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
   const uint32_t t0 = micros();
-  const bool ok = renderer->renderScreen(currentScreen);
+  bool ok = renderer->renderScreen(currentScreen);
+  if (openPopup >= 0)
+  {
+    const PopupFence &f = projectLoader.getProject().popupFence;
+    canvas->fillRect(f.x + POPUP_SHADOW_PX, f.y + POPUP_SHADOW_PX, f.width, f.height, 0x0000);
+    ok = renderer->renderPopup(openPopup, 0) && ok;
+    for (int i = 0; i < POPUP_EDGE_PX; i++) canvas->drawRect(f.x + i, f.y + i, f.width - 2 * i, f.height - 2 * i, 0x0000);
+  }
   const uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
   const uint32_t t2 = micros();
@@ -189,6 +209,8 @@ static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
   return switchshape::stateIndexForTap(*hit, localX, active);
 }
 
+static void closePopup(const char *reason);
+
 static void dispatchButtonAction(const ButtonAction &action)
 {
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
@@ -200,6 +222,7 @@ static void dispatchButtonAction(const ButtonAction &action)
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
     currentScreen = ((currentScreen + delta) % count + count) % count;
+    openPopup = -1;
     panel.forceFullNext();
     renderAndPresent("button: screen change");
   }
@@ -210,6 +233,7 @@ static void dispatchButtonAction(const ButtonAction &action)
       if (project.screens[i].id == action.targetScreenId)
       {
         currentScreen = i;
+        openPopup = -1;
         panel.forceFullNext();
         renderAndPresent("button: goto screen");
         break;
@@ -222,6 +246,36 @@ static void dispatchButtonAction(const ButtonAction &action)
     // topic is what the panel then shows.
     mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
   }
+  else if (action.type == "open-popup")
+  {
+    // At once, no animation: every frame on this panel is a refresh of its
+    // own. A fast partial paint, as any other answer to a tap.
+    const int index = popupIndexById(project, action.targetScreenId);
+    if (index < 0 || !project.popupFence.present)
+    {
+      Serial.printf("[papers3] no popup \"%s\" - skipping\n", action.targetScreenId.c_str());
+      return;
+    }
+    openPopup = index;
+    renderAndPresent("popup opened");
+    lastPopup = "opened \"" + screenOrPopupAt(project, index)->name + "\"";
+  }
+  else if (action.type == "close-popup")
+  {
+    closePopup("button");
+  }
+}
+
+// Back to the screen underneath, painted clean: a popup is a box over the
+// screen, and its partial paint and the one taking it away leave a trace a
+// full refresh wipes (as a screen change is painted, EpdPanel.h).
+static void closePopup(const char *reason)
+{
+  if (openPopup < 0) return;
+  openPopup = -1;
+  panel.forceFullNext();
+  renderAndPresent("popup closed");
+  lastPopup = String("closed by ") + reason;
 }
 
 // A press at x,y. Returns true when it hit something that acted.
@@ -238,7 +292,7 @@ static bool handleTap(int16_t x, int16_t y)
   if (!renderer || !projectLoader.isLoaded()) return false;
 
   int16_t objX = 0, objY = 0;
-  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr) return false;
 
   if (hit->type == "button")
@@ -325,6 +379,14 @@ static void dispatchSwipeAtRelease(int dx, int dy)
   }
   if (buttonId == nullptr) return;
 
+  // Any swipe closes an open popup and does nothing else (designer
+  // docs/device-contract.md 2.5); one that began on a level never gets here.
+  if (openPopup >= 0)
+  {
+    closePopup("swipe");
+    return;
+  }
+
   const ButtonAction action = projectLoader.getButtonAction(currentScreen, buttonId);
   if (action.type.isEmpty())
   {
@@ -369,7 +431,7 @@ static bool startedOnSettableLevel()
 {
   if (!renderer || !projectLoader.isLoaded()) return false;
   int16_t objX = 0, objY = 0;
-  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, contactStartX, contactStartY, objX, objY);
+  const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), contactStartX, contactStartY, objX, objY);
   return hit != nullptr && ColorScreenRenderer::isSettableLevel(*hit);
 }
 
@@ -469,7 +531,14 @@ static void serviceTouch()
       dispatchSwipeAtRelease(dx, dy);
       return;
     }
-    if ((millis() - holdStartMs) < SETUP_HOLD_MS) handleTap(contactStartX, contactStartY);
+    if ((millis() - holdStartMs) >= SETUP_HOLD_MS) return;
+    // A tap beside an open popup closes it and does nothing else.
+    if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(contactStartX, contactStartY))
+    {
+      closePopup("tap outside");
+      return;
+    }
+    handleTap(contactStartX, contactStartY);
   }
 }
 
@@ -624,6 +693,7 @@ static void setupNetworking()
     if (!projectLoader.isLoaded()) return false;
     if (index < 0 || index >= (int)projectLoader.getProject().screens.size()) return false;
     currentScreen = index;
+    openPopup = -1;
     // A screen change is a new picture, not a change to the old one, so it
     // gets a clean paint rather than spending the partial budget on a
     // rectangle that covers everything anyway.
@@ -705,6 +775,8 @@ static void setupNetworking()
     // ?set=repaint=1 puts the screen back.
     if (setting.startsWith("holdcountdown=") && displayAdapter)
       displayAdapter->showHoldCountdown(setting.substring(14).toInt());
+    out += "  popup: " + (openPopup >= 0 ? String("open, index ") + String(openPopup) : String("none open")) +
+           " - last: " + lastPopup + "\n";
     out += "partials since last full refresh: " + String(panel.partialsSinceFull()) + " of " +
            String(EpdPanel::PARTIALS_BEFORE_CLEANUP) + ", last paint was " +
            String(panel.lastWasFull() ? "full" : "partial") + "\n";
