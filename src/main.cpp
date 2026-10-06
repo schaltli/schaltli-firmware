@@ -115,6 +115,19 @@ static FirmwareUpdater firmwareUpdater;
 static ScreenNavigatorOverlay *screenMenu = nullptr;
 
 static int currentScreenIndex = 0;
+// The popup open over currentScreenIndex, as an index after the screens
+// (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
+// 2.5). The knob's own state, never on MQTT. While one is open, taps, drags,
+// the ring and every full render are the popup's.
+static int openPopup = -1;
+// Whether the screen menu's backdrop slot (MENU_BACKDROP_SLOT, further down)
+// still shows the screen as it is.
+static bool menuBackdropReady = false;
+static bool popupOriginKnown = false;
+static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOriginH = 0;
+static String lastPopup = "none since boot";
+// The screen or popup a finger or the ring acts on now.
+static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreenIndex; }
 static bool topicsSubscribed = false;
 static bool setupModeActive = false;
 // Deploy work is deferred out of the MQTT callback - see onMqttMessage().
@@ -423,8 +436,17 @@ static bool renderScreenIndex(int index) {
   const ProjectConfig &project = projectLoader.getProject();
   if (index < 0 || index >= (int)project.screens.size()) return false;
 
+  // Another screen closes an open popup, wherever the change came from.
+  if (openPopup >= 0 && index != currentScreenIndex) openPopup = -1;
+
   const int64_t renderStart = esp_timer_get_time();
   if (!screenRenderer->renderScreen(index)) return false;
+  // An open popup over its screen: the screen halved outside the fence, the
+  // popup on top (designer docs/device-contract.md 2.5).
+  if (openPopup >= 0) {
+    screenRenderer->dimOutsidePopupFence();
+    screenRenderer->renderPopup(openPopup, 2);
+  }
   const int64_t renderEnd = esp_timer_get_time();
   latMark("rnd", String((int)((renderEnd - renderStart) / 1000)).c_str());
   currentScreenIndex = index;
@@ -527,6 +549,79 @@ static void navigateToScreen(int index) {
   if ((millis() - lastNavRenderMs) >= navFrameMs) renderPendingScreen();
 }
 
+// ------------------------------------------------------------------ popups
+//
+// A popup over the current screen (designer docs/device-contract.md 2.5). On
+// the knob: the whole screen halved, then the window growing from the button
+// that opened it in four steps - a circle on this round glass, rectangles on
+// a square fence - with the scrim up to it at every size, and the popup's
+// content at the end, over the screen halved outside the fence only. The same
+// four steps the user chose on the 4.3B (2026-10-06).
+static const int POPUP_GROW_FRAMES = 4;
+
+static void presentCanvas() {
+  canvasPresenter.present();
+  pumpLvgl();
+}
+
+static void openPopupAt(int index) {
+  if (screenRenderer == nullptr) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  const Screen *popup = screenOrPopupAt(project, index);
+  if (popup == nullptr) return;
+  const bool replacing = openPopup >= 0;
+  const uint32_t t0 = millis();
+  canvasPresenter.invalidateSlots();
+  menuBackdropReady = false;
+
+  if (!replacing && popupOriginKnown) {
+    ClippedCanvas16 *canvas = &canvasPresenter.canvas();
+    screenRenderer->renderScreen(currentScreenIndex);
+    screenRenderer->dimCanvas();
+    presentCanvas();
+    const PopupFence &f = project.popupFence;
+    bool transparent = false;
+    const uint16_t ground =
+        screenRenderer->rgb565Of(popup->backgroundColor.isEmpty() ? "#ffffff" : popup->backgroundColor, &transparent);
+    const uint16_t edge =
+        popup->borderColor.isEmpty() ? ground : screenRenderer->rgb565Of(popup->borderColor, &transparent);
+    for (int k = 1; k <= POPUP_GROW_FRAMES; k++) {
+      const int16_t x = popupOriginX + (f.x - popupOriginX) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t y = popupOriginY + (f.y - popupOriginY) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t r = popupOriginX + popupOriginW +
+                        (f.x + f.width - popupOriginX - popupOriginW) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t b = popupOriginY + popupOriginH +
+                        (f.y + f.height - popupOriginY - popupOriginH) * k / (POPUP_GROW_FRAMES + 1);
+      if (f.circle) {
+        const int16_t radius = min(r - x, b - y) / 2;
+        canvas->fillCircle((x + r) / 2, (y + b) / 2, radius, ground);
+        for (int i = 0; i < 2; i++) canvas->drawCircle((x + r) / 2, (y + b) / 2, radius - i, edge);
+      } else {
+        canvas->fillRect(x, y, r - x, b - y, ground);
+        for (int i = 0; i < 2; i++) canvas->drawRect(x + i, y + i, r - x - 2 * i, b - y - 2 * i, edge);
+      }
+      presentCanvas();
+    }
+  }
+  openPopup = index;
+  // A full render: the screen again, halved outside the fence only, and the
+  // popup over it - which also takes away whatever of the growing window lay
+  // outside the fence.
+  renderScreenIndex(currentScreenIndex);
+  lastPopup = "opened \"" + popup->name + "\" in " + String(millis() - t0) + " ms";
+  Serial.printf("[popup] %s\n", lastPopup.c_str());
+}
+
+static void closePopup(const char *reason) {
+  if (openPopup < 0) return;
+  openPopup = -1;
+  canvasPresenter.invalidateSlots();
+  menuBackdropReady = false;
+  renderScreenIndex(currentScreenIndex);
+  lastPopup = String("closed by ") + reason;
+  Serial.printf("[popup] %s\n", lastPopup.c_str());
+}
+
 // ----------------------------------------------------------- input actions
 
 // One dispatcher for every named input - the knob's two directions, the four
@@ -576,6 +671,15 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // so the receiver never has to understand "increment" (designer
     // docs/device-contract.md §5, 2026-10-04).
     adjustLevel(action, 1);
+  } else if (action.type == "open-popup") {
+    const int index = popupIndexById(project, action.targetScreenId);
+    if (index < 0 || !project.popupFence.present) {
+      Serial.printf("[action] no popup \"%s\" - skipping\n", action.targetScreenId.c_str());
+      return;
+    }
+    openPopupAt(index);
+  } else if (action.type == "close-popup") {
+    closePopup("button");
   }
 }
 
@@ -849,7 +953,8 @@ static bool renderIntoSlot(int slot, int screenIndex) {
 // drag cannot start with the menu up, and prerenderNeighbours() stands down
 // for the same reason - nothing else touches the spares in that window.
 static const int MENU_BACKDROP_SLOT = 0;
-static bool menuBackdropReady = false;
+// menuBackdropReady is declared with the popup state near the top: opening or
+// closing a popup changes the screen the menu would show behind it.
 #if INPUT_DEBUG
 // What one frame of the menu's fly-in costs, and how many it got. The
 // animation runs on wall-clock time, so an expensive frame does not slow it
@@ -1133,7 +1238,7 @@ static const uint32_t PRERENDER_IDLE_MS = 400;
 static uint32_t lastTouchActivityMs = 0;
 
 static void prerenderNeighbours() {
-  if (dragActive || dragAnimating || touchDown) return;
+  if (dragActive || dragAnimating || touchDown || openPopup >= 0) return;
   if (screenMenu && screenMenu->isActive()) return;
   if (!projectLoader.isLoaded() || screenRenderer == nullptr) return;
   if (!canvasPresenter.canTransition()) return;
@@ -1154,6 +1259,8 @@ static void prerenderNeighbours() {
 
 static void tryStartDrag(int dx, int dy) {
   dragDecided = true;
+  // A swipe on an open popup closes it at release; it never pages.
+  if (openPopup >= 0) return;
   if (!canvasPresenter.canTransition() || screenRenderer == nullptr) return;
   if (!projectLoader.isLoaded()) return;
   const ProjectConfig &project = projectLoader.getProject();
@@ -1308,12 +1415,19 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   // NICHT treffer->x/y, und die Segmentrechnung weiter unten haengt daran.
   int16_t objX = 0;
   int16_t objY = 0;
-  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (treffer == nullptr) return false;
 
   if (treffer->type == "button") {
     Serial.printf("[tap] button \"%s\"\n", treffer->id.c_str());
+    // Where a popup it opens grows from.
+    popupOriginKnown = true;
+    popupOriginX = objX;
+    popupOriginY = objY;
+    popupOriginW = treffer->width;
+    popupOriginH = treffer->height;
     dispatchButtonAction(treffer->properties.action);
+    popupOriginKnown = false;
     return true;
   }
 
@@ -1435,7 +1549,7 @@ static bool beginLevelDrag(int16_t x, int16_t y) {
 
   int16_t objX = 0;
   int16_t objY = 0;
-  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (treffer == nullptr || !ColorScreenRenderer::isSettableLevel(*treffer)) return false;
 
   levelDragObjId = treffer->id;
@@ -1455,12 +1569,12 @@ static void updateLevelDrag(int16_t x, int16_t y) {
   if (levelDragObjId.isEmpty() || screenRenderer == nullptr) return;
   int16_t objX = 0;
   int16_t objY = 0;
-  const ScreenObject *treffer = screenRenderer->hitTestTappable(currentScreenIndex, x, y, objX, objY);
+  const ScreenObject *treffer = screenRenderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   // Der Finger darf ueber den Rand hinaus - er setzt dann den Endwert, statt
   // die Kontrolle abzugeben. Deshalb wird der Wert am gemerkten Objekt
   // gerechnet, nicht an dem unter dem Finger.
   if (treffer == nullptr || treffer->id != levelDragObjId) {
-    const ScreenObject *held = screenRenderer->findObjectById(currentScreenIndex, levelDragObjId, objX, objY);
+    const ScreenObject *held = screenRenderer->findObjectById(activeScreen(), levelDragObjId, objX, objY);
     if (held == nullptr) return;
     applyLevelDragValue(formatLevelPayload(screenRenderer->settableLevelValueAt(*held, x, y, objX, objY)), false);
     return;
@@ -1510,7 +1624,7 @@ static void adjustLevel(const ButtonAction &action, int32_t steps) {
   if (screenRenderer == nullptr || !projectLoader.isLoaded()) return;
   // Liegt ein Finger auf einem Regler, gehoert ihm der Wert.
   if (!levelDragObjId.isEmpty()) return;
-  const ScreenObject *level = screenRenderer->adjustableLevel(currentScreenIndex, action.targetObjectId);
+  const ScreenObject *level = screenRenderer->adjustableLevel(activeScreen(), action.targetObjectId);
   if (level == nullptr || level->properties.writeTopic.isEmpty()) return;
 
   const String markerTopic =
@@ -1775,6 +1889,14 @@ static void pollTouchGesturesInner() {
       }
       return;
     }
+    // A tap beside an open popup closes it and does nothing else.
+    if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(touchLastX, touchLastY)) {
+      closePopup("tap outside");
+#if INPUT_DEBUG
+      lastReleaseVerdict = "tap-outside-popup";
+#endif
+      return;
+    }
     // Ausserhalb des Menues: trifft der Tipp ein bedienbares Objekt?
     if (dispatchTapAt(touchLastX, touchLastY)) {
 #if INPUT_DEBUG
@@ -1800,6 +1922,13 @@ static void pollTouchGesturesInner() {
   // and should not restart the fly-in.
   if (screenMenu && screenMenu->isActive()) {
     screenMenu->keepOpen();
+    return;
+  }
+  // Any swipe closes an open popup and does nothing else - swipe-up included,
+  // which would otherwise open the screen menu (designer
+  // docs/device-contract.md 2.5).
+  if (openPopup >= 0) {
+    closePopup("swipe");
     return;
   }
   dispatchInput(buttonId);
@@ -1941,6 +2070,11 @@ static String buildDebugJson() {
   }
   out += ",\"firmwareBuild\":\"" FIRMWARE_BUILD "\"";
   out += ",\"installsOnlyFor\":\"" DEVICE_ID "\"";
+  // The same words as the 4.3B's "popup:" line, for hil/popup.js.
+  out += ",\"popup\":\"" +
+         jsonEscape((openPopup >= 0 ? String("open, index ") + String(openPopup) : String("none open")) +
+                    " - last: " + lastPopup) +
+         "\"";
   // What schaltli/state/theme asked for, and what the loaded project shows.
   out += String(",\"theme\":\"") + (wantedThemeDark ? "dark" : "light") + "\"";
   out += String(",\"themeShown\":\"") +
@@ -2199,7 +2333,7 @@ static void pollEncoder() {
 // (adjustLevel), jede andere Aktion laeuft einmal pro Raste, wie bisher.
 static void dispatchDetents(const char *buttonId, int32_t count) {
   if (!projectLoader.isLoaded() || count <= 0) return;
-  const ButtonAction action = projectLoader.getButtonAction(currentScreenIndex, String(buttonId));
+  const ButtonAction action = projectLoader.getButtonAction(activeScreen(), String(buttonId));
   if (action.type == "adjust-level") {
     adjustLevel(action, count);
     return;
@@ -2209,7 +2343,7 @@ static void dispatchDetents(const char *buttonId, int32_t count) {
 
 static void dispatchInput(const char *buttonId) {
   if (!projectLoader.isLoaded()) return;
-  dispatchButtonAction(projectLoader.getButtonAction(currentScreenIndex, String(buttonId)));
+  dispatchButtonAction(projectLoader.getButtonAction(activeScreen(), String(buttonId)));
 }
 
 static void loadAndRenderProject() {
@@ -2327,6 +2461,9 @@ static void subscribeToAllTopics() {
   const ProjectConfig &project = projectLoader.getProject();
   std::vector<String> topics;
   for (const auto &screen : project.screens) collectTopics(screen.objects, topics);
+  // A popup's objects read their topics as a screen's do; until 2026-10-06
+  // only the screens were walked, and a popup's switch never heard its state.
+  for (const auto &popup : project.popups) collectTopics(popup.objects, topics);
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
   Serial.printf("[mqtt] subscribed to %d project topic(s)\n", (int)topics.size());
@@ -2397,6 +2534,10 @@ static void clearDeployTrigger() {
 // zeichnet der Aufrufer ein Vollbild.
 static bool renderTopicChangePartial(const String &topic, const String &oldValue) {
   if (screenRenderer == nullptr || !projectLoader.isLoaded()) return false;
+  // Over an open popup a value is drawn as a whole picture: the rectangles
+  // here belong to the screen underneath, and drawn plain they would land on
+  // top of the popup.
+  if (openPopup >= 0) return false;
 
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return false;
@@ -2557,7 +2698,10 @@ static void onMqttMessage(const String &topic, const String &payload) {
 
   const ProjectConfig &project = projectLoader.getProject();
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)project.screens.size()) return;
-  if (!screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
+  // With a popup open, a value for it or for the screen underneath is drawn
+  // as a whole picture (renderTopicChangePartial stands down).
+  const bool popupUses = openPopup >= 0 && screenUsesTopic(screenOrPopupAt(project, openPopup)->objects, topic);
+  if (!popupUses && !screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
   if (renderTopicChangePartial(topic, oldValue)) {
     // Der Bildschirmpuffer ist jetzt teilweise neu; das Bild muss trotzdem
     // aufs Panel. present() schiebt den Puffer, closeOpenFrame() haelt die
