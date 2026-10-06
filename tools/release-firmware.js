@@ -70,7 +70,7 @@
 // in both repos and the branch again.
 //
 // Options: --designer <path> (default ../schaltli-designer),
-// --release-repo <owner/name> (default Matthias-Hess/schaltli-designer),
+// --release-repo <owner/name> (default schaltli/schaltli-designer),
 // --notes <file> (markdown, placed in the release body),
 // --allow-dirty (dry run only - a release is never built from uncommitted
 // changes).
@@ -99,7 +99,7 @@ function arg(name, fallback) {
 const publish = process.argv.includes("--publish")
 const allowDirty = process.argv.includes("--allow-dirty")
 const designer = path.resolve(arg("--designer", path.join(REPO, "..", "schaltli-designer")))
-const releaseRepo = arg("--release-repo", "Matthias-Hess/schaltli-designer")
+const releaseRepo = arg("--release-repo", "schaltli/schaltli-designer")
 const notesFile = arg("--notes", null)
 const prerelease = arg("--prerelease", null)
 const dropPrerelease = arg("--drop-prerelease", null)
