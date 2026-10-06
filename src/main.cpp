@@ -559,9 +559,16 @@ static void navigateToScreen(int index) {
 // four steps the user chose on the 4.3B (2026-10-06).
 static const int POPUP_GROW_FRAMES = 4;
 
+// Each step of the opening drawn on the glass now. present() only marks the
+// canvas dirty, and LVGL draws at its own refresh period: four steps handed
+// over faster than that were all dropped but the last, and the popup simply
+// appeared (the user, on the knob, 2026-10-06: "Animation fehlt"). Drawn
+// synchronously as endTransition() does, about 25 ms a step.
 static void presentCanvas() {
   canvasPresenter.present();
-  pumpLvgl();
+  const int64_t start = esp_timer_get_time();
+  lv_refr_now(NULL);
+  totalLvglUs += (uint32_t)(esp_timer_get_time() - start);
 }
 
 static void openPopupAt(int index) {
