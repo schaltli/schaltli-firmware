@@ -34,6 +34,8 @@ private:
   void parseTopics(JsonArray topicsArray);
   void parseFonts(JsonArray fontsArray);
   void parseScreens(JsonArray screensArray);
+  void parseScreenInto(JsonObject screenJson, Screen& screen);
+  void parsePopups(JsonArray popupsArray, JsonObject fenceJson);
   ScreenObject parseScreenObject(JsonObject objJson);
   ObjectProperties parseObjectProperties(JsonObject propsJson);
   std::vector<ValueIconPair> parseValueIconPairs(JsonArray pairsArray);

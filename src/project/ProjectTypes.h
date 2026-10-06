@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include <vector>
 
+#include "PopupFence.h"
+
 /**
  * Data structures for project.json configuration
  * Represents screens, objects, and properties
@@ -353,6 +355,12 @@ struct Screen {
   // projects, and any project built before this field existed) - callers
   // must treat empty as "no icon", not an error.
   String pageIconPath;
+  // A popup's frame colours (designer docs/device-contract.md 2.5): the
+  // theme's outline for a border, the scrim's colour. Empty on a screen;
+  // the board decides whether it uses them.
+  String borderColor;
+  String borderColorDark;
+  String scrimColor;
 };
 
 // One field pulled out of a "json"-type topic's payload - mirrors the
@@ -417,6 +425,12 @@ struct ProjectConfig {
   std::vector<MQTTTopic> topics;
   std::vector<Font> fonts;
   std::vector<Screen> screens;
+  // Popups (designer docs/device-contract.md 2.5), apart from screens so that
+  // nothing paging through `screens` ever meets one. Where a screen index is
+  // taken - rendering, hit tests, button actions - a popup is addressed as
+  // screens.size() + its position here; see screenOrPopupAt().
+  std::vector<Screen> popups;
+  PopupFence popupFence;
   std::vector<HardwareButtonDef> hardwareButtons;
   // How a placeholder's F and N formats write a number (designer
   // docs/device-contract.md 2.4): one character each, the thousands one may
@@ -431,6 +445,28 @@ struct ProjectConfig {
 
   ProjectConfig() : screenWidth(0), screenHeight(0), themeDark(false) {}
 };
+
+// The screen or popup behind an index: 0..screens.size()-1 a screen, from
+// screens.size() on a popup. nullptr outside both.
+inline const Screen* screenOrPopupAt(const ProjectConfig& project, int index) {
+  const int screens = (int)project.screens.size();
+  if (index < 0) return nullptr;
+  if (index < screens) return &project.screens[index];
+  if (index - screens < (int)project.popups.size()) return &project.popups[index - screens];
+  return nullptr;
+}
+
+inline bool isPopupIndex(const ProjectConfig& project, int index) {
+  return index >= (int)project.screens.size() && screenOrPopupAt(project, index) != nullptr;
+}
+
+// The index of the popup with this id, or -1.
+inline int popupIndexById(const ProjectConfig& project, const String& id) {
+  for (size_t i = 0; i < project.popups.size(); i++) {
+    if (project.popups[i].id == id) return (int)(project.screens.size() + i);
+  }
+  return -1;
+}
 
 
 

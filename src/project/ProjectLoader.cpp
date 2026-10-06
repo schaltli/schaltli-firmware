@@ -173,6 +173,13 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
     parseFonts(doc["fonts"].as<JsonArray>());
   }
   
+  // Popups before the screens only by line; either order reads the same. A
+  // project without them leaves none from an earlier load behind.
+  project_.popups.clear();
+  project_.popupFence = PopupFence();
+  if (doc["popups"].is<JsonArray>()) {
+    parsePopups(doc["popups"].as<JsonArray>(), doc["popupFence"].as<JsonObject>());
+  }
   // Parse screens
   if (doc["screens"].is<JsonArray>()) {
     parseScreens(doc["screens"].as<JsonArray>());
@@ -264,6 +271,37 @@ void ProjectLoader::parseScreens(JsonArray screensArray) {
 
   for (JsonObject screenJson : screensArray) {
     Screen screen;
+    parseScreenInto(screenJson, screen);
+    project_.screens.push_back(screen);
+  }
+}
+
+// Popups (designer docs/device-contract.md 2.5): a screen's shape and its
+// frame colours, and the one fence of the project. A fence that is not there
+// or has no size leaves popups unopenable rather than drawn wrong.
+void ProjectLoader::parsePopups(JsonArray popupsArray, JsonObject fenceJson) {
+  project_.popups.reserve(popupsArray.size());
+  for (JsonObject popupJson : popupsArray) {
+    Screen popup;
+    parseScreenInto(popupJson, popup);
+    popup.borderColor = popupJson["borderColor"] | "";
+    popup.borderColorDark = popupJson["borderColorDark"] | "";
+    popup.scrimColor = popupJson["scrimColor"] | "#000000";
+    project_.popups.push_back(popup);
+  }
+  PopupFence& fence = project_.popupFence;
+  if (!fenceJson.isNull()) {
+    fence.circle = String(fenceJson["shape"] | "rect") == "circle";
+    fence.x = fenceJson["x"] | 0;
+    fence.y = fenceJson["y"] | 0;
+    fence.width = fenceJson["width"] | 0;
+    fence.height = fenceJson["height"] | 0;
+    fence.present = fence.width > 0 && fence.height > 0;
+  }
+}
+
+void ProjectLoader::parseScreenInto(JsonObject screenJson, Screen& screen) {
+  {
     screen.id = screenJson["id"] | "";
     screen.name = screenJson["name"] | "";
     screen.path = resolveAssetPath(screenJson["path"] | "");
@@ -289,8 +327,6 @@ void ProjectLoader::parseScreens(JsonArray screensArray) {
     if (screenJson["buttonActions"].is<JsonObject>()) {
       screen.buttonActions = parseScreenButtonActions(screenJson["buttonActions"].as<JsonObject>());
     }
-
-    project_.screens.push_back(screen);
   }
 }
 
@@ -790,14 +826,16 @@ void ProjectLoader::applyThemeVariant(bool dark) {
 }
 
 ButtonAction ProjectLoader::getButtonAction(int screenIndex, const String& buttonId) const {
-  if (screenIndex >= 0 && screenIndex < (int)project_.screens.size()) {
-    const Screen& screen = project_.screens[screenIndex];
-    for (const auto& sba : screen.buttonActions) {
+  if (const Screen* screen = screenOrPopupAt(project_, screenIndex)) {
+    for (const auto& sba : screen->buttonActions) {
       if (sba.buttonId == buttonId) {
         return sba.action;
       }
     }
   }
+  // An open popup's own actions are all there is (designer
+  // docs/device-contract.md 2.5): no project-wide default behind them.
+  if (isPopupIndex(project_, screenIndex)) return ButtonAction();
 
   for (const auto& def : project_.hardwareButtons) {
     if (def.id == buttonId) {

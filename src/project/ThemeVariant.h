@@ -62,6 +62,13 @@ void forEachPair(ProjectConfig& project, F& f) {
     f(screen.backgroundColor, screen.backgroundColorDark);
     for (ScreenObject& obj : screen.objects) forEachObjectPair(obj, f);
   }
+  // Popups after the screens, always in the same order, so that the swaps
+  // recorded on the way to dark are undone pair for pair.
+  for (Screen& popup : project.popups) {
+    f(popup.backgroundColor, popup.backgroundColorDark);
+    f(popup.borderColor, popup.borderColorDark);
+    for (ScreenObject& obj : popup.objects) forEachObjectPair(obj, f);
+  }
 }
 
 /**

@@ -274,7 +274,8 @@ bool ColorScreenRenderer::markerTopicBounds(int screenIndex, const String& marke
                                             int16_t& w, int16_t& h) const {
   if (!projectLoader_.isLoaded() || markerTopic.isEmpty()) return false;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return false;
 
   bool found = false;
   int16_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -304,7 +305,7 @@ bool ColorScreenRenderer::markerTopicBounds(int screenIndex, const String& marke
           }
         }
       };
-  walk(project.screens[screenIndex].objects, 0, 0);
+  walk(screenPtr->objects, 0, 0);
   if (!found) return false;
   x = x0;
   y = y0;
@@ -910,8 +911,9 @@ void ColorScreenRenderer::fillThickLine(int16_t x0, int16_t y0, int16_t x1, int1
 String ColorScreenRenderer::describeScreen(int screenIndex) {
   if (!projectLoader_.isLoaded()) return "no project loaded\n";
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return "no such screen\n";
-  const Screen& screen = project.screens[screenIndex];
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return "no such screen\n";
+  const Screen& screen = *screenPtr;
 
   String out = "screen " + String(screenIndex) + " \"" + screen.name + "\", " +
                String((unsigned)screen.objects.size()) + " object(s)\n";
@@ -2620,10 +2622,11 @@ const ScreenObject* ColorScreenRenderer::findObjectById(int screenIndex, const S
                                                          int16_t& objY) const {
   if (!projectLoader_.isLoaded() || id.isEmpty()) return nullptr;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return nullptr;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return nullptr;
   objX = 0;
   objY = 0;
-  return findByIdWalk(project.screens[screenIndex].objects, id, 0, 0, objX, objY,
+  return findByIdWalk(screenPtr->objects, id, 0, 0, objX, objY,
                       [this](const ScreenObject& tabControl) { return getActivePanel(tabControl); });
 }
 
@@ -2683,12 +2686,13 @@ const ScreenObject* ColorScreenRenderer::hitTestTappable(int screenIndex, int16_
                                                           int16_t& objX, int16_t& objY) const {
   if (!projectLoader_.isLoaded()) return nullptr;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return nullptr;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return nullptr;
 
   const ScreenObject* treffer = nullptr;
   objX = 0;
   objY = 0;
-  hitTestWalk(project.screens[screenIndex].objects, 0, 0, x, y, treffer, objX, objY);
+  hitTestWalk(screenPtr->objects, 0, 0, x, y, treffer, objX, objY);
   return treffer;
 }
 
@@ -2698,9 +2702,10 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   if (!projectLoader_.isLoaded()) return false;
 
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return false;
 
-  const Screen& screen = project.screens[screenIndex];
+  const Screen& screen = *screenPtr;
 
   bool bgTransparent = false;
   uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
@@ -2725,6 +2730,80 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   return true;
 }
 
+// A popup over what the canvas holds now (designer docs/device-contract.md
+// 2.5): no fillScreen - the screen underneath stays, the board has already
+// set it back outside the fence - then the popup's background, clipped to the
+// fence's shape, then its objects where they are on the display, sorted as a
+// screen's are.
+bool ColorScreenRenderer::renderPopup(int popupIndex, const String& pressedButtonId, const String& pendingSwitchId,
+                                      int pendingSwitchStateIndex, const String& pressedSwitchId,
+                                      int pressedSwitchStateIndex) {
+  if (!projectLoader_.isLoaded()) return false;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (!isPopupIndex(project, popupIndex) || !project.popupFence.present) return false;
+  const Screen& popup = *screenOrPopupAt(project, popupIndex);
+  const PopupFence& fence = project.popupFence;
+
+  bool bgTransparent = false;
+  uint16_t bg = parseHexColor(popup.backgroundColor.isEmpty() ? "#ffffff" : popup.backgroundColor, &bgTransparent);
+  currentScreenBg_ = bgTransparent ? 0xFFFF : bg;
+  currentScreenBgHex_ = bgTransparent || popup.backgroundColor.isEmpty() ? String("#ffffff") : popup.backgroundColor;
+  if (fence.circle) {
+    // Adafruit GFX's circle of radius r is 2r+1 wide: the same pixels
+    // PopupFence::contains() holds for an even diameter.
+    canvas_->fillCircle(fence.x + fence.width / 2, fence.y + fence.height / 2, fence.width / 2, currentScreenBg_);
+  } else {
+    canvas_->fillRect(fence.x, fence.y, fence.width, fence.height, currentScreenBg_);
+  }
+
+  std::vector<ScreenObject> sortedObjects = popup.objects;
+  std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
+  for (const auto& obj : sortedObjects) {
+    renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
+  }
+  return true;
+}
+
+// Halves every pixel outside the fence: a black scrim at 50 %, what an RGB
+// board sets the screen underneath an open popup back with. Row by row, the
+// inside of a circle as one span, so the cost is one pass over the canvas.
+void ColorScreenRenderer::dimOutsidePopupFence() {
+  if (!projectLoader_.isLoaded()) return;
+  const PopupFence& fence = projectLoader_.getProject().popupFence;
+  if (!fence.present) return;
+  uint16_t* buffer = canvas_->getBuffer();
+  const int w = canvas_->width();
+  const int h = canvas_->height();
+  for (int y = 0; y < h; y++) {
+    int from = 0, to = -1;  // the row's inside, [from, to]
+    if (fence.circle) {
+      const long r2 = (long)fence.width * fence.width;  // (2r)^2
+      const long dy = 2L * y - (2L * fence.y + fence.height);
+      const long rest = r2 - dy * dy;
+      if (rest >= 0) {
+        // Widest 2*dx with (2*dx)^2 <= rest, then back to pixels.
+        long half = (long)sqrtf((float)rest);
+        while (half * half > rest) half--;
+        while ((half + 1) * (half + 1) <= rest) half++;
+        const long cx2 = 2L * fence.x + fence.width;
+        from = (int)((cx2 - half + 1) / 2);
+        to = (int)((cx2 + half) / 2);
+      }
+    } else if (y >= fence.y && y < fence.y + fence.height) {
+      from = fence.x;
+      to = fence.x + fence.width - 1;
+    }
+    uint16_t* row = buffer + (size_t)y * w;
+    for (int x = 0; x < w; x++) {
+      if (x >= from && x <= to) {
+        x = to;
+        continue;
+      }
+      row[x] = halveRgb565(row[x]);
+    }
+  }
+}
+
 // Ausschnittfassung. Teilt sich mit renderScreen() bewusst NICHT nur die
 // Objektliste, sondern auch deren Sortierung und den Hintergrund - jede
 // Abweichung waere ein Pixelunterschied, und genau darauf pruefen die
@@ -2735,10 +2814,11 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
                                              int pressedSwitchStateIndex) {
   if (!projectLoader_.isLoaded()) return false;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return false;
   if (rw <= 0 || rh <= 0) return false;
 
-  const Screen& screen = project.screens[screenIndex];
+  const Screen& screen = *screenPtr;
 
   bool bgTransparent = false;
   uint16_t screenBg = parseHexColor(screen.backgroundColor.isEmpty() ? "#ffffff" : screen.backgroundColor, &bgTransparent);
@@ -2851,9 +2931,10 @@ int ColorScreenRenderer::levelDragRects(int screenIndex, const String& markerTop
                                         int max) {
   if (!projectLoader_.isLoaded() || markerTopic.isEmpty()) return -1;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return -1;
+  const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
+  if (!screenPtr) return -1;
   int count = 0;
-  for (const auto& o : project.screens[screenIndex].objects) {
+  for (const auto& o : screenPtr->objects) {
     // Nested objects stand relative to their parent: markerTopicBounds knows
     // how to walk them, this does not try.
     if (o.type == "switcher") return -1;

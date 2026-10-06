@@ -108,6 +108,15 @@ public:
   // target.
   void setCanvas(ClippedCanvas16* canvas) { canvas_ = canvas; }
 
+  // A popup (index as screenOrPopupAt(), ProjectTypes.h) drawn over what the
+  // canvas holds: its background inside the fence, then its objects. The
+  // screen underneath stays; dimOutsidePopupFence() sets it back first on an
+  // RGB board (designer docs/device-contract.md 2.5).
+  bool renderPopup(int popupIndex, const String& pressedButtonId = "", const String& pendingSwitchId = "",
+                   int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
+                   int pressedSwitchStateIndex = -1);
+  void dimOutsidePopupFence();
+
   // What `{device:id}` shows in a text: the MQTT client id, which the
   // renderer has no way to know by itself. Until it is set, empty.
   void setDeviceId(const String& id) { deviceId_ = id; }
