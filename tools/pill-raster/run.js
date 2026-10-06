@@ -22,6 +22,14 @@ const SHIM = path.join(REPO, "tools", "switch-shape", "shim");
 const OUT = path.join(os.tmpdir(), "pill-raster-check-schaltli-firmware");
 fs.mkdirSync(OUT, { recursive: true });
 
+// The C++ runtime linked in on Windows. Git for Windows puts its own, older
+// libstdc++-6.dll and libwinpthread-1.dll on PATH ahead of the compiler's,
+// and a program built by a newer g++ (WinLibs 16 here) loaded those and
+// crashed with 0xC0000005 before printing a line - which read as the shape
+// rules failing (test:all, 2026-10-06). Linked statically there is no DLL to
+// pick wrong.
+const STATIC_RUNTIME = process.platform === "win32" ? ["-static"] : [];
+
 function skip(message) {
   console.error(`\n${message}`);
   process.exit(2);
@@ -43,7 +51,7 @@ const exe = path.join(OUT, "check.exe");
 const cpp = path.join(HERE, "check.cpp");
 const gpp = ["g++", "clang++"].find(haveOnPath);
 if (gpp) {
-  execFileSync(gpp, ["-O2", "-std=c++17", `-I${SHIM}`, `-I${SRC}`, "-o", exe, cpp], { stdio: "inherit" });
+  execFileSync(gpp, ["-O2", "-std=c++17", ...STATIC_RUNTIME, `-I${SHIM}`, `-I${SRC}`, "-o", exe, cpp], { stdio: "inherit" });
 } else if (VCVARS) {
   const bat = path.join(OUT, "build.bat");
   fs.writeFileSync(

@@ -68,6 +68,14 @@ const GOLDEN =
   path.resolve(REPO, "..", "schaltli-android", "app", "src", "test", "resources",
     "arc-raster-golden.json");
 
+// The C++ runtime linked in on Windows. Git for Windows puts its own, older
+// libstdc++-6.dll and libwinpthread-1.dll on PATH ahead of the compiler's,
+// and a program built by a newer g++ (WinLibs 16 here) loaded those and
+// crashed with 0xC0000005 before printing a line - which read as the shape
+// rules failing (test:all, 2026-10-06). Linked statically there is no DLL to
+// pick wrong.
+const STATIC_RUNTIME = process.platform === "win32" ? ["-static"] : [];
+
 function die(message) {
   console.error(`\n${message}`);
   process.exit(1);
@@ -115,7 +123,7 @@ function build(name) {
   const shim = path.join(HERE, "shim");
   const gpp = ["g++", "clang++"].find(haveOnPath);
   if (gpp) {
-    execFileSync(gpp, ["-O2", "-std=c++17", `-I${shim}`, `-I${SRC}`, "-o", exe, cpp, raster], {
+    execFileSync(gpp, ["-O2", "-std=c++17", ...STATIC_RUNTIME, `-I${shim}`, `-I${SRC}`, "-o", exe, cpp, raster], {
       stdio: "inherit",
     });
     return exe;
