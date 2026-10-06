@@ -172,6 +172,20 @@ static ProjectLoader projectLoader;
 static ClippedCanvas16 *canvas = nullptr;
 static ColorScreenRenderer *renderer = nullptr;
 static int currentScreen = 0;
+// The popup open over currentScreen, as an index after the screens
+// (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
+// 2.5). Only ever this board's own state: never on MQTT. While one is open,
+// taps, drags, hit tests and button actions are the popup's.
+static int openPopup = -1;
+// Where the button that opened it was, for the frame to grow from.
+static bool popupOriginKnown = false;
+static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOriginH = 0;
+// How wide the fence's edge is drawn in the popup's border colour.
+static const int POPUP_BORDER_PX = 2;
+// What the last popup did, for /api/debug.
+static String lastPopup = "none since boot";
+// The screen or popup a finger or a button acts on now.
+static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreen; }
 // The transition's second surface and the transition itself. See
 // FollowSwipe.h for why a full-screen follow exists on a board that
 // measures 15fps for one.
@@ -445,6 +459,11 @@ static unsigned long injectUntilMs = 0;
 static const unsigned long TOUCH_INJECT_HOLD_MS = 2000;
 static bool holdActive = false;
 static int16_t holdStartX = 0, holdStartY = 0;
+// Where the finger went down, for the whole contact. holdStartX/Y is the setup
+// hold's reference and restarts whenever the finger wanders, so a swipe
+// measured from it was only the last stretch and never long enough to count -
+// found 2026-10-06 when a swipe on a popup did not close it.
+static int16_t contactStartX = 0, contactStartY = 0;
 static unsigned long holdStartMs = 0;
 static int holdLastSecondShown = -1;
 static bool holdConsumed = false;
@@ -470,8 +489,21 @@ static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
   uint32_t t0 = micros();
-  bool ok = renderer->renderScreen(currentScreen, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
-                                   pressedSwitchId, pressedSwitchIndex);
+  bool ok;
+  if (openPopup >= 0)
+  {
+    // The screen underneath as it is, set back to half, and the popup over
+    // it; the touch feedback belongs to the popup.
+    ok = renderer->renderScreen(currentScreen);
+    renderer->dimOutsidePopupFence();
+    ok = renderer->renderPopup(openPopup, POPUP_BORDER_PX, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                               pressedSwitchId, pressedSwitchIndex) && ok;
+  }
+  else
+  {
+    ok = renderer->renderScreen(currentScreen, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                                pressedSwitchId, pressedSwitchIndex);
+  }
   renderGeneration++;
   pendingTopicCount = 0;
   pendingTopicOverflow = false;
@@ -509,8 +541,9 @@ static void blankDisplay(const char *reason)
   // and waking repaints, so the next person finds the idle screen rather
   // than wherever the last one left it.
   const int idle = resolveIdleScreenIndex();
-  if (idle < 0 || idle == currentScreen) return;
+  if (idle < 0 || (idle == currentScreen && openPopup < 0)) return;
   currentScreen = idle;
+  openPopup = -1;
   forgetTouchFeedback();
   renderer->renderScreen(currentScreen);
 }
@@ -715,6 +748,7 @@ static void setupNetworking()
     if (!projectLoader.isLoaded()) return false;
     if (index < 0 || index >= (int)projectLoader.getProject().screens.size()) return false;
     currentScreen = index;
+    openPopup = -1;
     forgetTouchFeedback();
     renderAndPresent("test interface: screen switch");
     return true;
@@ -828,6 +862,8 @@ static void setupNetworking()
     out += FirmwareImage::debugLine();
     out += panel.report();
     out += "  last tap: " + lastTap + "\n";
+    out += "  popup: " + (openPopup >= 0 ? String("open, index ") + String(openPopup) : String("none open")) +
+           " - last: " + lastPopup + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
@@ -1324,7 +1360,7 @@ static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const c
 {
   if (!renderer || !canvas || rw <= 0 || rh <= 0) return;
   const uint32_t t0 = micros();
-  renderer->renderScreenRegion(currentScreen, rx, ry, rw, rh,
+  renderer->renderScreenRegion(activeScreen(), rx, ry, rw, rh,
                                pressedButtonId, pendingSwitchId, pendingSwitchIndex,
                                pressedSwitchId, pressedSwitchIndex);
   const uint32_t t1 = micros();
@@ -1354,7 +1390,7 @@ static void beginPressFeedback(int16_t x, int16_t y)
   if (!projectLoader.isLoaded() || renderer == nullptr) return;
 
   int16_t objX = 0, objY = 0;
-  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr) return;
 
   if (hit->type == "button") pressedButtonId = hit->id;
@@ -1459,9 +1495,11 @@ static bool renderValueChangesPartial()
   if (renderer == nullptr || canvas == nullptr || !projectLoader.isLoaded()) return false;
   if (pendingTopicOverflow || pendingTopicCount == 0) return false;
 
-  const ProjectConfig &project = projectLoader.getProject();
-  if (currentScreen < 0 || currentScreen >= (int)project.screens.size()) return false;
-  const Screen &screen = project.screens[currentScreen];
+  // While a popup is open only its own objects are redrawn; what changes on
+  // the screen underneath is drawn when the popup closes, with the rest.
+  const Screen *active = screenOrPopupAt(projectLoader.getProject(), activeScreen());
+  if (active == nullptr) return false;
+  const Screen &screen = *active;
 
   const int MAX_RECTS = 8;
   int16_t rx[MAX_RECTS], ry[MAX_RECTS], rw[MAX_RECTS], rh[MAX_RECTS];
@@ -1543,7 +1581,7 @@ static bool renderValueChangesPartial()
   const uint32_t t0 = micros();
   for (int i = 0; i < rects; i++)
   {
-    if (!renderer->renderScreenRegion(currentScreen, rx[i], ry[i], rw[i], rh[i], pressedButtonId,
+    if (!renderer->renderScreenRegion(activeScreen(), rx[i], ry[i], rw[i], rh[i], pressedButtonId,
                                       pendingSwitchId, pendingSwitchIndex, pressedSwitchId,
                                       pressedSwitchIndex))
     {
@@ -1562,6 +1600,75 @@ static bool renderValueChangesPartial()
   return true;
 }
 
+// ------------------------------------------------------------------ popups
+//
+// A popup over the current screen (designer docs/device-contract.md 2.5). On
+// this board: the screen set back to half, then a frame growing as a rectangle
+// from the button that opened it to the fence - rectangles only, no pixels
+// scaled, a few frames - and the popup's content at the end. Closing draws the
+// screen underneath again, whole.
+static const int POPUP_GROW_FRAMES = 4;
+
+static void openPopupAt(int index)
+{
+  if (!renderer || !canvas) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  const Screen *popup = screenOrPopupAt(project, index);
+  if (popup == nullptr) return;
+  const bool replacing = openPopup >= 0;
+  openPopup = index;
+  forgetTouchFeedback();
+  const uint32_t t0 = micros();
+
+  // A popup replacing another, or one opened by something with no place on
+  // the glass (a hardware button, the test interface), appears at once.
+  if (!replacing && popupOriginKnown)
+  {
+    renderer->renderScreen(currentScreen);
+    renderer->dimOutsidePopupFence();
+    panel.blit(canvas->getBuffer());
+    const PopupFence &f = project.popupFence;
+    bool transparent = false;
+    const uint16_t ground =
+        renderer->rgb565Of(popup->backgroundColor.isEmpty() ? "#ffffff" : popup->backgroundColor, &transparent);
+    const uint16_t edge =
+        popup->borderColor.isEmpty() ? ground : renderer->rgb565Of(popup->borderColor, &transparent);
+    for (int k = 1; k <= POPUP_GROW_FRAMES; k++)
+    {
+      const int16_t x = popupOriginX + (f.x - popupOriginX) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t y = popupOriginY + (f.y - popupOriginY) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t r = popupOriginX + popupOriginW +
+                        (f.x + f.width - popupOriginX - popupOriginW) * k / (POPUP_GROW_FRAMES + 1);
+      const int16_t b = popupOriginY + popupOriginH +
+                        (f.y + f.height - popupOriginY - popupOriginH) * k / (POPUP_GROW_FRAMES + 1);
+      canvas->fillRect(x, y, r - x, b - y, ground);
+      for (int i = 0; i < POPUP_BORDER_PX; i++) canvas->drawRect(x + i, y + i, r - x - 2 * i, b - y - 2 * i, edge);
+      panel.blitRegion(canvas->getBuffer(), x, y, r - x, b - y);
+    }
+    renderer->renderPopup(openPopup, POPUP_BORDER_PX);
+    renderGeneration++;
+    pendingTopicCount = 0;
+    pendingTopicOverflow = false;
+    panel.blit(canvas->getBuffer());
+  }
+  else
+  {
+    renderAndPresent("popup opened");
+  }
+  lastPopup = "opened \"" + popup->name + "\" in " + String((micros() - t0) / 1000) + " ms";
+  Serial.printf("[popup] %s\n", lastPopup.c_str());
+}
+
+static void closePopup(const char *reason)
+{
+  if (openPopup < 0) return;
+  openPopup = -1;
+  forgetTouchFeedback();
+  renderAndPresent("popup closed");
+  lastPopup = String("closed by ") + reason;
+  Serial.printf("[popup] %s\n", lastPopup.c_str());
+}
+
 // What a project binds to a button, and what this board does about it.
 // Ported from the knob rather than reinvented: same action names, same
 // order, same treatment of an unknown one.
@@ -1576,6 +1683,7 @@ static void dispatchButtonAction(const ButtonAction &action)
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
     currentScreen = ((currentScreen + delta) % count + count) % count;
+    openPopup = -1;
     forgetTouchFeedback();
     renderAndPresent("button: screen change");
   }
@@ -1586,6 +1694,7 @@ static void dispatchButtonAction(const ButtonAction &action)
       if (project.screens[i].id == action.targetScreenId)
       {
         currentScreen = i;
+        openPopup = -1;
         forgetTouchFeedback();
         renderAndPresent("button: goto screen");
         break;
@@ -1620,6 +1729,20 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     enterSetupMode();
   }
+  else if (action.type == "open-popup")
+  {
+    const int index = popupIndexById(project, action.targetScreenId);
+    if (index < 0 || !project.popupFence.present)
+    {
+      Serial.printf("[tap] no popup \"%s\" - skipping\n", action.targetScreenId.c_str());
+      return;
+    }
+    openPopupAt(index);
+  }
+  else if (action.type == "close-popup")
+  {
+    closePopup("button");
+  }
 }
 
 // What a tap at this point hits, and what that does.
@@ -1648,7 +1771,7 @@ static int pagingTargetFor(int dx)
   if (!projectLoader.isLoaded()) return -1;
   const ProjectConfig &project = projectLoader.getProject();
   const int count = (int)project.screens.size();
-  if (count < 2) return -1;
+  if (count < 2 || openPopup >= 0) return -1;  // a swipe on a popup closes it, at release
 
   const ButtonAction action = projectLoader.getButtonAction(currentScreen, dx < 0 ? "swipe-left" : "swipe-right");
   int delta = 0;
@@ -1682,6 +1805,15 @@ static void dispatchSwipeAtRelease(int dx, int dy)
       buttonId = dy > 0 ? "swipe-down" : "swipe-up";
   }
   if (buttonId == nullptr) return;
+
+  // Any swipe closes an open popup and does nothing else (designer
+  // docs/device-contract.md 2.5); one a level took never reaches here.
+  if (openPopup >= 0)
+  {
+    lastTap = String(buttonId) + " -> close popup";
+    closePopup("swipe");
+    return;
+  }
 
   const ButtonAction action = projectLoader.getButtonAction(currentScreen, buttonId);
   if (action.type.isEmpty()) return;
@@ -1725,7 +1857,7 @@ static void renderLevelDragChange(const String &before, const String &after)
   const int MAX_RECTS = 8;
   int16_t rx[MAX_RECTS], ry[MAX_RECTS], rw[MAX_RECTS], rh[MAX_RECTS];
   const int rects =
-      renderer->levelDragRects(currentScreen, levelAskedTopic, before, after, rx, ry, rw, rh, MAX_RECTS);
+      renderer->levelDragRects(activeScreen(), levelAskedTopic, before, after, rx, ry, rw, rh, MAX_RECTS);
   if (rects <= 0)
   {
     renderRegion(levelDragX, levelDragY, levelDragW, levelDragH, "level drag");
@@ -1734,7 +1866,7 @@ static void renderLevelDragChange(const String &before, const String &after)
   const uint32_t t0 = micros();
   for (int i = 0; i < rects; i++)
   {
-    renderer->renderScreenRegion(currentScreen, rx[i], ry[i], rw[i], rh[i], pressedButtonId, pendingSwitchId,
+    renderer->renderScreenRegion(activeScreen(), rx[i], ry[i], rw[i], rh[i], pressedButtonId, pendingSwitchId,
                                  pendingSwitchIndex, pressedSwitchId, pressedSwitchIndex);
   }
   const uint32_t t1 = micros();
@@ -1792,7 +1924,7 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
 
   int16_t objX = 0, objY = 0;
-  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr || !ColorScreenRenderer::isSettableLevel(*hit)) return false;
 
   levelDragObjId = hit->id;
@@ -1808,7 +1940,7 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   // about the value, so they all change, and redrawing only the one under the
   // finger left the others showing the old marker.
   int16_t boundsX = 0, boundsY = 0, boundsW = 0, boundsH = 0;
-  if (renderer->markerTopicBounds(currentScreen, levelAskedTopic, boundsX, boundsY, boundsW, boundsH))
+  if (renderer->markerTopicBounds(activeScreen(), levelAskedTopic, boundsX, boundsY, boundsW, boundsH))
   {
     levelDragX = boundsX;
     levelDragY = boundsY;
@@ -1828,7 +1960,7 @@ static void updateLevelDrag(int16_t x, int16_t y)
   // The finger may leave the object - it then sets the end value rather than
   // handing the gesture back, so the value is computed on the object it went
   // down on.
-  const ScreenObject *held = renderer->findObjectById(currentScreen, levelDragObjId, objX, objY);
+  const ScreenObject *held = renderer->findObjectById(activeScreen(), levelDragObjId, objX, objY);
   if (held == nullptr) return;
   applyLevelDragValue(formatLevelPayload(renderer->settableLevelValueAt(*held, x, y, objX, objY)), false);
 }
@@ -1870,7 +2002,7 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // Absolute corner of whatever was hit. For an object inside a panel that
   // is NOT obj.x/obj.y, and the segment arithmetic below depends on it.
   int16_t objX = 0, objY = 0;
-  const ScreenObject *hit = renderer->hitTestTappable(currentScreen, x, y, objX, objY);
+  const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr)
   {
     lastTap = "(" + String(x) + "," + String(y) + ") hit nothing tappable";
@@ -1882,7 +2014,14 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     Serial.printf("[tap] button \"%s\"\n", hit->id.c_str());
     lastTap = "(" + String(x) + "," + String(y) + ") SoftwareButton \"" + hit->id + "\" action " +
               (hit->properties.action.type.isEmpty() ? String("(none)") : hit->properties.action.type);
+    // Where a popup it opens grows from.
+    popupOriginKnown = true;
+    popupOriginX = objX;
+    popupOriginY = objY;
+    popupOriginW = hit->width;
+    popupOriginH = hit->height;
     dispatchButtonAction(hit->properties.action);
+    popupOriginKnown = false;
     return true;
   }
 
@@ -2129,6 +2268,8 @@ void loop()
       holdActive = true;
       holdStartX = touchX;
       holdStartY = touchY;
+      contactStartX = touchX;
+      contactStartY = touchY;
       holdStartMs = millis();
       holdLastSecondShown = -1;
       holdConsumed = false;
@@ -2294,13 +2435,22 @@ void loop()
     // exact behaviour the rule exists to prevent.
     if (!contactOnlyWoke && !holdConsumed && contactDrift <= TAP_MAX_DRIFT)
     {
-      dispatchTapAt(holdStartX, holdStartY);
+      // A tap beside an open popup closes it and does nothing else.
+      if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(holdStartX, holdStartY))
+      {
+        lastTap = "(" + String(holdStartX) + "," + String(holdStartY) + ") outside the popup";
+        closePopup("tap outside");
+      }
+      else
+      {
+        dispatchTapAt(holdStartX, holdStartY);
+      }
     }
     else if (!contactOnlyWoke && !holdConsumed)
     {
       // Moved too far to be a tap and never became a page turn: whatever the
       // project binds to this direction, if anything.
-      dispatchSwipeAtRelease((int)touchX - holdStartX, (int)touchY - holdStartY);
+      dispatchSwipeAtRelease((int)touchX - contactStartX, (int)touchY - contactStartY);
     }
     contactOnlyWoke = false;
     if (renderGeneration == generationBefore)

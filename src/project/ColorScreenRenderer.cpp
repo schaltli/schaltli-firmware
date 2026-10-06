@@ -2735,9 +2735,9 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
 // set it back outside the fence - then the popup's background, clipped to the
 // fence's shape, then its objects where they are on the display, sorted as a
 // screen's are.
-bool ColorScreenRenderer::renderPopup(int popupIndex, const String& pressedButtonId, const String& pendingSwitchId,
-                                      int pendingSwitchStateIndex, const String& pressedSwitchId,
-                                      int pressedSwitchStateIndex) {
+bool ColorScreenRenderer::renderPopup(int popupIndex, int borderPx, const String& pressedButtonId,
+                                      const String& pendingSwitchId, int pendingSwitchStateIndex,
+                                      const String& pressedSwitchId, int pressedSwitchStateIndex) {
   if (!projectLoader_.isLoaded()) return false;
   const ProjectConfig& project = projectLoader_.getProject();
   if (!isPopupIndex(project, popupIndex) || !project.popupFence.present) return false;
@@ -2755,6 +2755,7 @@ bool ColorScreenRenderer::renderPopup(int popupIndex, const String& pressedButto
   } else {
     canvas_->fillRect(fence.x, fence.y, fence.width, fence.height, currentScreenBg_);
   }
+  drawPopupBorder(popup, borderPx);
 
   std::vector<ScreenObject> sortedObjects = popup.objects;
   std::sort(sortedObjects.begin(), sortedObjects.end(), zOrderLess);
@@ -2762,6 +2763,23 @@ bool ColorScreenRenderer::renderPopup(int popupIndex, const String& pressedButto
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
   return true;
+}
+
+// The fence's edge in the popup's border colour (the theme's outline), inward
+// from the edge so it never reaches the screen underneath.
+void ColorScreenRenderer::drawPopupBorder(const Screen& popup, int borderPx) {
+  const PopupFence& fence = projectLoader_.getProject().popupFence;
+  if (borderPx <= 0 || popup.borderColor.isEmpty()) return;
+  bool transparent = false;
+  const uint16_t color = parseHexColor(popup.borderColor, &transparent);
+  if (transparent) return;
+  for (int i = 0; i < borderPx; i++) {
+    if (fence.circle) {
+      canvas_->drawCircle(fence.x + fence.width / 2, fence.y + fence.height / 2, fence.width / 2 - i, color);
+    } else {
+      canvas_->drawRect(fence.x + i, fence.y + i, fence.width - 2 * i, fence.height - 2 * i, color);
+    }
+  }
 }
 
 // Halves every pixel outside the fence: a black scrim at 50 %, what an RGB

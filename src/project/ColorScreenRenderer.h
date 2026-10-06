@@ -112,9 +112,15 @@ public:
   // canvas holds: its background inside the fence, then its objects. The
   // screen underneath stays; dimOutsidePopupFence() sets it back first on an
   // RGB board (designer docs/device-contract.md 2.5).
-  bool renderPopup(int popupIndex, const String& pressedButtonId = "", const String& pendingSwitchId = "",
-                   int pendingSwitchStateIndex = -1, const String& pressedSwitchId = "",
-                   int pressedSwitchStateIndex = -1);
+  // borderPx: how wide the fence's edge is drawn in the popup's border colour
+  // (0 for none) - the board's choice.
+  bool renderPopup(int popupIndex, int borderPx = 2, const String& pressedButtonId = "",
+                   const String& pendingSwitchId = "", int pendingSwitchStateIndex = -1,
+                   const String& pressedSwitchId = "", int pressedSwitchStateIndex = -1);
+  void drawPopupBorder(const Screen& popup, int borderPx);
+  // A project colour as the canvas takes it - for a board drawing a popup's
+  // frame itself.
+  uint16_t rgb565Of(const String& hex, bool* isTransparent = nullptr) const { return parseHexColor(hex, isTransparent); }
   void dimOutsidePopupFence();
 
   // What `{device:id}` shows in a text: the MQTT client id, which the
