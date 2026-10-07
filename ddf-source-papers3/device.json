@@ -11,7 +11,8 @@
     "height": 540,
     "colorDepth": "4bit",
     "widthMm": 103.68,
-    "heightMm": 58.32
+    "heightMm": 58.32,
+    "popupCloseRadius": 26
   },
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",

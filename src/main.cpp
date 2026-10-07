@@ -1701,7 +1701,10 @@ static void pollTouchGesturesInner() {
     if (!wasOff && justWentDown) {
       // Vor allem anderen: ein bedienbarer Balken nimmt den Druck sofort an,
       // damit ein Tipp auf drei Viertel auch drei Viertel bedeutet.
-      if (beginLevelDrag(touchX, touchY)) dragDecided = true;
+      // An open popup's close button takes the contact before anything under it.
+      const bool onCloseBadge =
+          openPopup >= 0 && screenRenderer && screenRenderer->popupCloseBadge().contains(touchX, touchY);
+      if (!onCloseBadge && beginLevelDrag(touchX, touchY)) dragDecided = true;
     }
     if (wasOff) {
       // Marking dragDecided alone was not enough - that only stops the
@@ -1896,7 +1899,15 @@ static void pollTouchGesturesInner() {
       }
       return;
     }
-    // A tap beside an open popup closes it and does nothing else.
+    // A tap on an open popup's close button, or beside the popup, closes it
+    // and does nothing else.
+    if (openPopup >= 0 && screenRenderer && screenRenderer->popupCloseBadge().contains(touchLastX, touchLastY)) {
+      closePopup("close button");
+#if INPUT_DEBUG
+      lastReleaseVerdict = "tap-close-button";
+#endif
+      return;
+    }
     if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(touchLastX, touchLastY)) {
       closePopup("tap outside");
 #if INPUT_DEBUG
@@ -2376,6 +2387,11 @@ static void loadAndRenderProject() {
     // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
     // The id is fixed at construction, so it is there before the first draw.
     screenRenderer->setDeviceId(mqttClient.getClientId());
+    // An open popup shows a close button where the fence's rim meets the
+    // diagonal to the top right (designer docs/device-contract.md 2.5). 36 px
+    // across, about 4.6 mm: any bigger and the round glass cuts it. The DDF
+    // says the same (screen.popupCloseRadius).
+    screenRenderer->setPopupCloseBadgeRadius(18);
   }
   // Before the first render, so no render - and in particular no
   // neighbour pre-render during a drag - ever pays for a font parse.

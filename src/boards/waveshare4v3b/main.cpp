@@ -182,6 +182,9 @@ static bool popupOriginKnown = false;
 static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOriginH = 0;
 // How wide the fence's edge is drawn in the popup's border colour.
 static const int POPUP_BORDER_PX = 2;
+// The close button's radius on the fence's corner (PopupFence.h); the
+// designer's popupCloseBadge has the same number for this board.
+static const int POPUP_CLOSE_BADGE_RADIUS = 24;
 // What the last popup did, for /api/debug.
 static String lastPopup = "none since boot";
 // The screen or popup a finger or a button acts on now.
@@ -623,6 +626,10 @@ static void setupRenderStack()
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());
+  // An open popup shows a close button on its window's top right corner
+  // (designer docs/device-contract.md 2.5) - this board first (the user,
+  // 2026-10-07). 48 px across, about 5.5 mm here.
+  renderer->setPopupCloseBadgeRadius(POPUP_CLOSE_BADGE_RADIUS);
 
   // A second canvas of the same size, so the incoming screen can be drawn
   // while the outgoing one is still on the panel. Taken at boot rather than
@@ -2303,7 +2310,9 @@ void loop()
       // A settable level is offered the contact first and keeps it: it has no
       // pressed look to show, because the value moving under the finger is
       // the feedback (designer docs/2026-09-17-settable-level.md).
-      if (!contactOnlyWoke && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
+      // An open popup's close button takes the contact before anything under it.
+      const bool onCloseBadge = openPopup >= 0 && renderer && renderer->popupCloseBadge().contains(touchX, touchY);
+      if (!contactOnlyWoke && !onCloseBadge && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
     }
     lastHumanInputMs = millis();
     if (contactOnlyWoke)
@@ -2453,8 +2462,14 @@ void loop()
     // exact behaviour the rule exists to prevent.
     if (!contactOnlyWoke && !holdConsumed && contactDrift <= TAP_MAX_DRIFT)
     {
-      // A tap beside an open popup closes it and does nothing else.
-      if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(holdStartX, holdStartY))
+      // A tap on an open popup's close button, or beside the popup, closes
+      // it and does nothing else.
+      if (openPopup >= 0 && renderer && renderer->popupCloseBadge().contains(holdStartX, holdStartY))
+      {
+        lastTap = "(" + String(holdStartX) + "," + String(holdStartY) + ") on the close button";
+        closePopup("close button");
+      }
+      else if (openPopup >= 0 && !projectLoader.getProject().popupFence.contains(holdStartX, holdStartY))
       {
         lastTap = "(" + String(holdStartX) + "," + String(holdStartY) + ") outside the popup";
         closePopup("tap outside");

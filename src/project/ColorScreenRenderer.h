@@ -118,6 +118,12 @@ public:
                    const String& pendingSwitchId = "", int pendingSwitchStateIndex = -1,
                    const String& pressedSwitchId = "", int pressedSwitchStateIndex = -1);
   void drawPopupBorder(const Screen& popup, int borderPx);
+  // The round close button on the fence's edge (PopupFence.h), drawn over a
+  // popup's objects by renderPopup() and by a region render that reaches it.
+  // Radius 0, the default, draws none: a board opts in.
+  void setPopupCloseBadgeRadius(int radius) { popupCloseBadgeRadius_ = radius; }
+  PopupCloseBadge popupCloseBadge() const;
+  void drawPopupCloseBadge(const Screen& popup);
   // A project colour as the canvas takes it - for a board drawing a popup's
   // frame itself.
   uint16_t rgb565Of(const String& hex, bool* isTransparent = nullptr) const { return parseHexColor(hex, isTransparent); }
@@ -252,6 +258,7 @@ private:
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
   String deviceId_;
+  int popupCloseBadgeRadius_ = 0;
   DdfFontStore fontStore_;
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,

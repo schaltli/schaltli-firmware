@@ -11,7 +11,8 @@
     "height": 480,
     "colorDepth": "24bit",
     "widthMm": 95.04,
-    "heightMm": 53.86
+    "heightMm": 53.86,
+    "popupCloseRadius": 24
   },
   "deviceActions": [
     "displayOff"

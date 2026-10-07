@@ -29,6 +29,50 @@ struct PopupFence {
   }
 };
 
+// The round close button a board draws on the fence's edge (designer
+// docs/device-contract.md 2.5, lib/popup.ts popupCloseBadge): its centre on
+// the top right corner of a rectangle, on a circle where the diagonal to the
+// top right meets it. Taps count within hitRadius, wider than the button
+// drawn, so a finger finds it. Display pixels.
+struct PopupCloseBadge {
+  bool present = false;
+  int cx = 0;
+  int cy = 0;
+  int radius = 0;
+  int hitRadius = 0;
+
+  bool contains(int px, int py) const {
+    if (!present) return false;
+    const long dx = px - cx;
+    const long dy = py - cy;
+    return dx * dx + dy * dy <= (long)hitRadius * hitRadius;
+  }
+};
+
+// radius 0: the board draws no close button.
+inline PopupCloseBadge popupCloseBadgeFor(const PopupFence& fence, int radius) {
+  PopupCloseBadge b;
+  if (!fence.present || radius <= 0) return b;
+  b.present = true;
+  b.radius = radius;
+  b.hitRadius = radius * 8 / 5;
+  if (fence.circle) {
+    // Rounded as the designer's Math.round rounds these positive values.
+    const double r = fence.width / 2.0;
+    const double off = r * 0.70710678;
+    b.cx = (int)(fence.x + r + off + 0.5);
+    b.cy = (int)(fence.y + r - off + 0.5);
+  } else {
+    b.cx = fence.x + fence.width;
+    b.cy = fence.y;
+  }
+  return b;
+}
+
+// Its colours, on every device and in the designer (lib/popup.ts).
+#define POPUP_CLOSE_BADGE_DISC "#303030"
+#define POPUP_CLOSE_BADGE_CROSS "#ffffff"
+
 // One RGB565 pixel at half brightness, each channel halved - what an RGB
 // device dims the screen underneath an open popup to (a black scrim at 50 %).
 inline uint16_t halveRgb565(uint16_t c) { return (c >> 1) & 0x7BEF; }

@@ -2762,7 +2762,33 @@ bool ColorScreenRenderer::renderPopup(int popupIndex, int borderPx, const String
   for (const auto& obj : sortedObjects) {
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
+  drawPopupCloseBadge(popup);
   return true;
+}
+
+PopupCloseBadge ColorScreenRenderer::popupCloseBadge() const {
+  if (!projectLoader_.isLoaded()) return PopupCloseBadge();
+  return popupCloseBadgeFor(projectLoader_.getProject().popupFence, popupCloseBadgeRadius_);
+}
+
+// A dark disc with a white X, over everything else - an object under it is
+// the author's to move. Dark whatever the theme: in the theme's outline it was
+// pale grey on the glass, and on e-ink, with no scrim round the window, hardly
+// there (the user, 2026-10-07). The X's strokes as rows of small discs, for
+// round ends without anti-aliasing.
+void ColorScreenRenderer::drawPopupCloseBadge(const Screen& popup) {
+  (void)popup;
+  const PopupCloseBadge b = popupCloseBadge();
+  if (!b.present) return;
+  const uint16_t disc = parseHexColor(POPUP_CLOSE_BADGE_DISC);
+  const uint16_t cross = parseHexColor(POPUP_CLOSE_BADGE_CROSS);
+  canvas_->fillCircle(b.cx, b.cy, b.radius, disc);
+  const int arm = b.radius * 2 / 5;
+  const int pen = b.radius / 10 > 1 ? b.radius / 10 : 1;
+  for (int i = -arm; i <= arm; i++) {
+    canvas_->fillCircle(b.cx + i, b.cy + i, pen, cross);
+    canvas_->fillCircle(b.cx + i, b.cy - i, pen, cross);
+  }
 }
 
 // The fence's edge in the popup's border colour (the theme's outline), inward
@@ -2870,6 +2896,15 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
     if (obj.y + obj.height + RAND <= ry || obj.y - RAND >= ry + rh) continue;
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId,
                  pressedSwitchStateIndex);
+  }
+  // A popup's close button lies over its objects; one redrawn under it would
+  // otherwise cover it.
+  if (isPopupIndex(project, screenIndex)) {
+    const PopupCloseBadge b = popupCloseBadge();
+    if (b.present && b.cx + b.radius >= rx && b.cx - b.radius < rx + rw && b.cy + b.radius >= ry &&
+        b.cy - b.radius < ry + rh) {
+      drawPopupCloseBadge(screen);
+    }
   }
 
   canvas_->clearRegion();

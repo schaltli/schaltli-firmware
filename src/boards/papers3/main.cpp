@@ -176,6 +176,9 @@ static void renderAndPresent(const char *reason)
     canvas->fillRect(f.x + POPUP_SHADOW_PX, f.y + POPUP_SHADOW_PX, f.width, f.height, 0x0000);
     ok = renderer->renderPopup(openPopup, 0) && ok;
     for (int i = 0; i < POPUP_EDGE_PX; i++) canvas->drawRect(f.x + i, f.y + i, f.width - 2 * i, f.height - 2 * i, 0x0000);
+    // The close button again, over the edge just drawn across its corner.
+    const Screen *popup = screenOrPopupAt(projectLoader.getProject(), openPopup);
+    if (popup != nullptr) renderer->drawPopupCloseBadge(*popup);
   }
   const uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
@@ -512,6 +515,15 @@ static void serviceTouch()
       return;
     }
 
+    // A still tap on an open popup's close button closes it, before anything
+    // under the button - a level included - is asked.
+    if (!contactMoved && (millis() - holdStartMs) < SETUP_HOLD_MS && openPopup >= 0 && renderer &&
+        renderer->popupCloseBadge().contains(contactStartX, contactStartY))
+    {
+      closePopup("close button");
+      return;
+    }
+
     // A gesture that began on a settable level belongs to it, however far it
     // travelled (designer docs/2026-09-17-settable-level.md, decisions 8 and
     // 9): this board follows no finger, so it takes the position the finger
@@ -591,6 +603,10 @@ static bool setupPanelAndProject()
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());
+  // An open popup shows a close button on its window's top right corner
+  // (designer docs/device-contract.md 2.5). 52 px across, about 5.6 mm here;
+  // the DDF says the same (screen.popupCloseRadius).
+  renderer->setPopupCloseBadgeRadius(26);
 
   if (!LittleFS.begin(true))
   {

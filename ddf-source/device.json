@@ -12,7 +12,8 @@
     "shape": "round",
     "colorDepth": "24bit",
     "widthMm": 45.68,
-    "heightMm": 45.68
+    "heightMm": 45.68,
+    "popupCloseRadius": 18
   },
   "adornment": {
     "svgPath": "adornment.svg"
