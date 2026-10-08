@@ -1642,7 +1642,7 @@ static bool renderValueChangesPartial()
       const auto &combinedTopics = projectLoader.getProject().combinedTopics;
       for (int e = 0; e < (int)nav->entries.size(); e++)
       {
-        const std::vector<ScreenObject> &objects = e == active ? nav->entries[e].active : nav->entries[e].normal;
+        const SpiramObjects &objects = e == active ? nav->entries[e].active : nav->entries[e].normal;
         bool reads = false;
         for (const ScreenObject &obj : objects)
           for (int i = 0; i < pendingTopicCount && !reads; i++)

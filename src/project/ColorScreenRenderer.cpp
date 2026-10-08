@@ -2873,7 +2873,8 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   for (int i = 0; i < (int)nav->entries.size(); i++) {
     const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, i, scroll);
     if (r.x >= x1 || r.y >= y1 || r.x + r.width <= x0 || r.y + r.height <= y0) continue;
-    std::vector<ScreenObject> objects = i == active ? nav->entries[i].active : nav->entries[i].normal;
+    const SpiramObjects& source = i == active ? nav->entries[i].active : nav->entries[i].normal;
+    std::vector<ScreenObject> objects(source.begin(), source.end());
     std::sort(objects.begin(), objects.end(), zOrderLess);
     for (ScreenObject obj : objects) {
       obj.x += r.x;

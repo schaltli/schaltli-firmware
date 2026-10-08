@@ -5,6 +5,7 @@
 #include "PopupFence.h"
 #include "CombinedTopics.h"
 #include "LiveValue.h"
+#include "SpiramAllocator.h"
 
 /**
  * Data structures for project.json configuration
@@ -346,10 +347,14 @@ struct HardwareButtonDef {
 // A navigator (designer docs/device-contract.md 2.7): a strip along an edge
 // with an entry per listed screen, each entry ordinary objects relative to
 // its top left - `active` for the open screen, `normal` for the others.
+// In PSRAM: an entry is a few large ScreenObjects, and a navigator over a
+// dozen screens held 87 KB of internal heap with them there (SpiramAllocator.h).
+using SpiramObjects = std::vector<ScreenObject, SpiramAllocator<ScreenObject>>;
+
 struct NavigatorEntry {
   String screenId;
-  std::vector<ScreenObject> normal;
-  std::vector<ScreenObject> active;
+  SpiramObjects normal;
+  SpiramObjects active;
 };
 
 struct Navigator {
