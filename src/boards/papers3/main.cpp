@@ -15,6 +15,7 @@
 // genuinely different, which is the panel (EpdPanel.h) and what that implies
 // for when to draw.
 
+#include "project/NavigatorLayout.h"
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -165,9 +166,46 @@ static void heartbeat()
 
 static void enterSetupMode();
 
+// Which screens are hidden (designer device contract 2.7): out of paging,
+// never the start, still a goto target.
+static std::vector<bool> hiddenFlags()
+{
+  std::vector<bool> hidden;
+  if (!projectLoader.isLoaded()) return hidden;
+  for (const Screen &screen : projectLoader.getProject().screens) hidden.push_back(screen.hidden);
+  return hidden;
+}
+
+// The screen's navigator, if the point lies on its strip (2.7).
+static bool onNavigatorStrip(int16_t x, int16_t y, navigatorlayout::Layout &layout)
+{
+  if (!renderer || openPopup >= 0 || !renderer->navigatorLayout(currentScreen, layout)) return false;
+  const navigatorlayout::Rect &s = layout.strip;
+  return x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height;
+}
+
+// The screen the navigator last followed to: it follows a screen change
+// only, never a redraw of the same screen - which would undo a scroll the
+// finger just made (found on the PaperS3, 2026-10-08).
+static int navigatorFollowedScreen = -1;
+
+// Before `target` is drawn: the navigator scrolled as far as shows its
+// entry, from where it is now. Untouched (-1) it does that by itself.
+static void navigatorFollow(int target)
+{
+  if (target == navigatorFollowedScreen) return;
+  navigatorFollowedScreen = target;
+  if (!renderer || renderer->navigatorScroll() < 0) return;
+  navigatorlayout::Layout layout;
+  int active = -1;
+  if (!renderer->navigatorLayout(target, layout, nullptr, &active) || active < 0) return;
+  renderer->setNavigatorScroll(navigatorlayout::scrollToShow(layout, active, renderer->navigatorScroll()));
+}
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
+  navigatorFollow(currentScreen);
   const uint32_t t0 = micros();
   bool ok = renderer->renderScreen(currentScreen);
   if (openPopup >= 0)
@@ -224,7 +262,8 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
-    currentScreen = ((currentScreen + delta) % count + count) % count;
+    // Past hidden screens (contract 2.7).
+    currentScreen = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
     openPopup = -1;
     panel.forceFullNext();
     renderAndPresent("button: screen change");
@@ -293,6 +332,30 @@ static void closePopup(const char *reason)
 static bool handleTap(int16_t x, int16_t y)
 {
   if (!renderer || !projectLoader.isLoaded()) return false;
+
+  // A tap on the navigator opens its entry's screen, as goto-screen does
+  // (contract 2.7); its empty end takes the tap too.
+  {
+    navigatorlayout::Layout layout;
+    const Navigator *nav = nullptr;
+    if (openPopup < 0 && renderer->navigatorLayout(currentScreen, layout, &nav))
+    {
+      const int entry = navigatorlayout::entryAt(layout, x, y, renderer->effectiveNavigatorScroll(currentScreen));
+      const navigatorlayout::Rect &s = layout.strip;
+      if (entry >= 0)
+      {
+        if (nav->entries[entry].screenId != projectLoader.getProject().screens[currentScreen].id)
+        {
+          ButtonAction go;
+          go.type = "goto-screen";
+          go.targetScreenId = nav->entries[entry].screenId;
+          dispatchButtonAction(go);
+        }
+        return true;
+      }
+      if (x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height) return true;
+    }
+  }
 
   int16_t objX = 0, objY = 0;
   const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
@@ -524,6 +587,26 @@ static void serviceTouch()
       return;
     }
 
+    // A gesture that began on the navigator is its own (contract 2.7): a
+    // swipe along it scrolls a page of whole entries - this board acts on
+    // release and follows no finger - and never pages; a still one is a tap,
+    // which handleTap below gives it.
+    {
+      navigatorlayout::Layout layout;
+      if (contactMoved && onNavigatorStrip(contactStartX, contactStartY, layout))
+      {
+        const int along = layout.horizontal ? dx : dy;
+        const int scroll = renderer->effectiveNavigatorScroll(currentScreen);
+        const int next = navigatorlayout::pageScroll(layout, scroll, along < 0 ? 1 : -1);
+        if (next != scroll)
+        {
+          renderer->setNavigatorScroll(next);
+          renderAndPresent("navigator scroll");
+        }
+        return;
+      }
+    }
+
     // A gesture that began on a settable level belongs to it, however far it
     // travelled (designer docs/2026-09-17-settable-level.md, decisions 8 and
     // 9): this board follows no finger, so it takes the position the finger
@@ -625,6 +708,8 @@ static bool setupPanelAndProject()
     return true;
   }
 
+  // The first screen that is not hidden (contract 2.7).
+  currentScreen = navigatorlayout::firstShown(hiddenFlags());
   Serial.printf("[papers3] project \"%s\" %dx%d, %u screen(s)\n",
                 projectLoader.getProject().name.c_str(), projectLoader.getProject().screenWidth,
                 projectLoader.getProject().screenHeight,

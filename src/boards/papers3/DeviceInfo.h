@@ -48,7 +48,10 @@
 // (designer docs/device-contract.md 2.5).
 // 4: draws live values and combined topics - liveText, liveValues,
 // liveIconId, combinedTopics[] (designer docs/device-contract.md 2.6).
-#define SYSTEM_GENERATION_MINOR 4
+// 5: draws the navigator and pages past hidden screens - navigators[],
+// navigatorId, hidden (designer docs/device-contract.md 2.7). A swipe on the
+// strip scrolls a page of entries, on release.
+#define SYSTEM_GENERATION_MINOR 5
 
 // Where DeployManager promotes a verified deploy download to, and the
 // recovery endpoint reads back from.

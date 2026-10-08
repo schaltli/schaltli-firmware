@@ -513,10 +513,17 @@ static bool onNavigatorStrip(int16_t x, int16_t y, navigatorlayout::Layout &layo
   return x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height;
 }
 
+// The screen the navigator last followed to: it follows a screen change
+// only, never a redraw of the same screen - which would undo a scroll the
+// finger just made (found on the PaperS3, 2026-10-08).
+static int navigatorFollowedScreen = -1;
+
 // Before `target` is drawn: the navigator scrolled as far as shows its
 // entry, from where it is now. Untouched (-1) it does that by itself.
 static void navigatorFollow(int target)
 {
+  if (target == navigatorFollowedScreen) return;
+  navigatorFollowedScreen = target;
   if (!renderer || renderer->navigatorScroll() < 0) return;
   navigatorlayout::Layout layout;
   int active = -1;
