@@ -108,6 +108,10 @@ public:
   // displayed, which is the old behaviour and the old tearing.
   uint16_t *back() { return fb_[backIndex_]; }
 
+  // The buffer handed over last - what is on the glass after the next VSYNC.
+  // For a test reading the glass mid-gesture (/panel.bmp), not for drawing.
+  const uint16_t *front() const { return count_ < 2 ? fb_[0] : fb_[(backIndex_ + count_ - 1) % count_]; }
+
   // Changes the pixel clock live - a diagnostic, not a setting; a restart
   // goes back to PCLK_HZ. Exists because the parallel bus's emissions slow
   // this board's own WiFi and which clock is kindest depends on the channel

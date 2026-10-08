@@ -499,9 +499,35 @@ static int resolveIdleScreenIndex()
   return -1;
 }
 
+// The navigator owns a contact that began on its strip (designer device
+// contract 2.7): a drag along it scrolls it, a still release is a tap, and
+// nothing it does pages.
+static bool navigatorContact = false;
+static bool navigatorScrolled = false;
+static int navigatorStartScroll = 0;
+
+static bool onNavigatorStrip(int16_t x, int16_t y, navigatorlayout::Layout &layout)
+{
+  if (!renderer || openPopup >= 0 || !renderer->navigatorLayout(currentScreen, layout)) return false;
+  const navigatorlayout::Rect &s = layout.strip;
+  return x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height;
+}
+
+// Before `target` is drawn: the navigator scrolled as far as shows its
+// entry, from where it is now. Untouched (-1) it does that by itself.
+static void navigatorFollow(int target)
+{
+  if (!renderer || renderer->navigatorScroll() < 0) return;
+  navigatorlayout::Layout layout;
+  int active = -1;
+  if (!renderer->navigatorLayout(target, layout, nullptr, &active) || active < 0) return;
+  renderer->setNavigatorScroll(navigatorlayout::scrollToShow(layout, active, renderer->navigatorScroll()));
+}
+
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
+  navigatorFollow(currentScreen);
   uint32_t t0 = micros();
   bool ok;
   if (openPopup >= 0)
@@ -764,6 +790,10 @@ static void setupNetworking()
   // The three the HIL orchestrator drives. Only the debug handler was wired
   // before, which is why no pixel-parity run has ever been possible on this
   // board even though the endpoints serving it were already there.
+  // What is on the glass rather than in the canvas: during a swipe they
+  // differ, which is what hil/navigator.js reads to see the strip stand still.
+  testInterface.setPanelShadowHandler([]() -> const uint16_t * { return panel.front(); });
+
   testInterface.setScreenSwitchHandler([](int index) -> bool {
     if (!projectLoader.isLoaded()) return false;
     if (index < 0 || index >= (int)projectLoader.getProject().screens.size()) return false;
@@ -1600,6 +1630,39 @@ static bool renderValueChangesPartial()
       rects++;
     }
   }
+  // A navigator entry that reads a changed topic - a live screen icon -
+  // redrawn as its own rectangle, cut to the strip (contract 2.7).
+  {
+    navigatorlayout::Layout layout;
+    const Navigator *nav = nullptr;
+    int active = -1;
+    if (openPopup < 0 && renderer->navigatorLayout(currentScreen, layout, &nav, &active))
+    {
+      const int scroll = renderer->effectiveNavigatorScroll(currentScreen);
+      const auto &combinedTopics = projectLoader.getProject().combinedTopics;
+      for (int e = 0; e < (int)nav->entries.size(); e++)
+      {
+        const std::vector<ScreenObject> &objects = e == active ? nav->entries[e].active : nav->entries[e].normal;
+        bool reads = false;
+        for (const ScreenObject &obj : objects)
+          for (int i = 0; i < pendingTopicCount && !reads; i++)
+            reads = ColorScreenRenderer::readsTopic(obj, pendingTopics[i].topic, combinedTopics);
+        if (!reads) continue;
+        const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, e, scroll);
+        const int x0 = max(r.x, layout.strip.x), y0 = max(r.y, layout.strip.y);
+        const int x1 = min(r.x + r.width, layout.strip.x + layout.strip.width);
+        const int y1 = min(r.y + r.height, layout.strip.y + layout.strip.height);
+        if (x1 <= x0 || y1 <= y0) continue;
+        if (rects + 1 > MAX_RECTS) return false;
+        rx[rects] = x0;
+        ry[rects] = y0;
+        rw[rects] = x1 - x0;
+        rh[rects] = y1 - y0;
+        rects++;
+      }
+    }
+  }
+
   if (rects == 0) return false;
 
   const uint32_t t0 = micros();
@@ -2250,6 +2313,12 @@ void loop()
     {
       lastTouchReportMs = millis();
       swipe.follow(dragX);
+      // The web client gets its turn here too, as while holding: a test
+      // driving a swipe through /api/touch moves the finger with requests,
+      // and without this none of them was served until the swipe gave up -
+      // it followed the first step only and slid back (hil/navigator.js,
+      // 2026-10-08). With nobody asking it costs nothing.
+      testInterface.handleClient();
       return;
     }
 
@@ -2360,7 +2429,11 @@ void loop()
       // the feedback (designer docs/2026-09-17-settable-level.md).
       // An open popup's close button takes the contact before anything under it.
       const bool onCloseBadge = openPopup >= 0 && renderer && renderer->popupCloseBadge().contains(touchX, touchY);
-      if (!contactOnlyWoke && !onCloseBadge && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
+      navigatorlayout::Layout navLayout;
+      navigatorContact = !contactOnlyWoke && onNavigatorStrip(touchX, touchY, navLayout);
+      navigatorScrolled = false;
+      if (navigatorContact) navigatorStartScroll = renderer->effectiveNavigatorScroll(currentScreen);
+      if (!contactOnlyWoke && !onCloseBadge && !navigatorContact && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
     }
     lastHumanInputMs = millis();
     if (contactOnlyWoke)
@@ -2386,6 +2459,30 @@ void loop()
     if (drift > contactDrift) contactDrift = drift;
 
     if (abs(dx) > abs(missedMaxDx)) missedMaxDx = dx;
+
+    // The navigator owns this gesture: along its strip it scrolls, and it
+    // never pages, even across (contract 2.7). Only the strip is redrawn.
+    if (navigatorContact)
+    {
+      navigatorlayout::Layout layout;
+      if (renderer && renderer->navigatorLayout(currentScreen, layout))
+      {
+        const int along = layout.horizontal ? dx : dy;
+        if (navigatorScrolled || abs(along) > TAP_MAX_DRIFT)
+        {
+          const int scroll = navigatorlayout::clampScroll(layout, navigatorStartScroll - along);
+          if (scroll != renderer->effectiveNavigatorScroll(currentScreen))
+          {
+            renderer->setNavigatorScroll(scroll);
+            renderRegion(layout.strip.x, layout.strip.y, layout.strip.width, layout.strip.height, "navigator scroll");
+          }
+          navigatorScrolled = true;
+        }
+      }
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
 
     // The level owns this gesture: follow the finger and nothing else. Before
     // the paging branch below, which a horizontal drag would otherwise turn
@@ -2414,6 +2511,7 @@ void loop()
       }
       // The incoming screen enters from the edge the finger is heading
       // toward, whichever screen the project says that is.
+      navigatorFollow(pagingTargetFor(dx));
       if (swipe.start(pagingTargetFor(dx), dx < 0 ? 1 : -1, holdStartX))
       {
         holdActive = false;
@@ -2474,6 +2572,18 @@ void loop()
   if (holdActive)
   {
     holdActive = false;
+
+    // The navigator's contact: a still one is its tap, anything else was a
+    // scroll and is over. Never a swipe.
+    if (navigatorContact)
+    {
+      navigatorContact = false;
+      if (!navigatorScrolled && !contactOnlyWoke && contactDrift <= TAP_MAX_DRIFT) dispatchTapAt(holdStartX, holdStartY);
+      contactOnlyWoke = false;
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
 
     // A drag on a level is neither a tap nor a swipe: it ends with what the
     // finger settled on (decision 3).

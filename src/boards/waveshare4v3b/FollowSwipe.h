@@ -1,4 +1,5 @@
 #pragma once
+#include "project/NavigatorLayout.h"
 #include <Arduino.h>
 #include "../../ClippedCanvas16.h"
 #include "RgbPanel.h"
@@ -88,6 +89,7 @@ public:
 
     direction_ = motion >= 0 ? 1 : -1;
     target_ = target;
+    setWindow(target);
 
     stats_ = Stats();
     stats_.valid = true;
@@ -173,8 +175,8 @@ public:
     // "sometimes it does nothing" that this gesture was reported for.
     const int speed = elapsed > 0 ? (int)((int64_t)abs(travelled) * 1000 / (int64_t)elapsed) : 0;
     const bool flick = speed >= FLICK_PX_PER_SECOND && abs(travelled) >= FLICK_MIN_PX;
-    const bool commit = abs(travelled) >= w_ / 3 || flick;
-    const int finalOffset = commit ? direction_ * -w_ : 0;
+    const bool commit = abs(travelled) >= span_ / 3 || flick;
+    const int finalOffset = commit ? direction_ * -span_ : 0;
 
     // Glide the rest of the way rather than jumping it. At 15fps this is a
     // handful of frames, and leaving it out would hide exactly the part of
@@ -271,12 +273,40 @@ private:
     // Between "not moved" and "the incoming screen exactly in place", so
     // dragging backwards cannot pull in a third screen that was never
     // rendered.
-    if (direction_ > 0) return v > 0 ? 0 : (v < -w_ ? -w_ : v);
-    return v < 0 ? 0 : (v > w_ ? w_ : v);
+    if (direction_ > 0) return v > 0 ? 0 : (v < -span_ ? -span_ : v);
+    return v < 0 ? 0 : (v > span_ ? span_ : v);
   }
 
-  // One frame, straight into the panel's framebuffer. Two runs per row and
-  // nothing else: this is the whole cost of the gesture.
+  // The part of the screen that slides (designer device contract 2.7): all
+  // of it, or - when both screens show the same navigator - what lies
+  // beside its strip; the strip stands still. Columns [winX0_, winX1_) of
+  // rows [winY0_, winY1_); span_ is how far a screen travels.
+  void setWindow(int target)
+  {
+    winX0_ = 0;
+    winX1_ = w_;
+    winY0_ = 0;
+    winY1_ = h_;
+    navigatorlayout::Layout here, there;
+    const Navigator *navHere = nullptr, *navThere = nullptr;
+    if (renderer_->navigatorLayout(*currentScreen_, here, &navHere) && renderer_->navigatorLayout(target, there, &navThere) &&
+        navHere == navThere)
+    {
+      const navigatorlayout::Rect &st = here.strip;
+      switch (here.edge)
+      {
+        case navigatorlayout::Edge::Left: winX0_ = st.x + st.width; break;
+        case navigatorlayout::Edge::Right: winX1_ = st.x; break;
+        case navigatorlayout::Edge::Top: winY0_ = st.y + st.height; break;
+        case navigatorlayout::Edge::Bottom: winY1_ = st.y; break;
+      }
+    }
+    span_ = winX1_ - winX0_;
+  }
+
+  // One frame, straight into the panel's framebuffer. Per row: the strip's
+  // columns copied as they are, two runs for the sliding part - this is the
+  // whole cost of the gesture.
   void compose(int offset)
   {
     const uint32_t t0 = micros();
@@ -287,25 +317,36 @@ private:
     const uint16_t *out = (*current_)->getBuffer();
     const uint16_t *in = spare_->getBuffer();
     const size_t stride = (size_t)w_;
+    const int span = span_;
 
-    if (offset <= 0)
+    for (int16_t y = 0; y < h_; y++)
     {
-      const int keep = w_ + offset;  // outgoing pixels still on screen, on the left
-      for (int16_t y = 0; y < h_; y++)
+      uint16_t *dst = fb_ + (size_t)y * stride;
+      const uint16_t *outRow = out + (size_t)y * stride;
+      const uint16_t *inRow = in + (size_t)y * stride;
+      // A row of a top or bottom strip: as it is.
+      if (y < winY0_ || y >= winY1_)
       {
-        uint16_t *dst = fb_ + (size_t)y * stride;
-        if (keep > 0) memcpy(dst, out + (size_t)y * stride + (-offset), (size_t)keep * 2);
-        if (keep < w_) memcpy(dst + keep, in + (size_t)y * stride, (size_t)(w_ - keep) * 2);
+        memcpy(dst, outRow, stride * 2);
+        continue;
       }
-    }
-    else
-    {
-      const int show = offset;  // incoming pixels, on the left
-      for (int16_t y = 0; y < h_; y++)
+      // The columns of a left or right strip: as they are.
+      if (winX0_ > 0) memcpy(dst, outRow, (size_t)winX0_ * 2);
+      if (winX1_ < w_) memcpy(dst + winX1_, outRow + winX1_, (size_t)(w_ - winX1_) * 2);
+      uint16_t *win = dst + winX0_;
+      const uint16_t *outWin = outRow + winX0_;
+      const uint16_t *inWin = inRow + winX0_;
+      if (offset <= 0)
       {
-        uint16_t *dst = fb_ + (size_t)y * stride;
-        memcpy(dst, in + (size_t)y * stride + (w_ - show), (size_t)show * 2);
-        if (show < w_) memcpy(dst + show, out + (size_t)y * stride, (size_t)(w_ - show) * 2);
+        const int keep = span + offset;  // outgoing pixels still on screen, on the left
+        if (keep > 0) memcpy(win, outWin + (-offset), (size_t)keep * 2);
+        if (keep < span) memcpy(win + keep, inWin, (size_t)(span - keep) * 2);
+      }
+      else
+      {
+        const int show = offset;  // incoming pixels, on the left
+        memcpy(win, inWin + (span - show), (size_t)show * 2);
+        if (show < span) memcpy(win + show, outWin, (size_t)(span - show) * 2);
       }
     }
 
@@ -325,6 +366,7 @@ private:
   int *currentScreen_ = nullptr;
   int screenCount_ = 0;
   int16_t w_ = 0, h_ = 0;
+  int winX0_ = 0, winX1_ = 0, winY0_ = 0, winY1_ = 0, span_ = 0;
 
   bool active_ = false;
   int direction_ = 1;
