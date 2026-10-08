@@ -150,6 +150,26 @@ static void combined_every_vector() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "combined vectors failed, see above");
 }
 
+// What a device subscribes to and redraws for: a combined topic's own topics
+// and those of the combined topics it reads, bare, each once.
+static void input_topics_follow_combined_topics_down() {
+    JsonDocument json;
+    deserializeJson(json, R"([
+      {"id":"c1","name":"anyLight","mode":"any","conditions":[
+        {"source":{"namespace":"topic","path":"light/a"},"op":"yes"},
+        {"source":{"namespace":"topic","path":"light/b#state"},"op":"yes"}]},
+      {"id":"c2","name":"alarm","mode":"all","conditions":[
+        {"source":{"namespace":"combined","path":"anyLight"},"op":"yes"},
+        {"source":{"namespace":"topic","path":"light/a"},"op":"yes"},
+        {"source":{"namespace":"topic","path":"night"},"op":"yes"}]}
+    ])");
+    const auto topics = combined::parse(json.as<JsonArrayConst>());
+    std::string joined;
+    for (const std::string& t : combined::inputTopics(topics, "alarm")) joined += t + " ";
+    TEST_ASSERT_EQUAL_STRING("light/a light/b night ", joined.c_str());
+    TEST_ASSERT_TRUE(combined::inputTopics(topics, "missing").empty());
+}
+
 static void the_copy_is_the_designers_byte_for_byte() {
     std::string designer;
     if (!readFile(DESIGNER, designer)) {
@@ -169,6 +189,7 @@ int main(int, char**) {
     RUN_TEST(text_every_vector);
     RUN_TEST(resolve_every_vector);
     RUN_TEST(combined_every_vector);
+    RUN_TEST(input_topics_follow_combined_topics_down);
     RUN_TEST(the_copy_is_the_designers_byte_for_byte);
     return UNITY_END();
 }

@@ -46,7 +46,9 @@
 // warns before deploying a project with placeholders to a device below it.
 // 3: opens and closes popups - popups[], popupFence, open-popup, close-popup
 // (designer docs/device-contract.md 2.5).
-#define SYSTEM_GENERATION_MINOR 3
+// 4: draws live values and combined topics - liveText, liveValues,
+// liveIconId, combinedTopics[] (designer docs/device-contract.md 2.6).
+#define SYSTEM_GENERATION_MINOR 4
 
 // Where DeployManager promotes a verified deploy download to, and the
 // recovery endpoint reads back from.

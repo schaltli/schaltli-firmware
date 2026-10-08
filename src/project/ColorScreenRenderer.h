@@ -143,9 +143,24 @@ public:
   // without a `{` comes back as it is.
   String resolvePlaceholders(const String& text) const;
 
-  // Whether a text object names `topic` (bare, no `#json.path`) in a
-  // placeholder - what a partial redraw asks when that topic changes.
-  static bool textNamesTopic(const ScreenObject& obj, const String& topic);
+  // A live value's source as it reads now: a topic's last value, the
+  // device's model or id, the project's name, a combined topic's yes/no.
+  // nullopt where nothing has arrived yet.
+  std::optional<std::string> liveSourceValue(const livevalue::Source& source) const;
+
+  // Whether an object without a binding of its own reads `topic` (bare, no
+  // `#json.path`): a text naming it in a placeholder or through one of its
+  // live values, a live icon through its live value - directly, or through a
+  // combined topic and the ones that one reads (designer
+  // docs/device-contract.md 2.6). What a partial redraw asks when that
+  // topic changes; `combinedTopics` is the project's.
+  static bool readsTopic(const ScreenObject& obj, const String& topic,
+                         const std::vector<combined::CombinedTopic>& combinedTopics);
+
+  // Every topic (bare) an object's live values read, combined topics
+  // followed to the topics under them - what a device subscribes to.
+  static std::vector<std::string> liveTopics(const ScreenObject& obj,
+                                             const std::vector<combined::CombinedTopic>& combinedTopics);
 
   // Parses every font the loaded project references, up front.
   //

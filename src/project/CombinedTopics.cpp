@@ -91,6 +91,28 @@ bool readsTopic(const std::vector<CombinedTopic>& topics, const std::string& top
     return false;
 }
 
+static void collectInputs(const std::vector<CombinedTopic>& topics, const std::string& name, int depth, std::vector<std::string>& out) {
+    // Eight levels at most (decision 14); a circular file stops here too.
+    if (depth > 8) return;
+    for (const CombinedTopic& t : topics) {
+        if (t.name != name) continue;
+        for (const Condition& c : t.conditions) {
+            if (c.source.ns == "combined") {
+                collectInputs(topics, c.source.path, depth + 1, out);
+            } else if (c.source.ns == "topic") {
+                const std::string bare = c.source.path.substr(0, c.source.path.find('#'));
+                if (std::find(out.begin(), out.end(), bare) == out.end()) out.push_back(bare);
+            }
+        }
+    }
+}
+
+std::vector<std::string> inputTopics(const std::vector<CombinedTopic>& topics, const std::string& name) {
+    std::vector<std::string> out;
+    collectInputs(topics, name, 1, out);
+    return out;
+}
+
 std::vector<CombinedTopic> parse(JsonArrayConst json) {
     std::vector<CombinedTopic> out;
     for (JsonObjectConst t : json) {

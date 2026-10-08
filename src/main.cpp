@@ -2447,7 +2447,13 @@ static void addTopic(const String &binding, std::vector<String> &outTopics) {
 }
 
 static void collectTopics(const std::vector<ScreenObject> &objects, std::vector<String> &outTopics) {
+  const auto &combinedTopics = projectLoader.getProject().combinedTopics;
   for (const auto &obj : objects) {
+    // And every topic a live value reads, a combined topic's down to the
+    // topics under it (designer docs/device-contract.md 2.6).
+    for (const std::string &topic : ColorScreenRenderer::liveTopics(obj, combinedTopics)) {
+      addTopic(String(topic.c_str()), outTopics);
+    }
     addTopic(obj.properties.topic, outTopics);
     addTopic(obj.properties.setpointTopic, outTopics);
     // And every topic a text's placeholder names - a text has no binding, so
@@ -2469,7 +2475,7 @@ static bool screenUsesTopic(const std::vector<ScreenObject> &objects, const Stri
   for (const auto &obj : objects) {
     if (!obj.properties.topic.isEmpty() && stripJsonPath(obj.properties.topic) == topic) return true;
     if (!obj.properties.setpointTopic.isEmpty() && stripJsonPath(obj.properties.setpointTopic) == topic) return true;
-    if (ColorScreenRenderer::textNamesTopic(obj, topic)) return true;
+    if (ColorScreenRenderer::readsTopic(obj, topic, projectLoader.getProject().combinedTopics)) return true;
     if (!obj.children.empty() && screenUsesTopic(obj.children, topic)) return true;
   }
   return false;
@@ -2580,7 +2586,9 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
     // einem gebundenen Objekt am selben Topic wurde nur dieses neu
     // gezeichnet, der Text behielt den alten Wert (wie auf dem 4.3B,
     // 2026-10-05).
-    if (ColorScreenRenderer::textNamesTopic(obj, topic)) {
+    // A live icon, or a text through a live value, the same way (contract
+    // 2.6) - also through a combined topic the changed topic feeds.
+    if (ColorScreenRenderer::readsTopic(obj, topic, project.combinedTopics)) {
       if (anzahl + 1 > MAX_RECHTECKE) return false;
       rx[anzahl] = obj.x;
       ry[anzahl] = obj.y;

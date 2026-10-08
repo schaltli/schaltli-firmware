@@ -54,6 +54,11 @@ std::map<std::string, Value> compute(const std::vector<CombinedTopic>& ordered, 
 // Whether any of them reads `topicPath` (its `#json.path` left off).
 bool readsTopic(const std::vector<CombinedTopic>& topics, const std::string& topicPath);
 
+// Every topic (bare, no `#json.path`) the combined topic `name` reads - its
+// own conditions and those of every combined topic it reads, down to the
+// designer's eight levels. What a device subscribes to and redraws for.
+std::vector<std::string> inputTopics(const std::vector<CombinedTopic>& topics, const std::string& name);
+
 std::vector<CombinedTopic> parse(JsonArrayConst json);
 
 }  // namespace combined

@@ -1525,12 +1525,14 @@ static bool renderValueChangesPartial()
     // screen is bound to the same topic, only that one was redrawn and the
     // text kept the old value. Its whole box, as for any other text; no old
     // value is needed for that.
-    if (obj.type == "text")
+    // A live icon the same way, and a text through its live values - also
+    // through a combined topic the changed topic feeds (contract 2.6).
+    if (obj.type == "text" || !obj.properties.liveIconId.isEmpty())
     {
       bool named = false;
       for (int i = 0; i < pendingTopicCount && !named; i++)
       {
-        named = ColorScreenRenderer::textNamesTopic(obj, pendingTopics[i].topic);
+        named = ColorScreenRenderer::readsTopic(obj, pendingTopics[i].topic, projectLoader.getProject().combinedTopics);
       }
       if (!named) continue;
       if (rects + 1 > MAX_RECTS) return false;

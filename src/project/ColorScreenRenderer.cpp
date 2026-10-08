@@ -475,8 +475,37 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
 }
 
 bool ColorScreenRenderer::renderLabel(const ScreenObject& obj) {
+  // A device of generation 1.4 reads liveText; `text` beside it is the same
+  // text lowered to placeholders, for the devices before (contract 2.6).
+  if (!obj.properties.liveText.isEmpty()) {
+    const ProjectConfig& project = projectLoader_.getProject();
+    placeholders::Separators separators;
+    separators.decimal = project.decimalSeparator.c_str();
+    separators.thousands = project.thousandsSeparator.c_str();
+    const std::string text = livevalue::resolveLiveText(
+        obj.properties.liveText.c_str(), obj.properties.liveValues,
+        [this](const livevalue::Source& source) { return liveSourceValue(source); }, separators);
+    drawTextBox(obj, String(text.c_str()), true);
+    return true;
+  }
   drawTextBox(obj, resolvePlaceholders(obj.properties.text), true);
   return true;
+}
+
+std::optional<std::string> ColorScreenRenderer::liveSourceValue(const livevalue::Source& source) const {
+  if (source.ns == "topic") {
+    const String topic(source.path.c_str());
+    // Never arrived is not the same as empty: only the first is No value yet.
+    if (!projectLoader_.hasTopicValue(topic)) return std::nullopt;
+    return std::string(projectLoader_.getTopicValue(topic).c_str());
+  }
+  if (source.ns == "combined") return projectLoader_.getCombinedValue(String(source.path.c_str()));
+  if (source.ns == "device") {
+    if (source.path == "model") return std::string(DEVICE_MODEL);
+    return std::string(deviceId_.c_str());
+  }
+  if (source.ns == "project" && source.path == "name") return std::string(projectLoader_.getProject().name.c_str());
+  return std::nullopt;
 }
 
 String ColorScreenRenderer::resolvePlaceholders(const String& text) const {
@@ -503,14 +532,35 @@ String ColorScreenRenderer::resolvePlaceholders(const String& text) const {
   return String(placeholders::resolve(source, lookup, separators).c_str());
 }
 
-bool ColorScreenRenderer::textNamesTopic(const ScreenObject& obj, const String& topic) {
-  if (obj.type != "text") return false;
-  const std::string text(obj.properties.text.c_str());
-  if (!placeholders::mayContainPlaceholder(text)) return false;
-  for (const std::string& reference : placeholders::referencedTopics(text)) {
-    const size_t hash = reference.find('#');
-    if (topic == (hash == std::string::npos ? reference : reference.substr(0, hash)).c_str()) return true;
+std::vector<std::string> ColorScreenRenderer::liveTopics(const ScreenObject& obj,
+                                                         const std::vector<combined::CombinedTopic>& combinedTopics) {
+  std::vector<std::string> out;
+  auto add = [&out](const std::string& topic) {
+    if (std::find(out.begin(), out.end(), topic) == out.end()) out.push_back(topic);
+  };
+  for (const livevalue::LiveValue& lv : obj.properties.liveValues) {
+    if (lv.source.ns == "topic") add(lv.source.path.substr(0, lv.source.path.find('#')));
+    if (lv.source.ns == "combined")
+      for (const std::string& topic : combined::inputTopics(combinedTopics, lv.source.path)) add(topic);
   }
+  return out;
+}
+
+bool ColorScreenRenderer::readsTopic(const ScreenObject& obj, const String& topic,
+                                     const std::vector<combined::CombinedTopic>& combinedTopics) {
+  if (obj.type == "text") {
+    const std::string text(obj.properties.text.c_str());
+    if (placeholders::mayContainPlaceholder(text)) {
+      for (const std::string& reference : placeholders::referencedTopics(text)) {
+        const size_t hash = reference.find('#');
+        if (topic == (hash == std::string::npos ? reference : reference.substr(0, hash)).c_str()) return true;
+      }
+    }
+  } else if (obj.properties.liveIconId.isEmpty()) {
+    return false;
+  }
+  for (const std::string& read : liveTopics(obj, combinedTopics))
+    if (topic == read.c_str()) return true;
   return false;
 }
 
@@ -2035,6 +2085,26 @@ bool ColorScreenRenderer::renderMQTTIconField(const ScreenObject& obj) {
 }
 
 bool ColorScreenRenderer::renderIcon(const ScreenObject& obj) {
+  // A live icon (contract 2.6): the icon of the branch that applies, its
+  // dark bitmap under the dark theme. A branch without an icon - No value
+  // yet left empty - draws nothing, and that is not a failure.
+  if (!obj.properties.liveIconId.isEmpty()) {
+    for (const livevalue::LiveValue& lv : obj.properties.liveValues) {
+      if (lv.id != obj.properties.liveIconId.c_str()) continue;
+      const livevalue::Applies applies = livevalue::evaluate(lv, liveSourceValue(lv.source));
+      const livevalue::Result* result = applies.result;
+      if (result == nullptr || result->kind != livevalue::ResultKind::Icon) return true;
+      const bool dark = projectLoader_.getProject().themeDark && !result->pathDark.empty();
+      const String path((dark ? result->pathDark : result->path).c_str());
+      if (path.isEmpty()) return true;
+      if (!ColorAssetLoader::drawBMPToCanvas(canvas_, path, obj.x, obj.y)) {
+        canvas_->fillRect(obj.x + 2, obj.y + 2, obj.width - 4, obj.height - 4, 0x0000);
+        canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, 0x0000);
+        return false;
+      }
+      return true;
+    }
+  }
   if (obj.path.isEmpty()) return false;
   if (!ColorAssetLoader::drawBMPToCanvas(canvas_, obj.path, obj.x, obj.y)) {
     canvas_->fillRect(obj.x + 2, obj.y + 2, obj.width - 4, obj.height - 4, 0x0000);
