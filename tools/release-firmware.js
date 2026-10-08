@@ -30,9 +30,15 @@
 // Without --publish it is a dry run: a "-dryrun" tag is set locally, everything is
 // built and checked, the images and manifest land in dist/<tag>/, and the
 // tag is removed again. Nothing leaves this machine. With --publish it keeps
-// and pushes the tag, creates the release in the designer repo with the
-// images attached, and writes firmware/manifest.json into the designer
-// checkout for you to commit.
+// and pushes the tag, commits firmware/manifest.json on the designer's main
+// as "Ship firmware <tag>" and pushes it, and creates the release in the
+// designer repo on exactly that commit, with the images attached. So the
+// release's tag in the designer repo is a designer that names its own
+// firmware - which is what pekaway-install.sh installs by default. Until
+// 2026-10-08 the release was created first and the manifest committed after,
+// so every official tag sat one commit early and named the firmware before.
+// The designer checkout has to be on main, clean, and level with origin/main;
+// that is checked before anything is pushed.
 //
 //   node tools/release-firmware.js                 # dry run
 //   node tools/release-firmware.js --publish       # the real thing
@@ -317,12 +323,13 @@ if (!publish) {
   console.log(`[release] dry run complete. --publish would push ${tag.replace(/-dryrun$/, "")}, create the release in ${releaseRepo}` +
     ` with ${Object.keys(manifest.devices).length} OTA images, ${Object.keys(manifest.devices).length} factory images and the manifest,` +
     (prerelease ? ` as a pre-release, and put its manifest on the designer branch pre/${prerelease}.`
-      : ` and write firmware/manifest.json into ${designer}.`))
+      : `, commit firmware/manifest.json as "Ship firmware ${tag}" on the designer's main and create the release on that commit.`))
   process.exit(0)
 }
 
 // --- publish ---------------------------------------------------------------
 const outDir = path.join(REPO, "dist", tag)
+if (!prerelease) checkDesignerForRelease()
 console.log(`\n[release] pushing ${tag}`)
 const push = run("git", ["push", "origin", tag], { stdio: "inherit" })
 if (push.status !== 0) fail(`git push origin ${tag} failed`)
@@ -354,14 +361,48 @@ if (prerelease) {
   publishPrerelease()
   process.exit(0)
 }
-const release = run("gh", ["release", "create", tag, "--repo", releaseRepo, "--title", `Firmware ${tag}`, "--notes", notes, ...assets],
-  { stdio: "inherit" })
-if (release.status !== 0) fail(`gh release create failed - the tag is pushed; create the release by hand or re-run`)
+const shipped = shipManifestOnDesignerMain()
+const release = run("gh", ["release", "create", tag, "--repo", releaseRepo, "--title", `Firmware ${tag}`,
+  "--latest", "--target", shipped, "--notes", notes, ...assets], { stdio: "inherit" })
+if (release.status !== 0) fail(`gh release create failed - the tag and the designer's manifest are pushed; create the release by hand on ${shipped} or re-run`)
+console.log(`\n[release] ${tag} published, its designer tag on ${shipped.slice(0, 10)} ("Ship firmware ${tag}").`)
+console.log(`[release] a Pekaway installs it with: curl -fsSL https://raw.githubusercontent.com/${releaseRepo}/main/deploy/pekaway-install.sh | bash`)
 
-const target = path.join(designer, "firmware", "manifest.json")
-fs.mkdirSync(path.dirname(target), { recursive: true })
-fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + "\n")
-console.log(`\n[release] ${tag} published. Wrote ${target} - commit and push it in the designer repo.`)
+// The designer's main, ready to carry a release: checked out, nothing
+// uncommitted, and neither ahead of nor behind origin/main - the manifest
+// commit is pushed on top of it, and nothing else may go out with it.
+function checkDesignerForRelease() {
+  const dg = (...args) => {
+    const r = run("git", args, { cwd: designer })
+    if (r.status !== 0) fail(`git ${args.join(" ")} in the designer failed:\n${r.stderr}`)
+    return r.stdout.trim()
+  }
+  if (dg("rev-parse", "--abbrev-ref", "HEAD") !== "main") fail(`the designer at ${designer} is not on main`)
+  if (dg("status", "--porcelain", "--untracked-files=no")) fail(`the designer at ${designer} has uncommitted changes`)
+  dg("fetch", "origin", "main")
+  const local = dg("rev-parse", "HEAD")
+  const remote = dg("rev-parse", "origin/main")
+  if (local !== remote) fail(`the designer's main (${local.slice(0, 10)}) is not origin/main (${remote.slice(0, 10)}) - pull or push first`)
+}
+
+// The manifest committed on the designer's main and pushed; the commit it
+// made, for the release to be created on.
+function shipManifestOnDesignerMain() {
+  const dg = (...args) => {
+    const r = run("git", args, { cwd: designer })
+    if (r.status !== 0) fail(`git ${args.join(" ")} in the designer failed:\n${r.stderr}`)
+    return r.stdout.trim()
+  }
+  const target = path.join(designer, "firmware", "manifest.json")
+  fs.mkdirSync(path.dirname(target), { recursive: true })
+  fs.writeFileSync(target, JSON.stringify(manifest, null, 2) + "\n")
+  dg("add", "firmware/manifest.json")
+  dg("commit", "-m", `Ship firmware ${tag}`)
+  console.log(`\n[release] pushing the designer's main with the manifest of ${tag}`)
+  const push = run("git", ["push", "origin", "main"], { cwd: designer, stdio: "inherit" })
+  if (push.status !== 0) fail(`git push origin main in the designer failed - the firmware tag is pushed; push the designer by hand, then create the release on its HEAD`)
+  return dg("rev-parse", "HEAD")
+}
 
 // The designer side of a pre-release: branch pre/<name> from the designer's
 // HEAD, in a worktree of its own, with the manifest committed on it - the
