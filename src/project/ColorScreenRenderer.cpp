@@ -2803,8 +2803,89 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
     RenderProfile::Scope s(obj.type);
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
+  // Over everything, as it covers what lies under it (contract 2.7).
+  renderNavigatorOver(screenIndex);
 
   return true;
+}
+
+bool ColorScreenRenderer::navigatorLayout(int screenIndex, navigatorlayout::Layout& layout, const Navigator** navOut, int* activeOut) const {
+  if (!projectLoader_.isLoaded()) return false;
+  const ProjectConfig& project = projectLoader_.getProject();
+  // A screen only: a popup shows none of its own.
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return false;
+  const Screen& screen = project.screens[screenIndex];
+  if (screen.navigatorId.isEmpty()) return false;
+  for (const Navigator& nav : project.navigators) {
+    if (nav.id != screen.navigatorId) continue;
+    const navigatorlayout::Edge edge = navigatorlayout::edgeFrom(nav.edge.c_str());
+    layout = navigatorlayout::layoutInStrip(edge, navigatorlayout::stripOf(edge, nav.thickness, canvas_->width(), canvas_->height()),
+                                            (int)nav.entries.size(), nav.entryLength);
+    if (navOut) *navOut = &nav;
+    if (activeOut) {
+      *activeOut = -1;
+      for (size_t i = 0; i < nav.entries.size(); i++)
+        if (nav.entries[i].screenId == screen.id) *activeOut = (int)i;
+    }
+    return true;
+  }
+  return false;
+}
+
+int ColorScreenRenderer::effectiveNavigatorScroll(int screenIndex) const {
+  navigatorlayout::Layout layout;
+  int active = -1;
+  if (!navigatorLayout(screenIndex, layout, nullptr, &active)) return 0;
+  if (navigatorScroll_ >= 0) return navigatorlayout::clampScroll(layout, navigatorScroll_);
+  return navigatorlayout::scrollToShow(layout, active < 0 ? 0 : active, 0);
+}
+
+void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
+  navigatorlayout::Layout layout;
+  const Navigator* nav = nullptr;
+  int active = -1;
+  if (!navigatorLayout(screenIndex, layout, &nav, &active)) return;
+
+  // Its strip, cut to the region already in force (a partial redraw).
+  const bool hadRegion = canvas_->regionActive();
+  const int16_t px = canvas_->regionX(), py = canvas_->regionY(), pw = canvas_->regionW(), ph = canvas_->regionH();
+  int x0 = layout.strip.x, y0 = layout.strip.y;
+  int x1 = layout.strip.x + layout.strip.width, y1 = layout.strip.y + layout.strip.height;
+  if (hadRegion) {
+    x0 = std::max(x0, (int)px);
+    y0 = std::max(y0, (int)py);
+    x1 = std::min(x1, (int)(px + pw));
+    y1 = std::min(y1, (int)(py + ph));
+  }
+  if (x1 <= x0 || y1 <= y0) return;
+  canvas_->setRegion(x0, y0, x1 - x0, y1 - y0);
+
+  bool transparent = false;
+  const uint16_t ground = parseHexColor(nav->backgroundColor.isEmpty() ? "#ffffff" : nav->backgroundColor, &transparent);
+  canvas_->fillRect(x0, y0, x1 - x0, y1 - y0, transparent ? 0xFFFF : ground);
+  // What an entry's arc or icon edges mix into: the strip's ground.
+  const uint16_t screenBg = currentScreenBg_;
+  const String screenBgHex = currentScreenBgHex_;
+  currentScreenBg_ = transparent ? 0xFFFF : ground;
+  currentScreenBgHex_ = transparent ? String("#ffffff") : nav->backgroundColor;
+
+  const int scroll = effectiveNavigatorScroll(screenIndex);
+  for (int i = 0; i < (int)nav->entries.size(); i++) {
+    const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, i, scroll);
+    if (r.x >= x1 || r.y >= y1 || r.x + r.width <= x0 || r.y + r.height <= y0) continue;
+    std::vector<ScreenObject> objects = i == active ? nav->entries[i].active : nav->entries[i].normal;
+    std::sort(objects.begin(), objects.end(), zOrderLess);
+    for (ScreenObject obj : objects) {
+      obj.x += r.x;
+      obj.y += r.y;
+      renderObject(obj, "", "", -1, "", -1);
+    }
+  }
+
+  currentScreenBg_ = screenBg;
+  currentScreenBgHex_ = screenBgHex;
+  if (hadRegion) canvas_->setRegion(px, py, pw, ph);
+  else canvas_->clearRegion();
 }
 
 // A popup over what the canvas holds now (designer docs/device-contract.md
@@ -2984,6 +3065,8 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
     }
   }
 
+  // The navigator over the screen here too, cut to the region (2.7).
+  renderNavigatorOver(screenIndex);
   canvas_->clearRegion();
   return true;
 }

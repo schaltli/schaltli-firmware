@@ -343,10 +343,33 @@ struct HardwareButtonDef {
   ButtonAction defaultAction;
 };
 
+// A navigator (designer docs/device-contract.md 2.7): a strip along an edge
+// with an entry per listed screen, each entry ordinary objects relative to
+// its top left - `active` for the open screen, `normal` for the others.
+struct NavigatorEntry {
+  String screenId;
+  std::vector<ScreenObject> normal;
+  std::vector<ScreenObject> active;
+};
+
+struct Navigator {
+  String id;
+  String edge;
+  int thickness = 0;
+  int entryLength = 0;
+  String backgroundColor;
+  String backgroundColorDark;
+  std::vector<NavigatorEntry> entries;
+};
+
 // Screen definition
 struct Screen {
   String id;
   String name;
+  // The navigator this screen shows (2.7); empty: none.
+  String navigatorId;
+  // Out of next/previous paging, still a goto target; never the start (2.7).
+  bool hidden = false;
   String path;                            // Background BMP path (optional)
   String backgroundColor;                 // Screen fill color, e.g. "#ffffff" (optional, defaults to white)
   String backgroundColorDark;             // The dark variant's (ThemeVariant.h); empty: same as light
@@ -441,6 +464,7 @@ struct ProjectConfig {
   // screens.size() + its position here; see screenOrPopupAt().
   std::vector<Screen> popups;
   PopupFence popupFence;
+  std::vector<Navigator> navigators;
   std::vector<HardwareButtonDef> hardwareButtons;
   // Combined topics (contract 2.6), in evaluation order - each after every
   // one it reads. The device's own: computed, never published.

@@ -62,6 +62,15 @@ void forEachPair(ProjectConfig& project, F& f) {
     f(screen.backgroundColor, screen.backgroundColorDark);
     for (ScreenObject& obj : screen.objects) forEachObjectPair(obj, f);
   }
+  // Navigators after the screens (contract 2.7): their ground and every
+  // entry object, in a fixed order.
+  for (Navigator& nav : project.navigators) {
+    f(nav.backgroundColor, nav.backgroundColorDark);
+    for (NavigatorEntry& entry : nav.entries) {
+      for (ScreenObject& obj : entry.normal) forEachObjectPair(obj, f);
+      for (ScreenObject& obj : entry.active) forEachObjectPair(obj, f);
+    }
+  }
   // Popups after the screens, always in the same order, so that the swaps
   // recorded on the way to dark are undone pair for pair.
   for (Screen& popup : project.popups) {

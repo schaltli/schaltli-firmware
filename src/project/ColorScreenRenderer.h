@@ -10,6 +10,7 @@
 #include "LevelShape.h"
 #include "PillRaster.h"
 #include "ArcRaster.h"
+#include "NavigatorLayout.h"
 #include <functional>
 
 // Color (RGB565) counterpart of schaltli-eink's ScreenRenderer -
@@ -163,6 +164,16 @@ public:
   // font-wide most rather than the text's - a region a few rows too tall
   // costs nothing, one too short leaves stale pixels.
   int16_t textOverhangLimit(const ScreenObject& obj);
+
+  // The navigator a screen shows (contract 2.7), laid out on this display;
+  // false when it shows none. `nav` gets the navigator, `active` the entry
+  // of the screen itself (-1 if it has none).
+  bool navigatorLayout(int screenIndex, navigatorlayout::Layout& layout, const Navigator** nav = nullptr, int* active = nullptr) const;
+  // How far the navigator is scrolled; -1: as far as shows the open entry.
+  void setNavigatorScroll(int scroll) { navigatorScroll_ = scroll; }
+  int navigatorScroll() const { return navigatorScroll_; }
+  // The scroll the navigator is drawn at on that screen.
+  int effectiveNavigatorScroll(int screenIndex) const;
 
   // Every topic (bare) an object's live values read, combined topics
   // followed to the topics under them - what a device subscribes to.
@@ -337,6 +348,10 @@ private:
 
   // The background renderScreen() filled before drawing any object.
   uint16_t currentScreenBg_ = 0xFFFF;
+  int navigatorScroll_ = -1;
+  // The screen's navigator over what is drawn, clipped to the region in
+  // force if there is one (renderScreen, renderScreenRegion call it last).
+  void renderNavigatorOver(int screenIndex);
   // The same colour as the author wrote it, which is what a derived colour has
   // to be mixed from: going through 565 first and back would land a step away
   // from the designer's own mix (src/project/MaterialColors.h).

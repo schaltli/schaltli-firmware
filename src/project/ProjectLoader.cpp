@@ -186,6 +186,28 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
     parseScreens(doc["screens"].as<JsonArray>());
   }
 
+  // Navigators (contract 2.7): their entries are ordinary objects.
+  project_.navigators.clear();
+  if (doc["navigators"].is<JsonArray>()) {
+    for (JsonObject navJson : doc["navigators"].as<JsonArray>()) {
+      Navigator nav;
+      nav.id = navJson["id"] | "";
+      nav.edge = navJson["edge"] | "left";
+      nav.thickness = navJson["thickness"] | 0;
+      nav.entryLength = navJson["entryLength"] | 0;
+      nav.backgroundColor = navJson["backgroundColor"] | "#ffffff";
+      nav.backgroundColorDark = navJson["backgroundColorDark"] | "";
+      for (JsonObject entryJson : navJson["entries"].as<JsonArray>()) {
+        NavigatorEntry entry;
+        entry.screenId = entryJson["screenId"] | "";
+        for (JsonObject o : entryJson["normal"].as<JsonArray>()) entry.normal.push_back(parseScreenObject(o));
+        for (JsonObject o : entryJson["active"].as<JsonArray>()) entry.active.push_back(parseScreenObject(o));
+        nav.entries.push_back(entry);
+      }
+      project_.navigators.push_back(nav);
+    }
+  }
+
   // Parse hardware button defaults (project-wide, per physical button id)
   if (doc["hardwareButtons"].is<JsonArray>()) {
     parseHardwareButtons(doc["hardwareButtons"].as<JsonArray>());
@@ -320,6 +342,8 @@ void ProjectLoader::parseScreenInto(JsonObject screenJson, Screen& screen) {
     // light default is not a dark value (ThemeVariant.h).
     screen.backgroundColorDark = screenJson["backgroundColorDark"] | "";
     screen.pageIconPath = resolveAssetPath(screenJson["pageIconPath"] | "");
+    screen.navigatorId = screenJson["navigatorId"] | "";
+    screen.hidden = screenJson["hidden"] | false;
 
     if (screenJson["objects"].is<JsonArray>()) {
       JsonArray objectsArray = screenJson["objects"];

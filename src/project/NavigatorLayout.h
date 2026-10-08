@@ -61,4 +61,15 @@ int scrollToShow(const Layout& layout, int index, int scroll);
 int entryAt(const Layout& layout, int x, int y, int scroll);
 int pageScroll(const Layout& layout, int scroll, int direction);
 
+// The strip of an exported navigator: `thickness` deep along `edge`.
+Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight);
+
+// Paging past hidden screens (contract 2.7): from `current`, `delta` steps
+// (+1 next, -1 previous) over the screens that are not hidden, wrapping.
+// `current` itself may be hidden (reached by a goto). With none shown,
+// `current`.
+int pagedIndex(const std::vector<bool>& hidden, int current, int delta);
+// The screen a device starts on: the first that is not hidden, else 0.
+int firstShown(const std::vector<bool>& hidden);
+
 }  // namespace navigatorlayout

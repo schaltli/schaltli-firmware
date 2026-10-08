@@ -84,4 +84,28 @@ int pageScroll(const Layout& l, int scroll, int direction) {
     return clampScroll(l, scroll + direction * page);
 }
 
+Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight) {
+    if (edge == Edge::Top) return {0, 0, screenWidth, thickness};
+    if (edge == Edge::Bottom) return {0, screenHeight - thickness, screenWidth, thickness};
+    if (edge == Edge::Left) return {0, 0, thickness, screenHeight};
+    return {screenWidth - thickness, 0, thickness, screenHeight};
+}
+
+int pagedIndex(const std::vector<bool>& hidden, int current, int delta) {
+    const int count = static_cast<int>(hidden.size());
+    if (count == 0) return current;
+    int index = current;
+    for (int step = 0; step < count; step++) {
+        index = ((index + delta) % count + count) % count;
+        if (!hidden[index]) return index;
+    }
+    return current;
+}
+
+int firstShown(const std::vector<bool>& hidden) {
+    for (size_t i = 0; i < hidden.size(); i++)
+        if (!hidden[i]) return static_cast<int>(i);
+    return 0;
+}
+
 }  // namespace navigatorlayout

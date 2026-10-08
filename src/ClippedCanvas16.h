@@ -86,6 +86,13 @@ public:
   // Nur zu clippen wuerde das Schreiben unterdruecken, nicht das Rechnen -
   // und beim Ring steckt die ganze Zeit im Rechnen (16-fache Abtastung je
   // Pixel), nicht im Schreiben.
+  // The region set, if any - for drawing over part of it and restoring it.
+  bool regionActive() const { return regionActive_; }
+  int16_t regionX() const { return regionX_; }
+  int16_t regionY() const { return regionY_; }
+  int16_t regionW() const { return regionW_; }
+  int16_t regionH() const { return regionH_; }
+
   bool clipActive() const { return clipActive_; }
   int16_t clipX() const { return clipX_; }
   int16_t clipY() const { return clipY_; }

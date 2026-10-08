@@ -120,6 +120,29 @@ static void geometry_every_vector() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "geometry vectors failed, see above");
 }
 
+// Paging past hidden screens and the start screen (contract 2.7) - the
+// firmware's own, not among the shared vectors.
+static void paging_skips_hidden_screens_and_wraps() {
+    const std::vector<bool> hidden = {false, true, false, true};
+    TEST_ASSERT_EQUAL_INT(2, pagedIndex(hidden, 0, 1));
+    TEST_ASSERT_EQUAL_INT(0, pagedIndex(hidden, 2, 1));
+    TEST_ASSERT_EQUAL_INT(2, pagedIndex(hidden, 0, -1));
+    // From a hidden screen reached by a goto, on to the next shown one.
+    TEST_ASSERT_EQUAL_INT(2, pagedIndex(hidden, 1, 1));
+    TEST_ASSERT_EQUAL_INT(0, pagedIndex(hidden, 1, -1));
+    // Nothing shown: stay.
+    TEST_ASSERT_EQUAL_INT(1, pagedIndex({true, true}, 1, 1));
+    // Without hidden screens exactly the old modulo.
+    TEST_ASSERT_EQUAL_INT(0, pagedIndex({false, false, false}, 2, 1));
+}
+
+static void a_device_starts_on_the_first_shown_screen() {
+    TEST_ASSERT_EQUAL_INT(2, firstShown({true, true, false, false}));
+    TEST_ASSERT_EQUAL_INT(0, firstShown({false, true}));
+    TEST_ASSERT_EQUAL_INT(0, firstShown({true, true}));
+    TEST_ASSERT_EQUAL_INT(0, firstShown({}));
+}
+
 static void the_copy_is_the_designers_byte_for_byte() {
     std::string designer;
     if (!readFile(DESIGNER, designer)) {
@@ -142,6 +165,8 @@ int main(int, char**) {
     RUN_TEST(screens_every_vector);
     RUN_TEST(layout_every_vector);
     RUN_TEST(geometry_every_vector);
+    RUN_TEST(paging_skips_hidden_screens_and_wraps);
+    RUN_TEST(a_device_starts_on_the_first_shown_screen);
     RUN_TEST(the_copy_is_the_designers_byte_for_byte);
     return UNITY_END();
 }
