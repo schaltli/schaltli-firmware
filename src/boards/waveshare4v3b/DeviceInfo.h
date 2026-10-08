@@ -79,7 +79,9 @@
 // a project whose buttons open a popup to a device below it.
 // 4: draws live values and combined topics - liveText, liveValues,
 // liveIconId, combinedTopics[] (designer docs/device-contract.md 2.6).
-#define SYSTEM_GENERATION_MINOR 4
+// 5: draws the navigator and pages past hidden screens - navigators[],
+// navigatorId, hidden (designer docs/device-contract.md 2.7).
+#define SYSTEM_GENERATION_MINOR 5
 
 // Where DeployManager.cpp promotes a verified deploy download to, and
 // TestInterfaceServer.cpp's recovery endpoint (GET /recovery-project) reads

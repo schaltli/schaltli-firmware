@@ -59,6 +59,7 @@
 // cross-checked line by line against the pin table in the board's wiki. Both
 // sources agree; nothing here is inferred from the 1.8" knob port, which is
 // the mistake that produced four hardware bugs on the last one.
+#include "project/NavigatorLayout.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -475,6 +476,16 @@ static void setupRenderStack();
 static void setupNetworking();
 static void enterSetupMode();
 
+// Which screens are hidden (designer device contract 2.7): out of paging,
+// never the start, still a goto target.
+static std::vector<bool> hiddenFlags()
+{
+  std::vector<bool> hidden;
+  if (!projectLoader.isLoaded()) return hidden;
+  for (const Screen &screen : projectLoader.getProject().screens) hidden.push_back(screen.hidden);
+  return hidden;
+}
+
 // -1 when nothing is configured, no project is loaded, or the saved id is
 // not in this project. Every caller treats that as "leave the screen alone".
 static int resolveIdleScreenIndex()
@@ -580,6 +591,8 @@ static void setupRenderStack()
   if (loaded)
   {
     Serial.println("[4v3b] loaded deployed project from /PROJECT");
+    // The first screen that is not hidden (contract 2.7).
+    currentScreen = navigatorlayout::firstShown(hiddenFlags());
   }
   else
   {
@@ -1711,7 +1724,7 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
-    currentScreen = ((currentScreen + delta) % count + count) % count;
+    currentScreen = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
     openPopup = -1;
     forgetTouchFeedback();
     renderAndPresent("button: screen change");
@@ -1808,7 +1821,9 @@ static int pagingTargetFor(int dx)
   else if (action.type == "previous-screen") delta = -1;
   else return -1;  // bound to something else, or to nothing - the release decides
 
-  return ((currentScreen + delta) % count + count) % count;
+  // Past hidden screens (contract 2.7); none shown but this one: no paging.
+  const int target = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
+  return target == currentScreen ? -1 : target;
 }
 
 // A gesture that was not a page turn, resolved at release the way the knob
@@ -2027,6 +2042,35 @@ static void endLevelDrag()
 static bool dispatchTapAt(int16_t x, int16_t y)
 {
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
+
+  // A tap on the navigator opens its entry's screen, as goto-screen does
+  // (contract 2.7). Only on a screen: with a popup open the active index is
+  // the popup's, and a tap out there closed it before reaching here.
+  {
+    navigatorlayout::Layout layout;
+    const Navigator *nav = nullptr;
+    if (renderer->navigatorLayout(activeScreen(), layout, &nav))
+    {
+      const int entry = navigatorlayout::entryAt(layout, x, y, renderer->effectiveNavigatorScroll(activeScreen()));
+      const bool onStrip = x >= layout.strip.x && y >= layout.strip.y && x < layout.strip.x + layout.strip.width &&
+                           y < layout.strip.y + layout.strip.height;
+      if (entry >= 0)
+      {
+        lastTap = "(" + String(x) + "," + String(y) + ") navigator entry " + String(entry);
+        ButtonAction go;
+        go.type = "goto-screen";
+        go.targetScreenId = nav->entries[entry].screenId;
+        if (nav->entries[entry].screenId != projectLoader.getProject().screens[currentScreen].id) dispatchButtonAction(go);
+        return true;
+      }
+      // Its empty end is still the navigator's: nothing under it is reached.
+      if (onStrip)
+      {
+        lastTap = "(" + String(x) + "," + String(y) + ") navigator, no entry";
+        return true;
+      }
+    }
+  }
 
   // Absolute corner of whatever was hit. For an object inside a panel that
   // is NOT obj.x/obj.y, and the segment arithmetic below depends on it.
