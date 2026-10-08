@@ -431,7 +431,8 @@
     "live-line",
     "box",
     "switcher",
-    "panel"
+    "panel",
+    "navigator"
   ],
   "supportsSoftwareButtons": true
 }
