@@ -1,4 +1,5 @@
 #include "ProjectLoader.h"
+#include "LiveValueJson.h"
 #include "ThemeVariant.h"
 #include <exception>
 #include <math.h>

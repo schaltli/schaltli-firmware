@@ -8,17 +8,17 @@
 // to the same cases, test/test_live_value/live-value-vectors.json - a
 // byte-for-byte copy of the designer's lib/live-value/vectors.json.
 //
-// Plain C++ on std::string (and ArduinoJson for reading a live value), no
-// Arduino: `pio test -e native` runs the vectors on the PC.
-
-#include <ArduinoJson.h>
+// Plain C++ on std::string, no Arduino and no ArduinoJson: `pio test -e
+// native` runs the vectors on the PC, and ProjectTypes.h includes this into
+// the host tools (tools/theme-variant, …), which have neither. Reading one
+// from JSON is LiveValueJson.h.
 
 #include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "project/Placeholders.h"
+#include "Placeholders.h"
 
 namespace livevalue {
 
@@ -91,10 +91,5 @@ std::string textOf(const LiveValue& liveValue, const std::optional<std::string>&
 // A text with `{live:<id>}` references as it reads.
 std::string resolveLiveText(const std::string& text, const std::vector<LiveValue>& liveValues, const Lookup& lookup,
                             const placeholders::Separators& separators);
-
-// A live value as the export writes it (contract §2.6).
-LiveValue parseLiveValue(JsonObjectConst json);
-std::vector<LiveValue> parseLiveValues(JsonArrayConst json);
-Source parseSource(JsonObjectConst json);
 
 }  // namespace livevalue

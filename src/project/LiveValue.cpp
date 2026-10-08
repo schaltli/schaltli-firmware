@@ -1,4 +1,5 @@
 #include "project/LiveValue.h"
+#include "project/LiveValueJson.h"
 
 #include <cmath>
 #include <cstdlib>

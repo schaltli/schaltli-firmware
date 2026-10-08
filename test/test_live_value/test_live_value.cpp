@@ -17,8 +17,7 @@
 #include <sstream>
 #include <string>
 
-#include "project/CombinedTopics.h"
-#include "project/LiveValue.h"
+#include "project/LiveValueJson.h"
 
 static const char* COPY = "test/test_live_value/live-value-vectors.json";
 static const char* DESIGNER = "../schaltli-designer/lib/live-value/vectors.json";

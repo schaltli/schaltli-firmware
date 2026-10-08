@@ -3,8 +3,8 @@
 #include <vector>
 
 #include "PopupFence.h"
-#include "project/CombinedTopics.h"
-#include "project/LiveValue.h"
+#include "CombinedTopics.h"
+#include "LiveValue.h"
 
 /**
  * Data structures for project.json configuration

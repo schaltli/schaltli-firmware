@@ -10,15 +10,13 @@
 // here anyway: the shared cases give them in any order, and a hand-edited
 // file then still computes right.
 
-#include <ArduinoJson.h>
-
 #include <functional>
 #include <map>
 #include <optional>
 #include <string>
 #include <vector>
 
-#include "project/LiveValue.h"
+#include "LiveValue.h"
 
 namespace combined {
 
@@ -58,7 +56,5 @@ bool readsTopic(const std::vector<CombinedTopic>& topics, const std::string& top
 // own conditions and those of every combined topic it reads, down to the
 // designer's eight levels. What a device subscribes to and redraws for.
 std::vector<std::string> inputTopics(const std::vector<CombinedTopic>& topics, const std::string& name);
-
-std::vector<CombinedTopic> parse(JsonArrayConst json);
 
 }  // namespace combined
