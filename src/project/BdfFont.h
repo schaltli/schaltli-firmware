@@ -67,6 +67,8 @@ public:
   // every label's box by seven pixels, including labels of plain ASCII
   // where nothing overhangs at all. Ä Ö Ü need exactly one.
   int16_t inkAscentOf(const String& utf8) const;
+  // The highest any glyph of the font reaches above the baseline.
+  int16_t maxInkAscent() const;
 
   // Cursor advance for one codepoint (BDF DWIDTH), 0 if absent.
   int16_t advance(uint16_t codepoint) const;

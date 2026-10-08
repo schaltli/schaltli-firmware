@@ -474,6 +474,13 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
   canvas_->clearClip();
 }
 
+int16_t ColorScreenRenderer::textOverhangLimit(const ScreenObject& obj) {
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  if (font == nullptr) return 0;
+  const int16_t over = (int16_t)(font->maxInkAscent() - getFontAscentById(obj.properties.fontId));
+  return over > 0 ? over : 0;
+}
+
 bool ColorScreenRenderer::renderLabel(const ScreenObject& obj) {
   // A device of generation 1.4 reads liveText; `text` beside it is the same
   // text lowered to placeholders, for the devices before (contract 2.6).

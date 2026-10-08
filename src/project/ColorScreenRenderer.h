@@ -157,6 +157,13 @@ public:
   static bool readsTopic(const ScreenObject& obj, const String& topic,
                          const std::vector<combined::CombinedTopic>& combinedTopics);
 
+  // How far a text object's ink can reach above its box, whatever it reads:
+  // drawTextBox lets accents overhang (inkOverhang), so a redraw of the box
+  // alone left the dots of a new «ä» undrawn, or an old one's standing. The
+  // font-wide most rather than the text's - a region a few rows too tall
+  // costs nothing, one too short leaves stale pixels.
+  int16_t textOverhangLimit(const ScreenObject& obj);
+
   // Every topic (bare) an object's live values read, combined topics
   // followed to the topics under them - what a device subscribes to.
   static std::vector<std::string> liveTopics(const ScreenObject& obj,

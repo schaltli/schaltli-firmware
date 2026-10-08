@@ -2590,10 +2590,12 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
     // 2.6) - also through a combined topic the changed topic feeds.
     if (ColorScreenRenderer::readsTopic(obj, topic, project.combinedTopics)) {
       if (anzahl + 1 > MAX_RECHTECKE) return false;
+      // Accents above a text's box belong to it (textOverhangLimit).
+      const int16_t over = obj.type == "text" ? std::min<int16_t>(screenRenderer->textOverhangLimit(obj), obj.y) : 0;
       rx[anzahl] = obj.x;
-      ry[anzahl] = obj.y;
+      ry[anzahl] = obj.y - over;
       rw[anzahl] = obj.width;
-      rh[anzahl] = obj.height;
+      rh[anzahl] = obj.height + over;
       anzahl++;
       continue;
     }

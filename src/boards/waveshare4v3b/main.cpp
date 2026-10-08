@@ -1536,10 +1536,12 @@ static bool renderValueChangesPartial()
       }
       if (!named) continue;
       if (rects + 1 > MAX_RECTS) return false;
+      // Accents above a text's box belong to it (textOverhangLimit).
+      const int16_t over = obj.type == "text" ? std::min<int16_t>(renderer->textOverhangLimit(obj), obj.y) : 0;
       rx[rects] = obj.x;
-      ry[rects] = obj.y;
+      ry[rects] = obj.y - over;
       rw[rects] = obj.width;
-      rh[rects] = obj.height;
+      rh[rects] = obj.height + over;
       rects++;
       continue;
     }

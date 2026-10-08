@@ -327,6 +327,15 @@ int16_t BdfFont::inkAscentOf(const String& utf8) const {
   return top;
 }
 
+int16_t BdfFont::maxInkAscent() const {
+  int16_t top = fontAscent_;
+  for (uint32_t i = 0; i < glyphCount_; i++) {
+    const int16_t glyphTop = (int16_t)(glyphs_[i].bbh + glyphs_[i].bboy);
+    if (glyphTop > top) top = glyphTop;
+  }
+  return top;
+}
+
 int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t bx, int16_t by,
                            uint16_t color) const {
   const Glyph* g = find(codepoint);
