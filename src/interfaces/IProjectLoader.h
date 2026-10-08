@@ -1,4 +1,6 @@
 #pragma once
+#include <optional>
+#include <string>
 #include <Arduino.h>
 #include "../project/ProjectTypes.h"
 
@@ -42,6 +44,13 @@ public:
    * fallback asks; getTopicValue() answers "" either way.
    */
   virtual bool hasTopicValue(const String& topic) const = 0;
+
+  /**
+   * A combined topic's value (designer docs/device-contract.md 2.6): "true",
+   * "false", or nullopt while what it reads has not arrived - computed from
+   * the topics' current values, after any of them changed.
+   */
+  virtual std::optional<std::string> getCombinedValue(const String& name) const = 0;
 
   /**
    * Resolve the effective action for a button (e.g. "button-0") on a given

@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
@@ -22,9 +23,14 @@ public:
   bool hasTopicValue(const String& topic) const override;
   ButtonAction getButtonAction(int screenIndex, const String& buttonId) const override;
   void applyThemeVariant(bool dark) override;
+  std::optional<std::string> getCombinedValue(const String& name) const override;
 
 private:
   ProjectConfig project_;
+  // Combined topics' values, worked out again on the first read after a
+  // topic value changed (setTopicValue, a load).
+  mutable std::map<std::string, combined::Value> combinedValues_;
+  mutable bool combinedDirty_ = true;
   bool loaded_;
 
   // Parsing helpers

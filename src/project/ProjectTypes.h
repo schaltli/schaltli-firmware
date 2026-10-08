@@ -3,6 +3,8 @@
 #include <vector>
 
 #include "PopupFence.h"
+#include "project/CombinedTopics.h"
+#include "project/LiveValue.h"
 
 /**
  * Data structures for project.json configuration
@@ -271,6 +273,14 @@ struct ObjectProperties {
   // 38. Default 1; anything <= 0 means no snapping.
   float step;
 
+  // Live values (designer docs/device-contract.md 2.6, generation 1.4): a
+  // text's `liveText` with `{live:<id>}` where a value stands, read in
+  // preference to `text`; an icon is live when `liveIconId` names one of
+  // `liveValues`. Each icon result's path is resolved like `path`.
+  String liveText;
+  std::vector<livevalue::LiveValue> liveValues;
+  String liveIconId;
+
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
       step(1.0f), barThickness(0), arrowStart(false), arrowEnd(false),
@@ -432,6 +442,9 @@ struct ProjectConfig {
   std::vector<Screen> popups;
   PopupFence popupFence;
   std::vector<HardwareButtonDef> hardwareButtons;
+  // Combined topics (contract 2.6), in evaluation order - each after every
+  // one it reads. The device's own: computed, never published.
+  std::vector<combined::CombinedTopic> combinedTopics;
   // How a placeholder's F and N formats write a number (designer
   // docs/device-contract.md 2.4): one character each, the thousands one may
   // be empty. An export from before 2026-10-05 has neither: Switzerland's.

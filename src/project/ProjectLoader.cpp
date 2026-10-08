@@ -190,6 +190,15 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
     parseHardwareButtons(doc["hardwareButtons"].as<JsonArray>());
   }
 
+  // Combined topics (contract 2.6): the export writes them in evaluation
+  // order; ordered again here, so a file edited by hand still computes right.
+  // One with a circular reference is never exported; here it leaves none.
+  project_.combinedTopics.clear();
+  if (doc["combinedTopics"].is<JsonArray>()) {
+    project_.combinedTopics = combined::evaluationOrder(combined::parse(doc["combinedTopics"].as<JsonArrayConst>()));
+  }
+  combinedDirty_ = true;
+
   return true;
 }
 
@@ -435,6 +444,23 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   
   // Label properties
   props.text = propsJson["text"] | "";
+  // Live values (contract 2.6). An icon result's path resolves like `path`.
+  props.liveText = propsJson["liveText"] | "";
+  props.liveIconId = propsJson["liveIconId"] | "";
+  props.liveValues.clear();
+  if (propsJson["liveValues"].is<JsonArray>()) {
+    props.liveValues = livevalue::parseLiveValues(propsJson["liveValues"].as<JsonArrayConst>());
+    auto resolve = [](livevalue::Result& result) {
+      if (result.kind != livevalue::ResultKind::Icon) return;
+      result.path = resolveAssetPath(String(result.path.c_str())).c_str();
+      result.pathDark = resolveAssetPath(String(result.pathDark.c_str())).c_str();
+    };
+    for (auto& lv : props.liveValues) {
+      for (auto& rule : lv.rules) resolve(rule.result);
+      if (lv.otherwise) resolve(*lv.otherwise);
+      if (lv.noValueYet) resolve(*lv.noValueYet);
+    }
+  }
   props.fontSize = propsJson["fontSize"] | 12;
   
   // MqttDataField properties
@@ -606,6 +632,12 @@ String ProjectLoader::getTopicValue(const String& topicOrPath) const {
   // own. "#" can't appear in a real MQTT topic name (reserved wildcard
   // char in the spec), so it's a collision-free separator - the designer's
   // lib/json-path.ts splits the same way.
+  // A combined topic (contract 2.6) reads as "true" / "false" through the
+  // same door, so /api/topic-values and the renderer need nothing else.
+  if (topicOrPath.startsWith("combined:")) {
+    const auto value = getCombinedValue(topicOrPath.substring(9));
+    return value ? String(value->c_str()) : String();
+  }
   String realTopic = topicOrPath;
   String path = "";
   int hashIndex = topicOrPath.indexOf('#');
@@ -630,12 +662,27 @@ void ProjectLoader::setTopicValue(const String& topic, const String& value) {
     if (t.topic == topic) {
       t.currentValue = value;
       t.arrived = true;
+      combinedDirty_ = true;
       return;
     }
   }
 }
 
+std::optional<std::string> ProjectLoader::getCombinedValue(const String& name) const {
+  if (combinedDirty_) {
+    combinedValues_ = combined::compute(project_.combinedTopics, [this](const std::string& path) -> std::optional<std::string> {
+      const String topic(path.c_str());
+      if (!hasTopicValue(topic)) return std::nullopt;
+      return std::string(getTopicValue(topic).c_str());
+    });
+    combinedDirty_ = false;
+  }
+  auto found = combinedValues_.find(name.c_str());
+  return found == combinedValues_.end() ? std::nullopt : found->second;
+}
+
 bool ProjectLoader::hasTopicValue(const String& topicOrPath) const {
+  if (topicOrPath.startsWith("combined:")) return getCombinedValue(topicOrPath.substring(9)).has_value();
   const int hashIndex = topicOrPath.indexOf('#');
   const String realTopic = hashIndex >= 0 ? topicOrPath.substring(0, hashIndex) : topicOrPath;
   for (const auto& t : project_.topics) {
