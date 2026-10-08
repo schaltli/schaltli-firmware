@@ -2335,12 +2335,26 @@ void loop()
       }
     }
 
+    const int screenBeforeRelease = currentScreen;
     swipe.release();
     // The transition may have swapped which canvas is current. Anything
     // holding the old pointer would now be looking at the screen that just
     // left the glass.
     testInterface.setCanvas(*canvas);
     if (displayAdapter) displayAdapter->setCanvas(*canvas);
+    // The navigator stood still through the swipe, so the glass still holds
+    // the strip of the screen that left - its highlight one behind. The new
+    // canvas has it right already, and goes up whole: a copy, not a render
+    // (about 60 ms). Whole, not the strip alone - the swipe wrote its frames
+    // straight into the panel's buffers, so the buffer a region copy lands
+    // in still holds an earlier frame of the slide everywhere else. Found by
+    // hand 2026-10-08: after a few swipes the number on the screen and the
+    // highlighted entry no longer agreed.
+    if (currentScreen != screenBeforeRelease && renderer)
+    {
+      navigatorlayout::Layout layout;
+      if (renderer->navigatorLayout(currentScreen, layout)) panel.blit(canvas->getBuffer());
+    }
     // Whatever was marked belonged to the screen that just slid away, or to
     // the one that stayed - either way its rectangle has been repainted by
     // the transition and the mark is gone from the glass already.
