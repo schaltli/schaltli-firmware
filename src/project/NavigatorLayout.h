@@ -64,6 +64,11 @@ int pageScroll(const Layout& layout, int scroll, int direction);
 // The strip of an exported navigator: `thickness` deep along `edge`.
 Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight);
 
+// The line towards the screen (the designer's NAVIGATOR_DIVIDER, 2 px): the
+// strip's last pixels on the screen's side.
+constexpr int kDivider = 2;
+Rect dividerRect(Edge edge, const Rect& strip);
+
 // Paging past hidden screens (contract 2.7): from `current`, `delta` steps
 // (+1 next, -1 previous) over the screens that are not hidden, wrapping.
 // `current` itself may be hidden (reached by a goto). With none shown,

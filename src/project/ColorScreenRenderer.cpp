@@ -2883,6 +2883,17 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
     }
   }
 
+  // The line towards the screen, over the entries (2.7, 2026-10-10): so the
+  // strip reads as a bar, not as one button on the screen's ground.
+  if (!nav->borderColor.isEmpty()) {
+    bool noLine = false;
+    const uint16_t line = parseHexColor(nav->borderColor, &noLine);
+    if (!noLine) {
+      const navigatorlayout::Rect d = navigatorlayout::dividerRect(layout.edge, layout.strip);
+      canvas_->fillRect(d.x, d.y, d.width, d.height, line);
+    }
+  }
+
   currentScreenBg_ = screenBg;
   currentScreenBgHex_ = screenBgHex;
   if (hadRegion) canvas_->setRegion(px, py, pw, ph);

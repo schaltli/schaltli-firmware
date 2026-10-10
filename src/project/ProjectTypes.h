@@ -364,6 +364,9 @@ struct Navigator {
   int entryLength = 0;
   String backgroundColor;
   String backgroundColorDark;
+  // The line towards the screen (2.7, 2026-10-10); empty: none.
+  String borderColor;
+  String borderColorDark;
   std::vector<NavigatorEntry> entries;
 };
 

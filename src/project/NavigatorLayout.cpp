@@ -91,6 +91,14 @@ Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight) {
     return {screenWidth - thickness, 0, thickness, screenHeight};
 }
 
+Rect dividerRect(Edge edge, const Rect& strip) {
+    const int d = kDivider;
+    if (edge == Edge::Left) return {strip.x + strip.width - d, strip.y, d, strip.height};
+    if (edge == Edge::Right) return {strip.x, strip.y, d, strip.height};
+    if (edge == Edge::Top) return {strip.x, strip.y + strip.height - d, strip.width, d};
+    return {strip.x, strip.y, strip.width, d};
+}
+
 int pagedIndex(const std::vector<bool>& hidden, int current, int delta) {
     const int count = static_cast<int>(hidden.size());
     if (count == 0) return current;

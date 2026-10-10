@@ -197,6 +197,8 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
       nav.entryLength = navJson["entryLength"] | 0;
       nav.backgroundColor = navJson["backgroundColor"] | "#ffffff";
       nav.backgroundColorDark = navJson["backgroundColorDark"] | "";
+      nav.borderColor = navJson["borderColor"] | "";
+      nav.borderColorDark = navJson["borderColorDark"] | "";
       for (JsonObject entryJson : navJson["entries"].as<JsonArray>()) {
         NavigatorEntry entry;
         entry.screenId = entryJson["screenId"] | "";

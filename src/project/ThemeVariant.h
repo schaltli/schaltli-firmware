@@ -66,6 +66,7 @@ void forEachPair(ProjectConfig& project, F& f) {
   // entry object, in a fixed order.
   for (Navigator& nav : project.navigators) {
     f(nav.backgroundColor, nav.backgroundColorDark);
+    f(nav.borderColor, nav.borderColorDark);
     for (NavigatorEntry& entry : nav.entries) {
       for (ScreenObject& obj : entry.normal) forEachObjectPair(obj, f);
       for (ScreenObject& obj : entry.active) forEachObjectPair(obj, f);
