@@ -413,6 +413,10 @@ inline int stateIndexForTap(const ScreenObject& obj, int x, int activeIndex) {
     if (slot >= 0) return slot;
     return activeIndex < 0 ? 0 : (activeIndex + 1) % count;
   }
+  // A button group of two toggles too, wherever it is hit, once a state is
+  // shown (the designer's #65). Before any value the segment under the
+  // finger is what was meant.
+  if (count == 2 && activeIndex >= 0) return activeIndex == 0 ? 1 : 0;
   return segmentAt(obj, count, x);
 }
 
