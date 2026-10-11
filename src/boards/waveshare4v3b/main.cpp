@@ -1276,6 +1276,10 @@ static void setupNetworking()
       wantedThemeDark = themevariant::isDarkPayload(payload);
       if (projectLoader.isLoaded()) projectLoader.setTopicValue(topic, payload);
       applyWantedTheme();
+      // The navigator's light/dark switch shows the value even where the
+      // variant stays (a first "light"): drawn again, as applyWantedTheme
+      // only does on a change (designer contract 2.7, 2026-10-11).
+      if (projectLoader.isLoaded()) renderPending = true;
       return;
     }
     // The installation's word ends the request: the marker goes, and the fill
