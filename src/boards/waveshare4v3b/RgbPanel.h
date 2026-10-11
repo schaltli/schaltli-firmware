@@ -1,4 +1,5 @@
 #pragma once
+#include "esp_cache.h"
 #include <Arduino.h>
 #include <esp_lcd_panel_rgb.h>
 #include <esp_lcd_panel_ops.h>
@@ -168,6 +169,20 @@ public:
     if (!handle_ || src == nullptr || n == 0) return;
     for (size_t k = 0; k < n; k++) owe(xs[k], ys[k], ws[k], hs[k]);
     present(src);
+  }
+
+  // The framebuffers themselves, for something that paints the same pixels
+  // into every one of them at once rather than owing them a copy (the
+  // energy diagram's wave, 2026-10-11): what is painted so is owed by no
+  // buffer, so no present - a tap's feedback included - pays for it.
+  uint16_t *buffer(size_t i) const { return i < count_ ? fb_[i] : nullptr; }
+  // Rows y0..y1 of a buffer out of the CPU's cache into PSRAM, where the
+  // panel's DMA reads them - after painting straight into a buffer.
+  void writeBack(size_t i, int16_t y0, int16_t y1)
+  {
+    if (i >= count_ || y1 < y0) return;
+    esp_cache_msync(fb_[i] + (size_t)y0 * (size_t)w_, (size_t)(y1 - y0 + 1) * (size_t)w_ * sizeof(uint16_t),
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
   }
 
   // What the last present actually had to copy, in pixels. Diagnostic:

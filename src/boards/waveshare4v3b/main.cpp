@@ -394,9 +394,13 @@ static String lastFeedback = "none since boot";
 static uint32_t contactSampleUs = 0;
 static bool tapLatencyOpen = false;
 static uint32_t tapLatencyUs[32];
+// Of it, the part before the press feedback began: waiting, not drawing.
+static uint32_t tapWaitUs[32];
+static uint32_t pressStartUs = 0;
 static uint8_t tapLatencyCount = 0, tapLatencyNext = 0;
 static void recordTapLatency(uint32_t us)
 {
+  tapWaitUs[tapLatencyNext] = pressStartUs - contactSampleUs;
   tapLatencyUs[tapLatencyNext] = us;
   tapLatencyNext = (tapLatencyNext + 1) % 32;
   if (tapLatencyCount < 32) tapLatencyCount++;
@@ -421,8 +425,18 @@ static String tapLatencyReport()
   }
   const uint32_t median = sorted[tapLatencyCount / 2];
   const uint32_t p90 = sorted[(tapLatencyCount * 9) / 10 >= tapLatencyCount ? tapLatencyCount - 1 : (tapLatencyCount * 9) / 10];
+  uint32_t waits[32];
+  for (uint8_t i = 0; i < tapLatencyCount; i++) waits[i] = tapWaitUs[i];
+  for (uint8_t i = 1; i < tapLatencyCount; i++)
+  {
+    uint32_t v = waits[i];
+    int j = i - 1;
+    while (j >= 0 && waits[j] > v) { waits[j + 1] = waits[j]; j--; }
+    waits[j + 1] = v;
+  }
   return String(tapLatencyCount) + " taps, median " + String(median / 1000.0f, 1) + " ms, p90 " +
-         String(p90 / 1000.0f, 1) + " ms, worst " + String(sorted[tapLatencyCount - 1] / 1000.0f, 1) + " ms";
+         String(p90 / 1000.0f, 1) + " ms, worst " + String(sorted[tapLatencyCount - 1] / 1000.0f, 1) +
+         " ms (waiting before the feedback: median " + String(waits[tapLatencyCount / 2] / 1000.0f, 1) + " ms)";
 }
 
 // Touch feedback. The shared renderer has drawn all three of these states
@@ -1523,6 +1537,7 @@ static void beginPressFeedback(int16_t x, int16_t y)
   feedbackW = hit->width;
   feedbackH = hit->height;
   feedbackActive = true;
+  pressStartUs = micros();
   renderFeedbackRegion("press");
   if (tapLatencyOpen)
   {
@@ -2332,6 +2347,11 @@ static uint32_t spikeSteps = 0, spikeWindowSteps = 0, spikeDotsUs = 0, spikeWave
 static float spikeStepsPerSecond = 0;
 static float spikePhase = 0, spikeWavePhase = 0;
 static int16_t spikeColTop[SPIKE_W], spikeColBottom[SPIKE_W];
+// The band's whole pixels row by row, for the wave's round two: rows are
+// what a framebuffer stores together, so a row's run is one copy.
+static int16_t spikeRowX0[SPIKE_H], spikeRowX1[SPIKE_H];
+// One row of the wave's colours, in internal RAM: the source of every copy.
+static DRAM_ATTR uint16_t spikeWaveRow[SPIKE_W];
 struct SpikeLine { int16_t x0, y0, x1, y1; uint16_t colour; };
 static SpikeLine spikeLineSet[8];
 static const int SPIKE_MAX_DOTS = 96;
@@ -2358,12 +2378,15 @@ static void spikeDrawStill()
   for (int i = 0; i <= 24; i++) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(80 + 150 * ease(t))}); }
   for (int i = 24; i >= 0; i--) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(250 + 150 * ease(t))}); }
   for (int x = 0; x < SPIKE_W; x++) { spikeColTop[x] = 32767; spikeColBottom[x] = -1; }
+  for (int y = 0; y < SPIKE_H; y++) { spikeRowX0[y] = 32767; spikeRowX1[y] = -1; }
   PolygonRaster::Sink sink;
   sink.fullRun = [](int16_t y, int16_t x0, int16_t x1) {
     for (int16_t x = x0; x <= x1; x++)
     {
       canvas->drawPixel(x, y, spikeWaveColour(x));
       if (x >= 0 && x < SPIKE_W) { if (y < spikeColTop[x]) spikeColTop[x] = y; if (y > spikeColBottom[x]) spikeColBottom[x] = y; }
+      const int ry = y - SPIKE_Y;
+      if (ry >= 0 && ry < SPIKE_H) { if (x < spikeRowX0[ry]) spikeRowX0[ry] = x; if (x > spikeRowX1[ry]) spikeRowX1[ry] = x; }
     }
   };
   sink.partial = [](int16_t y, int16_t x, uint8_t c) {
@@ -2410,11 +2433,20 @@ static void spikeStart(int lines)
 
 static void spikeStep()
 {
-  if (spikeLines == 0 || !canvas || displayIsOff) return;
+  // A touch goes first (spec decision: «a touch, a swipe or another
+  // object's redraw goes first»): no step while a finger is down, and the
+  // step runs at the end of loop(), after the touch was read - at the start
+  // it ran before a sample that had just arrived, and a tap waited for it.
+  if (spikeLines == 0 || !canvas || displayIsOff || holdActive) return;
+  // Steps on a fixed 100 ms grid, not 100 ms after the last one: the loop's
+  // own turn would stretch every gap and the rate would sag below ten.
   const unsigned long now = millis();
   if (now - spikeLastStepMs < SPIKE_STEP_MS) return;
-  const float dt = (now - spikeLastStepMs) / 1000.0f;
-  spikeLastStepMs = now;
+  static unsigned long lastMotionMs = 0;
+  const float dt = (lastMotionMs ? now - lastMotionMs : SPIKE_STEP_MS) / 1000.0f;
+  lastMotionMs = now;
+  spikeLastStepMs += SPIKE_STEP_MS;
+  if (now - spikeLastStepMs >= 2 * SPIKE_STEP_MS) spikeLastStepMs = now;
   // A full render repainted the area: the still picture again first.
   if (renderGeneration != spikeGeneration) spikeDrawStill();
 
@@ -2452,21 +2484,33 @@ static void spikeStep()
     }
   }
   const uint32_t t1 = micros();
-  // The wave: each column of the band one stroke in its colour of the moment.
-  // (Every other step was tried, 2026-10-11: a tap got slower, not quicker -
-  // the band's copy is owed by every buffer whichever present pays it.)
+  // The wave, round two (2026-10-11): one row of colours worked out in
+  // internal RAM - a column's colour depends on its x alone -, then each row
+  // of the band copied from it straight into every framebuffer and the
+  // canvas, and written back out of the cache. Painted so, the band is owed
+  // by no buffer, and no present pays for it. (Round one repainted the
+  // canvas and owed the band's rectangle: a tap got 66 % slower. Every
+  // other step was tried too: slower still.)
   spikeWavePhase = fmodf(spikeWavePhase + dt / SPIKE_WAVE_SECONDS, 1.0f);
-  int16_t bx0 = SPIKE_W, bx1 = -1, by0 = 32767, by1 = -1;
-  for (int16_t x = 0; x < SPIKE_W && spikeWave; x++)
+  if (spikeWave)
   {
-    if (spikeColBottom[x] < spikeColTop[x]) continue;
-    canvas->drawFastVLine(x, spikeColTop[x], spikeColBottom[x] - spikeColTop[x] + 1, spikeWaveColour(x));
-    if (x < bx0) bx0 = x;
-    if (x > bx1) bx1 = x;
-    if (spikeColTop[x] < by0) by0 = spikeColTop[x];
-    if (spikeColBottom[x] > by1) by1 = spikeColBottom[x];
+    for (int16_t x = 0; x < SPIKE_W; x++) spikeWaveRow[x] = spikeWaveColour(x);
+    int16_t first = -1, last = -1;
+    for (size_t b = 0; b <= panel.bufferCount(); b++)
+    {
+      uint16_t *dst = b < panel.bufferCount() ? panel.buffer(b) : buf;
+      for (int16_t row = 0; row < SPIKE_H; row++)
+      {
+        const int16_t x0 = spikeRowX0[row], x1 = spikeRowX1[row];
+        if (x1 < x0) continue;
+        if (first < 0) first = row;
+        last = row;
+        memcpy(dst + (size_t)(SPIKE_Y + row) * 800 + x0, spikeWaveRow + x0, (size_t)(x1 - x0 + 1) * sizeof(uint16_t));
+      }
+    }
+    if (first >= 0)
+      for (size_t b = 0; b < panel.bufferCount(); b++) panel.writeBack(b, SPIKE_Y + first, SPIKE_Y + last);
   }
-  if (bx1 >= bx0) { rx[rects] = bx0; ry[rects] = by0; rw[rects] = bx1 - bx0 + 1; rh[rects] = by1 - by0 + 1; rects++; }
   const uint32_t t2 = micros();
   panel.blitRegions(buf, rx, ry, rw, rh, rects);
   const uint32_t t3 = micros();
@@ -2494,7 +2538,6 @@ static String spikeReport()
 
 void loop()
 {
-  spikeStep();
   if (restartAtMs && millis() >= restartAtMs) ESP.restart();
   if (!setupModeActive && wifi.tick() && noWifiScreenShown)
   {
@@ -3032,6 +3075,9 @@ void loop()
     pendingTopicCount = 0;
     pendingTopicOverflow = false;
   }
+
+  // The energy diagram's spike, after the touch and the values (see there).
+  spikeStep();
 
   {
     const uint32_t turn = micros() - turnStart;
