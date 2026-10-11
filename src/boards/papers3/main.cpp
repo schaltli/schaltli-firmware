@@ -38,6 +38,7 @@
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
 #include "../../project/ProjectLoader.h"
+#include "../../project/ThemeVariant.h"
 #include "project/ObjectTypes.h"
 
 // The panel's own size, read back at boot and checked against what the DDF
@@ -180,7 +181,7 @@ static std::vector<bool> hiddenFlags()
 static bool onNavigatorStrip(int16_t x, int16_t y, navigatorlayout::Layout &layout)
 {
   if (!renderer || openPopup >= 0 || !renderer->navigatorLayout(currentScreen, layout)) return false;
-  const navigatorlayout::Rect &s = layout.strip;
+  const navigatorlayout::Rect &s = layout.bar;
   return x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height;
 }
 
@@ -340,8 +341,18 @@ static bool handleTap(int16_t x, int16_t y)
     const Navigator *nav = nullptr;
     if (openPopup < 0 && renderer->navigatorLayout(currentScreen, layout, &nav))
     {
+      // Its light/dark switch asks for the other variant (2.7, generation
+      // 1.6). E-paper draws light only; the other devices follow.
+      const navigatorlayout::Rect &sw = layout.themeSwitch;
+      if (layout.hasThemeSwitch && x >= sw.x && y >= sw.y && x < sw.x + sw.width && y < sw.y + sw.height)
+      {
+        const bool dark = themevariant::isDarkPayload(projectLoader.getTopicValue("schaltli/state/theme"));
+        mqttClient.publish("schaltli/cmnd/theme", dark ? "light" : "dark", false);
+        Serial.printf("[papers3] tap: theme switch -> %s\n", dark ? "light" : "dark");
+        return true;
+      }
       const int entry = navigatorlayout::entryAt(layout, x, y, renderer->effectiveNavigatorScroll(currentScreen));
-      const navigatorlayout::Rect &s = layout.strip;
+      const navigatorlayout::Rect &s = layout.bar;
       if (entry >= 0)
       {
         if (nav->entries[entry].screenId != projectLoader.getProject().screens[currentScreen].id)

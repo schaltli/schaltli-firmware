@@ -2819,8 +2819,8 @@ bool ColorScreenRenderer::navigatorLayout(int screenIndex, navigatorlayout::Layo
   for (const Navigator& nav : project.navigators) {
     if (nav.id != screen.navigatorId) continue;
     const navigatorlayout::Edge edge = navigatorlayout::edgeFrom(nav.edge.c_str());
-    layout = navigatorlayout::layoutInStrip(edge, navigatorlayout::stripOf(edge, nav.thickness, canvas_->width(), canvas_->height()),
-                                            (int)nav.entries.size(), nav.entryLength);
+    layout = navigatorlayout::barLayout(edge, navigatorlayout::stripOf(edge, nav.thickness, canvas_->width(), canvas_->height()),
+                                        (int)nav.entries.size(), nav.entryLength, nav.themeSwitchAt.c_str(), nav.themeSwitchLength);
     if (navOut) *navOut = &nav;
     if (activeOut) {
       *activeOut = -1;
@@ -2849,15 +2849,22 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   // Its strip, cut to the region already in force (a partial redraw).
   const bool hadRegion = canvas_->regionActive();
   const int16_t px = canvas_->regionX(), py = canvas_->regionY(), pw = canvas_->regionW(), ph = canvas_->regionH();
-  int x0 = layout.strip.x, y0 = layout.strip.y;
-  int x1 = layout.strip.x + layout.strip.width, y1 = layout.strip.y + layout.strip.height;
-  if (hadRegion) {
-    x0 = std::max(x0, (int)px);
-    y0 = std::max(y0, (int)py);
-    x1 = std::min(x1, (int)(px + pw));
-    y1 = std::min(y1, (int)(py + ph));
-  }
-  if (x1 <= x0 || y1 <= y0) return;
+  // A rectangle cut to the region already in force; false when nothing is left.
+  auto clipTo = [&](const navigatorlayout::Rect& r, int& cx0, int& cy0, int& cx1, int& cy1) {
+    cx0 = r.x;
+    cy0 = r.y;
+    cx1 = r.x + r.width;
+    cy1 = r.y + r.height;
+    if (hadRegion) {
+      cx0 = std::max(cx0, (int)px);
+      cy0 = std::max(cy0, (int)py);
+      cx1 = std::min(cx1, (int)(px + pw));
+      cy1 = std::min(cy1, (int)(py + ph));
+    }
+    return cx1 > cx0 && cy1 > cy0;
+  };
+  int x0, y0, x1, y1;
+  if (!clipTo(layout.bar, x0, y0, x1, y1)) return;
   canvas_->setRegion(x0, y0, x1 - x0, y1 - y0);
 
   bool transparent = false;
@@ -2869,10 +2876,15 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   currentScreenBg_ = transparent ? 0xFFFF : ground;
   currentScreenBgHex_ = transparent ? String("#ffffff") : nav->backgroundColor;
 
+  // The entries within their part of the bar: they scroll, the switch's
+  // place beside them stays.
   const int scroll = effectiveNavigatorScroll(screenIndex);
-  for (int i = 0; i < (int)nav->entries.size(); i++) {
+  int ex0, ey0, ex1, ey1;
+  const bool entriesShown = clipTo(layout.strip, ex0, ey0, ex1, ey1);
+  if (entriesShown) canvas_->setRegion(ex0, ey0, ex1 - ex0, ey1 - ey0);
+  for (int i = 0; entriesShown && i < (int)nav->entries.size(); i++) {
     const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, i, scroll);
-    if (r.x >= x1 || r.y >= y1 || r.x + r.width <= x0 || r.y + r.height <= y0) continue;
+    if (r.x >= ex1 || r.y >= ey1 || r.x + r.width <= ex0 || r.y + r.height <= ey0) continue;
     const SpiramObjects& source = i == active ? nav->entries[i].active : nav->entries[i].normal;
     std::vector<ScreenObject> objects(source.begin(), source.end());
     std::sort(objects.begin(), objects.end(), zOrderLess);
@@ -2883,13 +2895,27 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
     }
   }
 
+  // The light/dark switch in its place (2.7, generation 1.6).
+  int sx0, sy0, sx1, sy1;
+  if (layout.hasThemeSwitch && clipTo(layout.themeSwitch, sx0, sy0, sx1, sy1)) {
+    canvas_->setRegion(sx0, sy0, sx1 - sx0, sy1 - sy0);
+    std::vector<ScreenObject> objects(nav->themeSwitchObjects.begin(), nav->themeSwitchObjects.end());
+    std::sort(objects.begin(), objects.end(), zOrderLess);
+    for (ScreenObject obj : objects) {
+      obj.x += layout.themeSwitch.x;
+      obj.y += layout.themeSwitch.y;
+      renderObject(obj, "", "", -1, "", -1);
+    }
+  }
+  canvas_->setRegion(x0, y0, x1 - x0, y1 - y0);
+
   // The line towards the screen, over the entries (2.7, 2026-10-10): so the
   // strip reads as a bar, not as one button on the screen's ground.
   if (!nav->borderColor.isEmpty()) {
     bool noLine = false;
     const uint16_t line = parseHexColor(nav->borderColor, &noLine);
     if (!noLine) {
-      const navigatorlayout::Rect d = navigatorlayout::dividerRect(layout.edge, layout.strip);
+      const navigatorlayout::Rect d = navigatorlayout::dividerRect(layout.edge, layout.bar);
       canvas_->fillRect(d.x, d.y, d.width, d.height, line);
     }
   }

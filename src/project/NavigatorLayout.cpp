@@ -44,6 +44,7 @@ Layout layoutInStrip(Edge edge, const Rect& s, int count, int entryLength) {
     Layout l;
     l.edge = edge;
     l.strip = s;
+    l.bar = s;
     l.horizontal = edge == Edge::Top || edge == Edge::Bottom;
     l.length = l.horizontal ? s.width : s.height;
     l.count = count;
@@ -89,6 +90,26 @@ Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight) {
     if (edge == Edge::Bottom) return {0, screenHeight - thickness, screenWidth, thickness};
     if (edge == Edge::Left) return {0, 0, thickness, screenHeight};
     return {screenWidth - thickness, 0, thickness, screenHeight};
+}
+
+Layout barLayout(Edge edge, const Rect& bar, int count, int entryLength, const std::string& at, int length) {
+    if (at != "near" && at != "far") return layoutInStrip(edge, bar, count, entryLength);
+    const bool horizontal = edge == Edge::Top || edge == Edge::Bottom;
+    const int l = std::min(length, horizontal ? bar.width : bar.height);
+    const bool near = at == "near";
+    Rect sw, entries;
+    if (horizontal) {
+        sw = {near ? bar.x : bar.x + bar.width - l, bar.y, l, bar.height};
+        entries = {near ? bar.x + l : bar.x, bar.y, bar.width - l, bar.height};
+    } else {
+        sw = {bar.x, near ? bar.y : bar.y + bar.height - l, bar.width, l};
+        entries = {bar.x, near ? bar.y + l : bar.y, bar.width, bar.height - l};
+    }
+    Layout out = layoutInStrip(edge, entries, count, entryLength);
+    out.bar = bar;
+    out.hasThemeSwitch = true;
+    out.themeSwitch = sw;
+    return out;
 }
 
 Rect dividerRect(Edge edge, const Rect& strip) {

@@ -367,6 +367,11 @@ struct Navigator {
   // The line towards the screen (2.7, 2026-10-10); empty: none.
   String borderColor;
   String borderColorDark;
+  // The light/dark switch (2.7, generation 1.6): "near", "far" or empty for
+  // none, how long its place is, and its objects relative to that place.
+  String themeSwitchAt;
+  int themeSwitchLength = 0;
+  SpiramObjects themeSwitchObjects;
   std::vector<NavigatorEntry> entries;
 };
 

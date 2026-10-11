@@ -509,7 +509,7 @@ static int navigatorStartScroll = 0;
 static bool onNavigatorStrip(int16_t x, int16_t y, navigatorlayout::Layout &layout)
 {
   if (!renderer || openPopup >= 0 || !renderer->navigatorLayout(currentScreen, layout)) return false;
-  const navigatorlayout::Rect &s = layout.strip;
+  const navigatorlayout::Rect &s = layout.bar;
   return x >= s.x && y >= s.y && x < s.x + s.width && y < s.y + s.height;
 }
 
@@ -2121,9 +2121,19 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     const Navigator *nav = nullptr;
     if (renderer->navigatorLayout(activeScreen(), layout, &nav))
     {
+      // Its light/dark switch asks for the other variant (2.7, generation
+      // 1.6); the bridge answers on schaltli/state/theme, which redraws.
+      const navigatorlayout::Rect &sw = layout.themeSwitch;
+      if (layout.hasThemeSwitch && x >= sw.x && y >= sw.y && x < sw.x + sw.width && y < sw.y + sw.height)
+      {
+        const char *wanted = wantedThemeDark ? "light" : "dark";
+        lastTap = "(" + String(x) + "," + String(y) + ") navigator theme switch -> " + wanted;
+        mqttClient.publish("schaltli/cmnd/theme", wanted, false);
+        return true;
+      }
       const int entry = navigatorlayout::entryAt(layout, x, y, renderer->effectiveNavigatorScroll(activeScreen()));
-      const bool onStrip = x >= layout.strip.x && y >= layout.strip.y && x < layout.strip.x + layout.strip.width &&
-                           y < layout.strip.y + layout.strip.height;
+      const bool onStrip = x >= layout.bar.x && y >= layout.bar.y && x < layout.bar.x + layout.bar.width &&
+                           y < layout.bar.y + layout.bar.height;
       if (entry >= 0)
       {
         lastTap = "(" + String(x) + "," + String(y) + ") navigator entry " + String(entry);

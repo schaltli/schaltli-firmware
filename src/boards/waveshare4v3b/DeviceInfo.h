@@ -81,7 +81,10 @@
 // liveIconId, combinedTopics[] (designer docs/device-contract.md 2.6).
 // 5: draws the navigator and pages past hidden screens - navigators[],
 // navigatorId, hidden (designer docs/device-contract.md 2.7).
-#define SYSTEM_GENERATION_MINOR 5
+// 6: draws the navigator's light/dark switch - a navigator's themeSwitch,
+// a place on the strip that does not scroll; a tap on it asks
+// schaltli/cmnd/theme for the other variant (designer docs/device-contract.md 2.7).
+#define SYSTEM_GENERATION_MINOR 6
 
 // Where DeployManager.cpp promotes a verified deploy download to, and
 // TestInterfaceServer.cpp's recovery endpoint (GET /recovery-project) reads

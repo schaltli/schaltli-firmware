@@ -27,7 +27,14 @@ struct Rect {
 
 struct Layout {
     Edge edge = Edge::Left;
+    // The entries' part of the bar: all of it, or what the light/dark switch
+    // leaves (2026-10-11). Entries scroll and are hit within it.
     Rect strip;
+    // The whole bar: its ground, its line, what a touch on it belongs to.
+    Rect bar;
+    // The light/dark switch's place, when the navigator has one.
+    bool hasThemeSwitch = false;
+    Rect themeSwitch;
     bool horizontal = false;  // entries run along x (top, bottom)
     int length = 0;           // the strip's length along the entries
     int count = 0;
@@ -63,6 +70,11 @@ int pageScroll(const Layout& layout, int scroll, int direction);
 
 // The strip of an exported navigator: `thickness` deep along `edge`.
 Rect stripOf(Edge edge, int thickness, int screenWidth, int screenHeight);
+
+// The bar split as the designer's barLayout: the switch's place, `length`
+// long, cut off at its start (`at` "near") or end ("far"); the entries laid
+// out in the rest. Any other `at`: no switch, the entries over the bar.
+Layout barLayout(Edge edge, const Rect& bar, int count, int entryLength, const std::string& at, int length);
 
 // The line towards the screen (the designer's NAVIGATOR_DIVIDER, 2 px): the
 // strip's last pixels on the screen's side.

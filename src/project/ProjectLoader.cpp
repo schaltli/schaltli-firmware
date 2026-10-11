@@ -199,6 +199,12 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
       nav.backgroundColorDark = navJson["backgroundColorDark"] | "";
       nav.borderColor = navJson["borderColor"] | "";
       nav.borderColorDark = navJson["borderColorDark"] | "";
+      if (navJson["themeSwitch"].is<JsonObject>()) {
+        JsonObject sw = navJson["themeSwitch"].as<JsonObject>();
+        nav.themeSwitchAt = sw["at"] | "";
+        nav.themeSwitchLength = sw["length"] | 0;
+        for (JsonObject o : sw["objects"].as<JsonArray>()) nav.themeSwitchObjects.push_back(parseScreenObject(o));
+      }
       for (JsonObject entryJson : navJson["entries"].as<JsonArray>()) {
         NavigatorEntry entry;
         entry.screenId = entryJson["screenId"] | "";
