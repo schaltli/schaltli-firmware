@@ -155,19 +155,18 @@ public:
   void blitRegion(const uint16_t *src, int16_t x, int16_t y, int16_t rw, int16_t rh)
   {
     if (!handle_ || src == nullptr) return;
-    if (x < 0) { rw += x; x = 0; }
-    if (y < 0) { rh += y; y = 0; }
-    if (x + rw > w_) rw = w_ - x;
-    if (y + rh > h_) rh = h_ - y;
-    if (rw <= 0 || rh <= 0) return;
+    owe(x, y, rw, rh);
+    present(src);
+  }
 
-    for (size_t i = 0; i < count_; i++)
-    {
-      if (dirtyAll_[i]) continue;
-      if (dirtyCount_[i] >= MAX_DIRTY) { dirtyAll_[i] = true; continue; }
-      Rect &r = dirty_[i][dirtyCount_[i]++];
-      r.x = x; r.y = y; r.w = rw; r.h = rh;
-    }
+  // Several rectangles, one present: something that moves in many small
+  // places at once (the energy diagram's dots, 2026-10-11) would otherwise
+  // flip a buffer per rectangle.
+  void blitRegions(const uint16_t *src, const int16_t *xs, const int16_t *ys, const int16_t *ws,
+                   const int16_t *hs, size_t n)
+  {
+    if (!handle_ || src == nullptr || n == 0) return;
+    for (size_t k = 0; k < n; k++) owe(xs[k], ys[k], ws[k], hs[k]);
     present(src);
   }
 
@@ -177,6 +176,32 @@ public:
   uint32_t lastPresentPixels() const { return lastPresentPixels_; }
 
 private:
+  // Notes a rectangle every buffer still owes. One already owed is not noted
+  // twice - a region redrawn in place every step would otherwise be copied
+  // once for each of the steps a buffer missed.
+  void owe(int16_t x, int16_t y, int16_t rw, int16_t rh)
+  {
+    if (x < 0) { rw += x; x = 0; }
+    if (y < 0) { rh += y; y = 0; }
+    if (x + rw > w_) rw = w_ - x;
+    if (y + rh > h_) rh = h_ - y;
+    if (rw <= 0 || rh <= 0) return;
+    for (size_t i = 0; i < count_; i++)
+    {
+      if (dirtyAll_[i]) continue;
+      bool owed = false;
+      for (uint8_t n = 0; n < dirtyCount_[i] && !owed; n++)
+      {
+        const Rect &o = dirty_[i][n];
+        owed = o.x == x && o.y == y && o.w == rw && o.h == rh;
+      }
+      if (owed) continue;
+      if (dirtyCount_[i] >= MAX_DIRTY) { dirtyAll_[i] = true; continue; }
+      Rect &r = dirty_[i][dirtyCount_[i]++];
+      r.x = x; r.y = y; r.w = rw; r.h = rh;
+    }
+  }
+
   // Copies whatever the buffer about to be shown still owes, then shows it.
   void present(const uint16_t *src)
   {
@@ -339,7 +364,9 @@ private:
   }
 
   struct Rect { int16_t x, y, w, h; };
-  static const uint8_t MAX_DIRTY = 8;
+  // Enough for the energy diagram's dots - two small boxes a dot, a few
+  // dozen dots, three steps a buffer can miss - before "owes everything".
+  static const uint8_t MAX_DIRTY = 255;
 
   esp_lcd_panel_handle_t handle_ = nullptr;
   uint16_t *fb_[3] = {nullptr, nullptr, nullptr};

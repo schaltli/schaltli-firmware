@@ -401,6 +401,12 @@ static void recordTapLatency(uint32_t us)
   tapLatencyNext = (tapLatencyNext + 1) % 32;
   if (tapLatencyCount < 32) tapLatencyCount++;
 }
+// The energy diagram's spike, defined before loop() (see there).
+static void spikeStart(int lines);
+static void spikeStep();
+static bool spikeWave = true;  // ?set=energyspike=<lines>,nowave: the dots alone
+static String spikeReport();
+
 static String tapLatencyReport()
 {
   if (tapLatencyCount == 0) return "none since boot (?set=taplatency=clear resets)";
@@ -959,6 +965,7 @@ static void setupNetworking()
            " - last: " + lastPopup + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
     out += "  tap latency: " + tapLatencyReport() + "\n";
+    out += "  energy spike: " + spikeReport() + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
            String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";
@@ -1091,6 +1098,12 @@ static void setupNetworking()
       out += "  floor for touching every pixel once: 25 ms (see PanelBenchmark.h)\n";
 
       renderAndPresent("after render profile");
+    }
+    else if (setArg.startsWith("energyspike="))
+    {
+      spikeWave = setArg.indexOf("nowave") < 0;
+      spikeStart(setArg.substring(12).toInt());
+      out += "energy spike: " + spikeReport() + "\n";
     }
     else if (setArg == "taplatency=clear")
     {
@@ -2292,8 +2305,196 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
   return status;
 }
 
+// ---------------------------------------------------------------------------
+// The energy diagram's spike (designer docs/2026-10-11-energy-diagram.md,
+// decision 14; tasks/energy-diagram-plan.md, S3). Not a feature: it answers
+// whether this board can keep dots running along a diagram's lines and a
+// soft wave running through a Sankey band while it stays quick to a tap.
+// ?set=energyspike=<lines> draws, left of x = 580, one band and <lines>
+// lines to a bus over whatever screen is shown, then moves them ten times a
+// second: each dot's old box restored from a copy of the still picture and
+// its new one drawn; each column of the band repainted as one vertical
+// stroke in its colour of the moment. ?set=energyspike=0 stops and redraws
+// the screen. /api/debug says how many steps a second it manages and what a
+// step costs, dots and wave apart.
+// ---------------------------------------------------------------------------
+#include "../../project/PolygonRaster.h"
+
+static const int16_t SPIKE_X = 0, SPIKE_Y = 60, SPIKE_W = 580, SPIKE_H = 420;
+static const uint32_t SPIKE_STEP_MS = 100;
+static const float SPIKE_WAVE_PX = 48.0f, SPIKE_WAVE_SECONDS = 4.0f;
+static const int SPIKE_DOT_R = 4;
+static int spikeLines = 0;
+static uint16_t *spikeStill = nullptr;  // the still picture of the spike's area
+static uint32_t spikeGeneration = 0;
+static unsigned long spikeLastStepMs = 0, spikeWindowMs = 0;
+static uint32_t spikeSteps = 0, spikeWindowSteps = 0, spikeDotsUs = 0, spikeWaveUs = 0, spikeBlitUs = 0;
+static float spikeStepsPerSecond = 0;
+static float spikePhase = 0, spikeWavePhase = 0;
+static int16_t spikeColTop[SPIKE_W], spikeColBottom[SPIKE_W];
+struct SpikeLine { int16_t x0, y0, x1, y1; uint16_t colour; };
+static SpikeLine spikeLineSet[8];
+static const int SPIKE_MAX_DOTS = 96;
+static int16_t spikeDotX[SPIKE_MAX_DOTS], spikeDotY[SPIKE_MAX_DOTS];
+static int spikeDotCount = 0;
+
+static uint16_t spikeRgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
+static const uint8_t SPIKE_BAND[3] = {224, 108, 31};  // energyEngine, light
+
+// The band's colour at a column: 0.42 - 0.16 cos towards the black ground.
+static uint16_t spikeWaveColour(int16_t x)
+{
+  const float t = 0.42f - 0.16f * cosf(2.0f * PI * ((x - spikeWavePhase * SPIKE_WAVE_PX) / SPIKE_WAVE_PX));
+  return spikeRgb((uint8_t)(SPIKE_BAND[0] * (1 - t)), (uint8_t)(SPIKE_BAND[1] * (1 - t)), (uint8_t)(SPIKE_BAND[2] * (1 - t)));
+}
+
+static void spikeDrawStill()
+{
+  canvas->setRegion(SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H);
+  canvas->fillRect(SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H, 0x0000);
+  // The band: a cubic outline flattened to 24 segments a side, as the core will.
+  std::vector<PolygonRaster::Point> band;
+  auto ease = [](float t) { return t * t * (3 - 2 * t); };
+  for (int i = 0; i <= 24; i++) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(80 + 150 * ease(t))}); }
+  for (int i = 24; i >= 0; i--) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(250 + 150 * ease(t))}); }
+  for (int x = 0; x < SPIKE_W; x++) { spikeColTop[x] = 32767; spikeColBottom[x] = -1; }
+  PolygonRaster::Sink sink;
+  sink.fullRun = [](int16_t y, int16_t x0, int16_t x1) {
+    for (int16_t x = x0; x <= x1; x++)
+    {
+      canvas->drawPixel(x, y, spikeWaveColour(x));
+      if (x >= 0 && x < SPIKE_W) { if (y < spikeColTop[x]) spikeColTop[x] = y; if (y > spikeColBottom[x]) spikeColBottom[x] = y; }
+    }
+  };
+  sink.partial = [](int16_t y, int16_t x, uint8_t c) {
+    const float a = c / 16.0f * 0.58f;
+    canvas->drawPixel(x, y, spikeRgb((uint8_t)(SPIKE_BAND[0] * a), (uint8_t)(SPIKE_BAND[1] * a), (uint8_t)(SPIKE_BAND[2] * a)));
+  };
+  PolygonRaster::fill(band, SPIKE_Y, SPIKE_Y + SPIKE_H - 1, sink);
+  // The lines to the bus, faint, and the bus.
+  const int16_t bx = 440, by = 270;
+  const int16_t ends[8][2] = {{330, 110}, {440, 90}, {550, 120}, {340, 440}, {550, 430}, {320, 270}, {560, 300}, {420, 450}};
+  const uint16_t colours[3] = {spikeRgb(201, 148, 0), spikeRgb(47, 122, 216), spikeRgb(47, 154, 82)};
+  for (int i = 0; i < spikeLines && i < 8; i++)
+  {
+    spikeLineSet[i] = {ends[i][0], ends[i][1], bx, by, colours[i % 3]};
+    for (int w = -3; w <= 3; w++)
+    {
+      const bool steep = abs(by - ends[i][1]) > abs(bx - ends[i][0]);
+      if (steep) canvas->drawLine(ends[i][0] + w, ends[i][1], bx + w, by, spikeRgb(60, 60, 60));
+      else canvas->drawLine(ends[i][0], ends[i][1] + w, bx, by + w, spikeRgb(60, 60, 60));
+    }
+  }
+  canvas->fillCircle(bx, by, 14, spikeRgb(103, 80, 164));
+  canvas->clearRegion();
+  // The still picture, kept, to put back what a dot leaves.
+  if (!spikeStill) spikeStill = (uint16_t *)ps_malloc((size_t)SPIKE_W * SPIKE_H * sizeof(uint16_t));
+  const uint16_t *buf = canvas->getBuffer();
+  for (int16_t row = 0; row < SPIKE_H; row++)
+    memcpy(spikeStill + (size_t)row * SPIKE_W, buf + (size_t)(SPIKE_Y + row) * 800 + SPIKE_X, SPIKE_W * sizeof(uint16_t));
+  spikeDotCount = 0;
+  panel.blitRegion(canvas->getBuffer(), SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H);
+  spikeGeneration = renderGeneration;
+}
+
+static void spikeStart(int lines)
+{
+  spikeLines = lines < 0 ? 0 : (lines > 8 ? 8 : lines);
+  spikeSteps = spikeWindowSteps = 0;
+  spikeDotsUs = spikeWaveUs = spikeBlitUs = 0;
+  spikeStepsPerSecond = 0;
+  spikeWindowMs = spikeLastStepMs = millis();
+  if (spikeLines == 0) { renderAndPresent("energy spike off"); return; }
+  spikeDrawStill();
+}
+
+static void spikeStep()
+{
+  if (spikeLines == 0 || !canvas || displayIsOff) return;
+  const unsigned long now = millis();
+  if (now - spikeLastStepMs < SPIKE_STEP_MS) return;
+  const float dt = (now - spikeLastStepMs) / 1000.0f;
+  spikeLastStepMs = now;
+  // A full render repainted the area: the still picture again first.
+  if (renderGeneration != spikeGeneration) spikeDrawStill();
+
+  static int16_t rx[2 * SPIKE_MAX_DOTS + 1], ry[2 * SPIKE_MAX_DOTS + 1], rw[2 * SPIKE_MAX_DOTS + 1], rh[2 * SPIKE_MAX_DOTS + 1];
+  size_t rects = 0;
+  const uint32_t t0 = micros();
+  // The dots: old boxes back from the still picture, new ones drawn.
+  const int box = 2 * SPIKE_DOT_R + 2;
+  uint16_t *buf = canvas->getBuffer();
+  for (int d = 0; d < spikeDotCount; d++)
+  {
+    const int16_t x = spikeDotX[d] - SPIKE_DOT_R - 1, y = spikeDotY[d] - SPIKE_DOT_R - 1;
+    for (int16_t row = 0; row < box; row++)
+    {
+      const int16_t yy = y + row;
+      if (yy < SPIKE_Y || yy >= SPIKE_Y + SPIKE_H || x < SPIKE_X || x + box > SPIKE_X + SPIKE_W) continue;
+      memcpy(buf + (size_t)yy * 800 + x, spikeStill + (size_t)(yy - SPIKE_Y) * SPIKE_W + (x - SPIKE_X), box * sizeof(uint16_t));
+    }
+    rx[rects] = x; ry[rects] = y; rw[rects] = box; rh[rects] = box; rects++;
+  }
+  spikePhase = fmodf(spikePhase + dt / 1.2f, 1.0f);
+  spikeDotCount = 0;
+  for (int i = 0; i < spikeLines; i++)
+  {
+    const SpikeLine &l = spikeLineSet[i];
+    const float len = sqrtf((float)(l.x1 - l.x0) * (l.x1 - l.x0) + (float)(l.y1 - l.y0) * (l.y1 - l.y0));
+    const int count = (int)(len / 26.0f);
+    for (int k = 0; k < count && spikeDotCount < SPIKE_MAX_DOTS; k++)
+    {
+      const float f = (k + spikePhase) / count;
+      const int16_t x = (int16_t)(l.x0 + (l.x1 - l.x0) * f), y = (int16_t)(l.y0 + (l.y1 - l.y0) * f);
+      canvas->fillCircle(x, y, SPIKE_DOT_R, l.colour);
+      spikeDotX[spikeDotCount] = x; spikeDotY[spikeDotCount] = y; spikeDotCount++;
+      rx[rects] = x - SPIKE_DOT_R - 1; ry[rects] = y - SPIKE_DOT_R - 1; rw[rects] = box; rh[rects] = box; rects++;
+    }
+  }
+  const uint32_t t1 = micros();
+  // The wave: each column of the band one stroke in its colour of the moment.
+  // (Every other step was tried, 2026-10-11: a tap got slower, not quicker -
+  // the band's copy is owed by every buffer whichever present pays it.)
+  spikeWavePhase = fmodf(spikeWavePhase + dt / SPIKE_WAVE_SECONDS, 1.0f);
+  int16_t bx0 = SPIKE_W, bx1 = -1, by0 = 32767, by1 = -1;
+  for (int16_t x = 0; x < SPIKE_W && spikeWave; x++)
+  {
+    if (spikeColBottom[x] < spikeColTop[x]) continue;
+    canvas->drawFastVLine(x, spikeColTop[x], spikeColBottom[x] - spikeColTop[x] + 1, spikeWaveColour(x));
+    if (x < bx0) bx0 = x;
+    if (x > bx1) bx1 = x;
+    if (spikeColTop[x] < by0) by0 = spikeColTop[x];
+    if (spikeColBottom[x] > by1) by1 = spikeColBottom[x];
+  }
+  if (bx1 >= bx0) { rx[rects] = bx0; ry[rects] = by0; rw[rects] = bx1 - bx0 + 1; rh[rects] = by1 - by0 + 1; rects++; }
+  const uint32_t t2 = micros();
+  panel.blitRegions(buf, rx, ry, rw, rh, rects);
+  const uint32_t t3 = micros();
+  spikeDotsUs += t1 - t0;
+  spikeWaveUs += t2 - t1;
+  spikeBlitUs += t3 - t2;
+  spikeSteps++;
+  spikeWindowSteps++;
+  if (now - spikeWindowMs >= 2000)
+  {
+    spikeStepsPerSecond = spikeWindowSteps * 1000.0f / (now - spikeWindowMs);
+    spikeWindowSteps = 0;
+    spikeWindowMs = now;
+  }
+}
+
+static String spikeReport()
+{
+  if (spikeLines == 0) return "off (?set=energyspike=<lines> starts it, 1-8)";
+  const float n = spikeSteps ? (float)spikeSteps : 1.0f;
+  return String(spikeLines) + " lines, " + String(spikeDotCount) + " dots, " + (spikeWave ? "wave, " : "no wave, ") + String(spikeStepsPerSecond, 1) +
+         " steps/s, per step: dots " + String(spikeDotsUs / n / 1000.0f, 2) + " ms, wave " +
+         String(spikeWaveUs / n / 1000.0f, 2) + " ms, blit " + String(spikeBlitUs / n / 1000.0f, 2) + " ms";
+}
+
 void loop()
 {
+  spikeStep();
   if (restartAtMs && millis() >= restartAtMs) ESP.restart();
   if (!setupModeActive && wifi.tick() && noWifiScreenShown)
   {
