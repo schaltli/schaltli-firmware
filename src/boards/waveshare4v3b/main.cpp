@@ -384,6 +384,41 @@ static String lastTap = "none since boot";
 // was built; kept on the device so the claim stays checkable.
 static String lastFeedback = "none since boot";
 
+// How long a tap waits for its pressed look (designer
+// docs/2026-10-11-energy-diagram.md, success criterion 3): from the moment
+// the sample arrived - posted to /api/touch, or read from the panel - to the
+// press feedback being on the glass. The feedback's own cost above says
+// what the repaint takes; this adds whatever the loop was busy with before
+// it got to it, which is what anything moving on the screen would make
+// worse. The last 32 kept, for a median and a 90th percentile.
+static uint32_t contactSampleUs = 0;
+static bool tapLatencyOpen = false;
+static uint32_t tapLatencyUs[32];
+static uint8_t tapLatencyCount = 0, tapLatencyNext = 0;
+static void recordTapLatency(uint32_t us)
+{
+  tapLatencyUs[tapLatencyNext] = us;
+  tapLatencyNext = (tapLatencyNext + 1) % 32;
+  if (tapLatencyCount < 32) tapLatencyCount++;
+}
+static String tapLatencyReport()
+{
+  if (tapLatencyCount == 0) return "none since boot (?set=taplatency=clear resets)";
+  uint32_t sorted[32];
+  for (uint8_t i = 0; i < tapLatencyCount; i++) sorted[i] = tapLatencyUs[i];
+  for (uint8_t i = 1; i < tapLatencyCount; i++)
+  {
+    uint32_t v = sorted[i];
+    int j = i - 1;
+    while (j >= 0 && sorted[j] > v) { sorted[j + 1] = sorted[j]; j--; }
+    sorted[j + 1] = v;
+  }
+  const uint32_t median = sorted[tapLatencyCount / 2];
+  const uint32_t p90 = sorted[(tapLatencyCount * 9) / 10 >= tapLatencyCount ? tapLatencyCount - 1 : (tapLatencyCount * 9) / 10];
+  return String(tapLatencyCount) + " taps, median " + String(median / 1000.0f, 1) + " ms, p90 " +
+         String(p90 / 1000.0f, 1) + " ms, worst " + String(sorted[tapLatencyCount - 1] / 1000.0f, 1) + " ms";
+}
+
 // Touch feedback. The shared renderer has drawn all three of these states
 // from the start and this board had never asked for any of them: a finger
 // went down on a switch, a command went out, and the panel looked exactly
@@ -838,6 +873,7 @@ static void setupNetworking()
   testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
     injectX = x;
     injectY = y;
+    if (down && !injectDown) contactSampleUs = micros();
     injectDown = down;
     // A posted lift ends the window rather than extending it, so the
     // release runs against the real panel - which is also reading idle -
@@ -922,6 +958,7 @@ static void setupNetworking()
     out += "  popup: " + (openPopup >= 0 ? String("open, index ") + String(openPopup) : String("none open")) +
            " - last: " + lastPopup + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
+    out += "  tap latency: " + tapLatencyReport() + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
            String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";
@@ -1054,6 +1091,12 @@ static void setupNetworking()
       out += "  floor for touching every pixel once: 25 ms (see PanelBenchmark.h)\n";
 
       renderAndPresent("after render profile");
+    }
+    else if (setArg == "taplatency=clear")
+    {
+      tapLatencyCount = 0;
+      tapLatencyNext = 0;
+      out += "tap latency cleared\n";
     }
     else if (setArg == "swipes=1" || setArg == "swipes=clear")
     {
@@ -1468,6 +1511,11 @@ static void beginPressFeedback(int16_t x, int16_t y)
   feedbackH = hit->height;
   feedbackActive = true;
   renderFeedbackRegion("press");
+  if (tapLatencyOpen)
+  {
+    tapLatencyOpen = false;
+    recordTapLatency(micros() - contactSampleUs);
+  }
 }
 
 // The finger is gone, whatever it turned out to mean. Anything still shown
@@ -2443,6 +2491,10 @@ void loop()
     if (!holdActive)
     {
       holdActive = true;
+      // A finger from the panel arrives now; a posted one arrived when the
+      // request was handled (setTouchHandler).
+      if (!(injectUntilMs != 0 && injectDown)) contactSampleUs = micros();
+      tapLatencyOpen = true;
       holdStartX = touchX;
       holdStartY = touchY;
       contactStartX = touchX;
