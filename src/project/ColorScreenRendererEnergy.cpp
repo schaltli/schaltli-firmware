@@ -3,6 +3,7 @@
 // PolygonRaster and mixed in RGB565 in whole numbers exactly as the
 // designer's renderer does (components/canvas/renderers/
 // render-energy-diagram.ts), so the two are the same pixels.
+#include <algorithm>
 #include <array>
 #include <cmath>
 
@@ -63,12 +64,23 @@ void ColorScreenRenderer::energyInputs(const EnergyDiagramProps& e, std::vector<
 // pixel no shape has touched yet mixes into the screen's ground; one never
 // touched is left as the canvas has it. Kept in PSRAM between renders.
 namespace {
+uint32_t profPuts = 0, profFillUs = 0, profFills = 0;
 struct DiagramPixels {
   int w = 0, h = 0;
   uint16_t ground = 0xFFFF;
   uint16_t* data = nullptr;
+  // A pixel was touched this picture when it holds `mark`: no clearing of
+  // the whole buffer per picture (14 ms, 2026-10-12) - only when it wraps.
   uint8_t* touched = nullptr;
+  uint8_t mark = 1;
   size_t capacity = 0;
+  // What the picture shows (the diagram, its size, ground, variant and
+  // values): the same again - a swipe back to it, a redraw for something
+  // else - is the picture as it is, no shape drawn anew. The user's idea,
+  // 2026-10-12, for a swipe that waited on the diagram.
+  std::string key;
+  std::string id;  // the diagram it was last drawn for
+  bool reuse = false;
 
   void begin(int width, int height, uint16_t groundColour) {
     w = width > 0 ? width : 0;
@@ -81,22 +93,32 @@ struct DiagramPixels {
       data = (uint16_t*)ps_malloc(n * sizeof(uint16_t));
       touched = (uint8_t*)ps_malloc(n);
       capacity = data && touched ? n : 0;
+      if (capacity) memset(touched, 0, capacity);
+      mark = 0;
+      key.clear();
     }
     if (capacity < n) {
       w = h = 0;
       return;
     }
-    memset(touched, 0, n);
+    if (++mark == 0) {
+      memset(touched, 0, capacity);
+      mark = 1;
+    }
   }
 
   void put(int x, int y, uint16_t colour, int weight) {
+    profPuts++;
     if (x < 0 || y < 0 || x >= w || y >= h) return;
     const size_t i = (size_t)y * w + x;
-    data[i] = ed::mix565(touched[i] ? data[i] : ground, colour, weight);
-    touched[i] = 1;
+    data[i] = ed::mix565(touched[i] == mark ? data[i] : ground, colour, weight);
+    touched[i] = mark;
   }
 
   void fill(const std::vector<ed::Point8>& outline, uint16_t colour, int alpha = 256) {
+    if (reuse) return;
+    const uint32_t t0 = micros();
+    profFills++;
     std::vector<PolygonRaster::Point> pts;
     pts.reserve(outline.size());
     for (const ed::Point8& p : outline) pts.push_back({p.x, p.y});
@@ -106,17 +128,56 @@ struct DiagramPixels {
     };
     sink.partial = [&](int16_t y, int16_t x, uint8_t c) { put(x, y, colour, c * alpha / 16); };
     PolygonRaster::fill(pts, 0, (int16_t)(h - 1), sink);
+    profFillUs += micros() - t0;
   }
 
+  // Straight into the canvas's buffer, within its clip: a drawPixel per
+  // pixel of the diagram cost 39 ms (2026-10-12).
   void drawOn(ClippedCanvas16* canvas, int ox, int oy) const {
-    for (int y = 0; y < h; y++)
-      for (int x = 0; x < w; x++) {
-        const size_t i = (size_t)y * w + x;
-        if (touched[i]) canvas->drawPixel(ox + x, oy + y, data[i]);
+    int x0 = 0, y0 = 0, x1 = canvas->width(), y1 = canvas->height();
+    if (canvas->clipActive()) {
+      x0 = std::max(x0, (int)canvas->clipX());
+      y0 = std::max(y0, (int)canvas->clipY());
+      x1 = std::min(x1, (int)canvas->clipX() + canvas->clipW());
+      y1 = std::min(y1, (int)canvas->clipY() + canvas->clipH());
+    }
+    x0 = std::max(x0, ox);
+    y0 = std::max(y0, oy);
+    x1 = std::min(x1, ox + w);
+    y1 = std::min(y1, oy + h);
+    uint16_t* buf = canvas->getBuffer();
+    const int cw = canvas->width();
+    for (int y = y0; y < y1; y++) {
+      const size_t row = (size_t)(y - oy) * w;
+      uint16_t* dst = buf + (size_t)y * cw;
+      for (int x = x0; x < x1; x++) {
+        const size_t i = row + (x - ox);
+        if (touched[i] == mark) dst[x] = data[i];
       }
+    }
   }
 };
-DiagramPixels diagramPixels;
+// One picture per diagram, the three last drawn: a Sankey on one screen and
+// a Flow on the next would otherwise take the one picture from each other
+// on every swipe between them (the user, 2026-10-12).
+constexpr int KEPT_PICTURES = 3;
+DiagramPixels diagramPictures[KEPT_PICTURES];
+uint32_t pictureUsed[KEPT_PICTURES] = {0};
+uint32_t pictureClock = 0;
+
+// The picture kept for `id`, else the one used longest ago.
+DiagramPixels& pictureFor(const String& id) {
+  int pick = 0;
+  for (int i = 0; i < KEPT_PICTURES; i++) {
+    if (diagramPictures[i].id == id.c_str()) {
+      pick = i;
+      break;
+    }
+    if (pictureUsed[i] < pictureUsed[pick]) pick = i;
+  }
+  pictureUsed[pick] = ++pictureClock;
+  return diagramPictures[pick];
+}
 }  // namespace
 
 bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wavePhase, const EnergyDotPhases* dots) {
@@ -149,8 +210,24 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     return false;
   };
 
-  DiagramPixels& px = diagramPixels;
-  px.begin(obj.width, obj.height, ground);
+  const uint32_t tStart = micros();
+  profPuts = profFillUs = profFills = 0;
+  DiagramPixels& px = pictureFor(obj.id);
+  // Moving dots drawn in (a test's still frame) are never kept.
+  std::string key;
+  if (dots == nullptr) {
+    key = std::string(obj.id.c_str()) + "|" + std::to_string(obj.width) + "x" + std::to_string(obj.height) + "|" + std::to_string(ground) + "|" +
+          (projectLoader_.getProject().themeDark ? "d" : "l") + "|" + std::to_string(wavePhase);
+    for (const ed::Value& v : values)
+      key += "|" + (v.hasWatts ? std::to_string(v.watts) : std::string("-")) + "/" + (v.hasCharge ? std::to_string(v.charge) : std::string("-"));
+  }
+  px.reuse = !key.empty() && key == px.key && px.w == obj.width && px.h == obj.height;
+  if (!px.reuse) {
+    px.begin(obj.width, obj.height, ground);
+    px.key = key;
+    px.id = obj.id.c_str();
+  }
+  const uint32_t tBegin = micros();
   const ed::LabelMetrics m{(double)e.fontSize, (double)e.valueFontSize};
   ed::DiagramBoxes boxes;
   if (e.sankey) {
@@ -164,18 +241,38 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     // The bands first, each column one colour of its wave (decision 10).
     for (const ed::Band& band : layout.bands) {
       const std::array<int, 3> base = ed::expand565(colourFor(band.id));
-      auto column = [&](int x) {
-        const std::array<int, 3> c = ed::waveColour(base, groundRgb, x, wavePhase);
-        return ed::rgb565(c[0], c[1], c[2]);
+      // A column's colour by its x alone, worked out once per column: per
+      // pixel, the cos in software doubles cost a Sankey 3 s (2026-10-12).
+      static std::vector<uint16_t> columns;
+      columns.assign((size_t)std::max(0, obj.width), 0);
+      static std::vector<uint8_t> known;
+      known.assign((size_t)std::max(0, obj.width), 0);
+      auto column = [&](int x) -> uint16_t {
+        if (x < 0 || x >= obj.width) return 0;
+        if (!known[x]) {
+          const std::array<int, 3> c = ed::waveColour(base, groundRgb, x, wavePhase);
+          columns[x] = ed::rgb565(c[0], c[1], c[2]);
+          known[x] = 1;
+        }
+        return columns[x];
       };
       std::vector<PolygonRaster::Point> pts;
       for (const ed::Point8& p : ed::bandOutline(band)) pts.push_back({p.x, p.y});
       PolygonRaster::Sink sink;
+      // Whole pixels of a row straight in: at full weight a pixel is its
+      // column's colour, whatever was under it.
       sink.fullRun = [&](int16_t y, int16_t x0, int16_t x1) {
-        for (int x = x0; x <= x1; x++) px.put(x, y, column(x), 256);
+        if (y < 0 || y >= px.h) return;
+        const int a = std::max<int>(0, x0), b = std::min<int>(px.w - 1, x1);
+        uint16_t* data = px.data + (size_t)y * px.w;
+        uint8_t* touched = px.touched + (size_t)y * px.w;
+        for (int x = a; x <= b; x++) {
+          data[x] = column(x);
+          touched[x] = px.mark;
+        }
       };
       sink.partial = [&](int16_t y, int16_t x, uint8_t c) { px.put(x, y, column(x), c * 16); };
-      PolygonRaster::fill(pts, 0, (int16_t)(obj.height - 1), sink);
+      if (!px.reuse) PolygonRaster::fill(pts, 0, (int16_t)(obj.height - 1), sink);
     }
     px.fill(ed::rectOutline(layout.bus.x, layout.bus.y, layout.bus.width, layout.bus.height), parseHexColor(e.busColor));
     for (const ed::Bar& b : layout.bars) {
@@ -218,8 +315,10 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     }
     boxes = ed::flowBoxes(layout, m);
   }
+  const uint32_t tShapes = micros();
   canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
   px.drawOn(canvas_, obj.x, obj.y);
+  const uint32_t tDrawn = micros();
 
   // Names, lines and icons, at the core's boxes (contract 2.8).
   const ProjectConfig& project = projectLoader_.getProject();
@@ -274,6 +373,9 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     }
     label(b.label, node->name, node, r);
   }
+  const uint32_t tEnd = micros();
+  energyProfile_ = "begin " + String((tBegin - tStart) / 1000.0f, 1) + " ms, shapes " + String((tShapes - tBegin) / 1000.0f, 1) + " ms, onto the canvas " +
+                   String((tDrawn - tShapes) / 1000.0f, 1) + " ms, labels and icons " + String((tEnd - tDrawn) / 1000.0f, 1) + " ms; " + String(profFills) + " fills " + String(profFillUs / 1000.0f, 1) + " ms, " + String(profPuts) + " pixels";
   canvas_->clearClip();
   return true;
 }

@@ -978,6 +978,7 @@ static void setupNetworking()
     out += "  last feedback: " + lastFeedback + "\n";
     out += "  tap latency: " + tapLatencyReport() + "\n";
     out += "  energy motion: " + energyReport() + "\n";
+    if (renderer) out += "  energy draw: " + renderer->energyProfile() + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
            String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";

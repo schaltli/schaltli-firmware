@@ -187,6 +187,8 @@ public:
   // How often a diagram has been drawn: a board moving one takes its
   // measure again when this changes (a value, a screen, a region redraw).
   uint32_t energyDrawCount() const { return energyDrawCount_; }
+  // Where the last diagram drawn spent its time, for /api/debug.
+  const String& energyProfile() const { return energyProfile_; }
 
   // What moves in a diagram with Motion on (spec decision 10), worked out
   // from the values now: a Sankey's bands as the runs of whole pixels a
@@ -345,6 +347,7 @@ private:
   void energyInputs(const EnergyDiagramProps& e, std::vector<energydiagram::Node>& nodes,
                     std::vector<energydiagram::Value>& values) const;
   uint32_t energyDrawCount_ = 0;
+  String energyProfile_;
   bool renderLine(const ScreenObject& obj);
   bool renderLabel(const ScreenObject& obj);
   bool renderMQTTDataField(const ScreenObject& obj);
