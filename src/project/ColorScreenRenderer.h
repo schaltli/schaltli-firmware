@@ -212,6 +212,9 @@ public:
       bool gives = false;
       double watts = 0;
       uint16_t colour = 0;
+      // A storage's: its dots run on into its track (energydiagram::storageDots).
+      bool storage = false;
+      energydiagram::FlowNode node;  // on the canvas
     };
     std::vector<Line> lines;
   };

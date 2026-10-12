@@ -123,7 +123,11 @@ SankeyLayout sankeyLayout(const std::vector<Resolved>& nodes, Size size, double 
 constexpr double FLOW_NODE_R = 32;
 constexpr double FLOW_BUS_R = 14;
 constexpr double FLOW_LINE_GAP = 4;
-constexpr double FLOW_RING_GAP = 7;
+constexpr double FLOW_RING_GAP = 8;
+// The storage's track: this wide, the bar's colour mixed TRACK_ALPHA into
+// the ground (2026-10-12).
+constexpr double FLOW_RING_W = 10;
+constexpr double TRACK_ALPHA = 0.25;
 constexpr double FLOW_LABEL_GAP = 10;
 
 double lineWidth(double watts);
@@ -226,6 +230,21 @@ constexpr double DOT_GAP_FULL = 8;
 constexpr double DOT_R = 3.5;
 
 double dotGap(double watts);
+
+// The track's colour: the bar's mixed TRACK_ALPHA into the ground.
+std::array<int, 3> trackColour(const std::array<int, 3>& bar, const std::array<int, 3>& ground);
+
+// A storage's dots run on into its track (the designer's storageDots):
+// entering the bar, along its longer branch, fading, drawn lighter
+// (BAR_DOT_LIGHT towards white); entering the empty track, the shorter way
+// to the bar at TRACK_DOT_ALPHA; giving, backwards.
+constexpr double TRACK_DOT_ALPHA = 0.5;
+constexpr double BAR_DOT_LIGHT = 0.6;
+struct PathDot {
+    double x = 0, y = 0, alpha = 1;
+    bool onBar = false, onLine = false;
+};
+std::vector<PathDot> storageDots(const FlowLine& line, const FlowNode& node, double phase, bool gives, double watts);
 double advanceDots(double phase, double seconds, double watts);
 std::vector<Point> dotsOnLine(const FlowLine& line, double phase, bool gives, double watts);
 

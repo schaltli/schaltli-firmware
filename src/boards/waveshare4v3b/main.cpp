@@ -2439,12 +2439,19 @@ static void energyStep()
     {
       double &phase = energyDotPhase(std::string(a.id.c_str()) + "/" + l.id);
       phase = energydiagram::advanceDots(phase, dt, l.watts);
-      for (const energydiagram::Point &d : energydiagram::dotsOnLine(l.line, phase, l.gives, l.watts))
+      // A storage's dots run on into its track, lighter on the bar, fading.
+      std::vector<energydiagram::PathDot> path;
+      if (l.storage) path = energydiagram::storageDots(l.line, l.node, phase, l.gives, l.watts);
+      else
+        for (const energydiagram::Point &p : energydiagram::dotsOnLine(l.line, phase, l.gives, l.watts)) path.push_back({p.x, p.y, 1, false, true});
+      for (const energydiagram::PathDot &d : path)
       {
         const uint32_t td = micros();
+        const uint16_t ink = d.onBar ? energydiagram::mix565(l.colour, 0xFFFF, (int)energydiagram::jsRound(energydiagram::BAR_DOT_LIGHT * 256)) : l.colour;
+        const int strength = (int)energydiagram::jsRound(d.alpha * 256);
         ColorScreenRenderer::energyDotPixels(d.x, d.y, [&](int16_t x, int16_t y, uint8_t c) {
           if (x < 0 || y < 0 || x >= W || y >= H) return;
-          const uint16_t px = ColorScreenRenderer::energyBlend(src[(size_t)y * W + x], l.colour, c);
+          const uint16_t px = energydiagram::mix565(src[(size_t)y * W + x], ink, c * strength / 16);
           for (size_t f = 0; f < panel.bufferCount(); f++) panel.buffer(f)[(size_t)y * W + x] = px;
         });
         energyRasterUs += micros() - td;

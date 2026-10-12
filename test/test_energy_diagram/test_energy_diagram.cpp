@@ -309,6 +309,40 @@ static void rgb565_and_mixing() {
         TEST_ASSERT_EQUAL_UINT16(c["expected"].as<uint16_t>(), mix565(c["under"].as<uint16_t>(), c["over"].as<uint16_t>(), c["w"].as<int>()));
 }
 
+static void storage_dots_every_vector() {
+    int failures = 0;
+    const std::vector<Node> nodes = nodesOf();
+    for (JsonObjectConst c : doc["storageDots"].as<JsonArrayConst>()) {
+        const std::vector<Resolved> r = resolve(nodes, valuesOf(nodes, c["values"]));
+        const FlowLayout l = flowLayout(nodes, r);
+        const FlowLine* line = nullptr;
+        const FlowNode* node = nullptr;
+        const Resolved* rb = nullptr;
+        for (const FlowLine& x : l.lines)
+            if (x.id == "battery") line = &x;
+        for (const FlowNode& x : l.nodes)
+            if (x.id == "battery") node = &x;
+        for (const Resolved& x : r)
+            if (x.id == "battery") rb = &x;
+        const std::vector<PathDot> dots = storageDots(*line, *node, c["phase"] | 0.0, rb->gives, rb->watts);
+        JsonArrayConst e = c["expected"].as<JsonArrayConst>();
+        bool ok = dots.size() == e.size();
+        for (size_t i = 0; ok && i < dots.size(); i++) {
+            ok = near(dots[i].x, e[i][0] | 0.0) && near(dots[i].y, e[i][1] | 0.0) && near(dots[i].alpha, e[i][2] | 0.0) &&
+                 (dots[i].onBar ? 1 : 0) == (e[i][3] | -1) && (dots[i].onLine ? 1 : 0) == (e[i][4] | -1);
+        }
+        if (!ok) {
+            failures++;
+            std::printf("FAIL storage dots %s: %zu dots\n", c["name"].as<const char*>(), dots.size());
+        }
+    }
+    for (JsonObjectConst c : doc["trackColour"].as<JsonArrayConst>()) {
+        auto rgb = [](JsonArrayConst a) { return std::array<int, 3>{a[0] | 0, a[1] | 0, a[2] | 0}; };
+        if (trackColour(rgb(c["bar"]), rgb(c["ground"])) != rgb(c["expected"])) failures++;
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "storage dot vectors failed, see above");
+}
+
 static void watts_in_a_line() {
     TEST_ASSERT_EQUAL_STRING("92 W", withWatts("{watts} W", true, 92.4).c_str());
     TEST_ASSERT_EQUAL_STRING("93 W", withWatts("{watts} W", true, 92.5).c_str());
@@ -354,6 +388,7 @@ int main(int, char**) {
     RUN_TEST(dots_and_waves_every_vector);
     RUN_TEST(shapes_every_vector);
     RUN_TEST(rgb565_and_mixing);
+    RUN_TEST(storage_dots_every_vector);
     RUN_TEST(watts_in_a_line);
     RUN_TEST(a_tap);
     return UNITY_END();

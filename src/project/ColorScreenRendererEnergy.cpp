@@ -282,6 +282,7 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     boxes = ed::sankeyBoxes(layout, nodes, size, m);
   } else {
     const ed::FlowLayout layout = ed::flowLayout(nodes, resolved);
+    std::vector<std::pair<ed::PathDot, uint16_t>> storageDots;
     for (const ed::FlowLine& line : layout.lines) {
       const ed::Resolved* r = nullptr;
       for (const ed::Resolved& x : resolved)
@@ -296,7 +297,18 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
         for (const auto& d : *dots)
           if (d.first == line.id) phase = d.second;
       }
-      for (const ed::Point& d : ed::dotsOnLine(line, phase, r->gives, r->watts)) px.fill(ed::discOutline(d.x, d.y, ed::DOT_R), colour);
+      const ed::FlowNode* fn = nullptr;
+      for (const ed::FlowNode& x : layout.nodes)
+        if (x.id == line.id) fn = &x;
+      if (r->role == ed::Role::Storage && fn && fn->hasRing) {
+        // A storage's dots run on into its track, drawn over it below.
+        for (const ed::PathDot& d : ed::storageDots(line, *fn, phase, r->gives, r->watts)) {
+          if (d.onLine) px.fill(ed::discOutline(d.x, d.y, ed::DOT_R), colour);
+          else storageDots.push_back({d, colour});
+        }
+      } else {
+        for (const ed::Point& d : ed::dotsOnLine(line, phase, r->gives, r->watts)) px.fill(ed::discOutline(d.x, d.y, ed::DOT_R), colour);
+      }
     }
     px.fill(ed::discOutline(layout.busX, layout.busY, layout.busR), parseHexColor(e.busColor));
     for (const ed::FlowNode& fn : layout.nodes) {
@@ -305,13 +317,22 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
         if (x.id == fn.id) r = &x;
       const uint16_t colour = parseHexColor(fn.live ? colourOf(*r) : e.idleColor);
       if (fn.hasRing) {
-        px.fill(ed::ringOutline(fn.x, fn.y, fn.ringR + 2.5, fn.ringR - 2.5), parseHexColor(e.idleColor));
+        // The track: opaque, the bar's colour mixed into the ground beforehand,
+        // over the line's round end.
+        const double h = ed::FLOW_RING_W / 2;
+        const std::array<int, 3> track = ed::trackColour(ed::expand565(parseHexColor(colourOf(*r))), groundRgb);
+        px.fill(ed::ringOutline(fn.x, fn.y, fn.ringR + h, fn.ringR - h), ed::rgb565(track[0], track[1], track[2]));
         const int sweep = (int)ed::jsRound(fn.ringFraction * 360);
-        if (sweep > 0) px.fill(ed::arcOutline(fn.x, fn.y, fn.ringR, 5, sweep), parseHexColor(colourOf(*r)));
+        if (sweep > 0) px.fill(ed::arcOutline(fn.x, fn.y, fn.ringR, ed::FLOW_RING_W, sweep), parseHexColor(colourOf(*r)));
       }
       // The circle: a ring 3 px wide round the ground.
       px.fill(ed::discOutline(fn.x, fn.y, fn.r + 1.5), colour);
       px.fill(ed::discOutline(fn.x, fn.y, fn.r - 1.5), ground);
+    }
+    for (const auto& sd : storageDots) {
+      const ed::PathDot& d = sd.first;
+      const uint16_t ink = d.onBar ? ed::mix565(sd.second, 0xFFFF, (int)ed::jsRound(ed::BAR_DOT_LIGHT * 256)) : sd.second;
+      px.fill(ed::discOutline(d.x, d.y, ed::DOT_R), ink, (int)ed::jsRound(d.alpha * 256));
     }
     boxes = ed::flowBoxes(layout, m);
   }
@@ -440,6 +461,13 @@ std::vector<ColorScreenRenderer::EnergyAnimation> ColorScreenRenderer::energyAni
           l.gives = r.gives;
           l.watts = r.watts;
           l.colour = parseHexColor(colourOf(r));
+          for (const ed::FlowNode& fn : layout.nodes) {
+            if (fn.id != line.id || !fn.hasRing || r.role != ed::Role::Storage) continue;
+            l.storage = true;
+            l.node = fn;
+            l.node.x += obj.x;
+            l.node.y += obj.y;
+          }
           a.lines.push_back(l);
         }
       }

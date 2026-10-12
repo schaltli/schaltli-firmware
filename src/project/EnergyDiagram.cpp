@@ -204,7 +204,7 @@ FlowLayout flowLayout(const std::vector<Node>& nodes, const std::vector<Resolved
         const double len = std::sqrt(dx * dx + dy * dy);
         const double ux = len > 0 ? dx / len : 0, uy = len > 0 ? dy / len : 0;
         const bool ringed = n.role == Role::Storage;
-        const double outer = FLOW_NODE_R + (ringed ? FLOW_RING_GAP : 0);
+        const double outer = FLOW_NODE_R + (ringed ? FLOW_RING_GAP + FLOW_RING_W / 2 : 0);
         FlowNode node;
         node.id = n.id;
         node.x = n.x;
@@ -217,7 +217,7 @@ FlowLayout flowLayout(const std::vector<Node>& nodes, const std::vector<Resolved
             node.labelBeside = true;
         } else {
             node.labelX = n.x;
-            node.labelY = n.y + FLOW_NODE_R + (ringed ? 26 : 20);
+            node.labelY = n.y + FLOW_NODE_R + (ringed ? 30 : 20);
         }
         if (ringed) {
             node.hasRing = true;
@@ -225,11 +225,13 @@ FlowLayout flowLayout(const std::vector<Node>& nodes, const std::vector<Resolved
             node.ringFraction = n.hasCharge ? std::max(0.0, std::min(1.0, n.charge / 100)) : 0;
         }
         out.nodes.push_back(node);
-        if (len <= FLOW_NODE_R + FLOW_LINE_GAP + FLOW_BUS_R) continue;
+        // A storage's line ends at its track's outer edge.
+        const double start = ringed ? FLOW_NODE_R + FLOW_RING_GAP + FLOW_RING_W / 2 : FLOW_NODE_R + FLOW_LINE_GAP;
+        if (len <= start + FLOW_BUS_R) continue;
         FlowLine line;
         line.id = n.id;
-        line.x0 = n.x + ux * (FLOW_NODE_R + FLOW_LINE_GAP);
-        line.y0 = n.y + uy * (FLOW_NODE_R + FLOW_LINE_GAP);
+        line.x0 = n.x + ux * start;
+        line.y0 = n.y + uy * start;
         line.x1 = out.busX - ux * FLOW_BUS_R;
         line.y1 = out.busY - uy * FLOW_BUS_R;
         line.width = lineWidth(n.watts);
@@ -282,7 +284,7 @@ DiagramBoxes flowBoxes(const FlowLayout& layout, const LabelMetrics& m) {
     const double icon = flowIcon();
     for (const FlowNode& fn : layout.nodes) {
         const double top = fn.labelBeside ? fn.y - FLOW_NODE_R
-                                          : std::max(fn.labelY - jsRound(m.fontSize * 0.8), fn.y + (fn.hasRing ? fn.ringR + 4 : fn.r + 4));
+                                          : std::max(fn.labelY - jsRound(m.fontSize * 0.8), fn.y + (fn.hasRing ? fn.ringR + FLOW_RING_W / 2 + 4 : fn.r + 4));
         NodeBoxes b;
         b.id = fn.id;
         b.icon = {jsRound(fn.x - icon / 2), jsRound(fn.y - icon / 2), icon, icon};
@@ -456,6 +458,68 @@ std::vector<Point> dotsOnLine(const FlowLine& line, double phase, bool gives, do
     for (double d = phase * gap; d < len; d += gap) {
         const double f = gives ? d / len : 1 - d / len;
         out.push_back({line.x0 + (line.x1 - line.x0) * f, line.y0 + (line.y1 - line.y0) * f});
+    }
+    return out;
+}
+
+std::array<int, 3> trackColour(const std::array<int, 3>& bar, const std::array<int, 3>& ground) {
+    std::array<int, 3> out{};
+    for (int i = 0; i < 3; i++) out[i] = (int)jsRound(ground[i] + (bar[i] - ground[i]) * TRACK_ALPHA);
+    return out;
+}
+
+std::vector<PathDot> storageDots(const FlowLine& line, const FlowNode& node, double phase, bool gives, double watts) {
+    const double len = std::sqrt((line.x1 - line.x0) * (line.x1 - line.x0) + (line.y1 - line.y0) * (line.y1 - line.y0));
+    const double gap = dotGap(watts);
+    std::vector<PathDot> out;
+    const int sweep = node.hasRing ? std::max(0, std::min(360, (int)jsRound(node.ringFraction * 360))) : 0;
+    const double toBus = std::atan2(line.y1 - node.y, line.x1 - node.x);
+    const double entry = std::fmod(std::fmod(toBus * 180 / PI + 90, 360.0) + 360, 360.0);
+    double arc = 0;
+    int way = 1;
+    bool inBar = false;
+    if (node.hasRing && sweep > 0) {
+        if (entry <= sweep) {
+            inBar = true;
+            const double back = entry, on = sweep - entry;
+            way = on >= back ? 1 : -1;
+            arc = std::max(back, on);
+        } else {
+            const double back = entry - sweep, on = 360 - entry;
+            way = on <= back ? 1 : -1;
+            arc = std::min(back, on);
+        }
+    }
+    const double r = node.hasRing ? node.ringR : 0;
+    const double lineEnd = std::sqrt((line.x0 - node.x) * (line.x0 - node.x) + (line.y0 - node.y) * (line.y0 - node.y));
+    const double inward = node.hasRing && sweep > 0 ? std::max(0.0, lineEnd - r) : 0;
+    const double onLine = len + inward;
+    const double arcLen = arc / 360 * 2 * PI * r;
+    const double total = onLine + arcLen;
+    for (double d = phase * gap; d < total; d += gap) {
+        const double t = gives ? total - d : d;
+        PathDot p;
+        if (t <= len) {
+            const double f = 1 - t / len;
+            p.x = line.x0 + (line.x1 - line.x0) * f;
+            p.y = line.y0 + (line.y1 - line.y0) * f;
+            p.onLine = true;
+        } else if (t <= onLine) {
+            const double q = lineEnd - (t - len);
+            p.x = node.x + q * std::cos(toBus);
+            p.y = node.y + q * std::sin(toBus);
+            p.alpha = inBar ? 1 : TRACK_DOT_ALPHA;
+            p.onBar = inBar;
+        } else {
+            const double s = t - onLine;
+            const double deg = entry + way * s * 360 / (2 * PI * r);
+            const double rad = (deg - 90) * PI / 180;
+            p.x = node.x + r * std::cos(rad);
+            p.y = node.y + r * std::sin(rad);
+            p.alpha = inBar ? std::max(0.0, 1 - s / arcLen) : TRACK_DOT_ALPHA;
+            p.onBar = inBar;
+        }
+        if (p.alpha > 0) out.push_back(p);
     }
     return out;
 }
