@@ -347,15 +347,34 @@ std::vector<ColorScreenRenderer::EnergyAnimation> ColorScreenRenderer::energyAni
   return out;
 }
 
+// A moving dot, from a mask: its centre to the nearest eighth of a pixel,
+// each of the 64 masks rastered once (2026-10-12: rastering each dot anew
+// cost 46 ms a step for 31 dots - doubles are software on this chip). Only
+// the still picture is compared with the designer; a moving dot need only
+// look the same, and it does.
 void ColorScreenRenderer::energyDotPixels(double cx, double cy, const std::function<void(int16_t, int16_t, uint8_t)>& pixel) {
-  PolygonRaster::Sink sink;
-  sink.fullRun = [&](int16_t y, int16_t x0, int16_t x1) {
-    for (int16_t x = x0; x <= x1; x++) pixel(x, y, 16);
+  struct Pix {
+    int8_t dx, dy;
+    uint8_t c;
   };
-  sink.partial = [&](int16_t y, int16_t x, uint8_t c) { pixel(x, y, c); };
-  std::vector<PolygonRaster::Point> pts;
-  for (const ed::Point8& p : ed::discOutline(cx, cy, ed::DOT_R)) pts.push_back({p.x, p.y});
-  PolygonRaster::fill(pts, (int16_t)(cy - 6), (int16_t)(cy + 6), sink);
+  static std::vector<Pix> masks[64];
+  static bool made[64] = {false};
+  const int32_t qx = ed::toEighths(cx), qy = ed::toEighths(cy);
+  const int32_t ix = qx >> 3, iy = qy >> 3;  // floor, also below nought
+  const int key = (qx & 7) * 8 + (qy & 7);
+  if (!made[key]) {
+    std::vector<PolygonRaster::Point> pts;
+    for (const ed::Point8& p : ed::discOutline(8 + (qx & 7) / 8.0, 8 + (qy & 7) / 8.0, ed::DOT_R)) pts.push_back({p.x, p.y});
+    PolygonRaster::Sink sink;
+    std::vector<Pix>& mask = masks[key];
+    sink.fullRun = [&](int16_t y, int16_t x0, int16_t x1) {
+      for (int16_t x = x0; x <= x1; x++) mask.push_back({(int8_t)(x - 8), (int8_t)(y - 8), 16});
+    };
+    sink.partial = [&](int16_t y, int16_t x, uint8_t c) { mask.push_back({(int8_t)(x - 8), (int8_t)(y - 8), c}); };
+    PolygonRaster::fill(pts, 0, 20, sink);
+    made[key] = true;
+  }
+  for (const Pix& p : masks[key]) pixel((int16_t)(ix + p.dx), (int16_t)(iy + p.dy), p.c);
 }
 
 uint16_t ColorScreenRenderer::energyBlend(uint16_t under, uint16_t over, uint8_t coverage) {

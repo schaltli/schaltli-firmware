@@ -405,11 +405,9 @@ static void recordTapLatency(uint32_t us)
   tapLatencyNext = (tapLatencyNext + 1) % 32;
   if (tapLatencyCount < 32) tapLatencyCount++;
 }
-// The energy diagram's spike, defined before loop() (see there).
-static void spikeStart(int lines);
-static void spikeStep();
-static bool spikeWave = true;  // ?set=energyspike=<lines>,nowave: the dots alone
-static String spikeReport();
+// The energy diagram's motion, defined before loop() (see there).
+static void energyStep();
+static String energyReport();
 
 static String tapLatencyReport()
 {
@@ -979,7 +977,7 @@ static void setupNetworking()
            " - last: " + lastPopup + "\n";
     out += "  last feedback: " + lastFeedback + "\n";
     out += "  tap latency: " + tapLatencyReport() + "\n";
-    out += "  energy spike: " + spikeReport() + "\n";
+    out += "  energy motion: " + energyReport() + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
            String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";
@@ -1112,12 +1110,6 @@ static void setupNetworking()
       out += "  floor for touching every pixel once: 25 ms (see PanelBenchmark.h)\n";
 
       renderAndPresent("after render profile");
-    }
-    else if (setArg.startsWith("energyspike="))
-    {
-      spikeWave = setArg.indexOf("nowave") < 0;
-      spikeStart(setArg.substring(12).toInt());
-      out += "energy spike: " + spikeReport() + "\n";
     }
     else if (setArg == "taplatency=clear")
     {
@@ -1657,7 +1649,9 @@ static bool renderValueChangesPartial()
     // value is needed for that.
     // A live icon the same way, and a text through its live values - also
     // through a combined topic the changed topic feeds (contract 2.6).
-    if (obj.type == "text" || !obj.properties.liveIconId.isEmpty())
+    // An energy diagram the same way, as one box: a value moves its bands,
+    // lines and labels (contract 2.8).
+    if (obj.type == "text" || obj.type == "energy-diagram" || !obj.properties.liveIconId.isEmpty())
     {
       bool named = false;
       for (int i = 0; i < pendingTopicCount && !named; i++)
@@ -2258,6 +2252,25 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     return true;
   }
 
+  // A node of an energy diagram with an action (contract 2.8): the hit test
+  // only lets a diagram catch a tap on one.
+  if (hit->type == "energy-diagram")
+  {
+    const ButtonAction *action = renderer->energyActionAt(*hit, x - objX, y - objY);
+    if (action == nullptr) return false;
+    Serial.printf("[tap] energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());
+    lastTap = "(" + String(x) + "," + String(y) + ") energy diagram \"" + hit->id + "\" action " + action->type;
+    popupOriginKnown = true;
+    popupOriginX = x - 20;
+    popupOriginY = y - 20;
+    popupOriginW = 40;
+    popupOriginH = 40;
+    const ButtonAction copy = *action;
+    dispatchButtonAction(copy);
+    popupOriginKnown = false;
+    return true;
+  }
+
   const int states = (int)hit->properties.states.size();
   if (states <= 0 || hit->properties.writeTopic.isEmpty())
   {
@@ -2321,219 +2334,181 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
 }
 
 // ---------------------------------------------------------------------------
-// The energy diagram's spike (designer docs/2026-10-11-energy-diagram.md,
-// decision 14; tasks/energy-diagram-plan.md, S3). Not a feature: it answers
-// whether this board can keep dots running along a diagram's lines and a
-// soft wave running through a Sankey band while it stays quick to a tap.
-// ?set=energyspike=<lines> draws, left of x = 580, one band and <lines>
-// lines to a bus over whatever screen is shown, then moves them ten times a
-// second: each dot's old box restored from a copy of the still picture and
-// its new one drawn; each column of the band repainted as one vertical
-// stroke in its colour of the moment. ?set=energyspike=0 stops and redraws
-// the screen. /api/debug says how many steps a second it manages and what a
-// step costs, dots and wave apart.
+// The energy diagram's motion (designer docs/2026-10-11-energy-diagram.md,
+// decision 10; device contract 2.8): a Flow's dots running along its lines,
+// a Sankey's wave through its bands, for every diagram with Motion on that
+// the screen shows. Measured first in the spike (decision 14), whose way
+// this keeps: ten steps a second on a fixed grid at the end of loop(), none
+// while a finger is down; and everything painted straight into every
+// framebuffer, never owed by one, so no present - a tap's feedback
+// included - pays for it.
+//
+// The canvas keeps the still picture: a diagram drawn for motion has no
+// dots in it (ColorScreenRenderer), and a dot's old box is put back from
+// the canvas. The wave is painted into the canvas too, so that what is put
+// back is the band as it is now. Whatever redraws the diagram - a value, a
+// screen - changes the renderer's count of diagrams drawn, and the moving
+// parts are worked out again from the values then.
 // ---------------------------------------------------------------------------
-#include "../../project/PolygonRaster.h"
+static const uint32_t ENERGY_STEP_MS = 100;
+static std::vector<ColorScreenRenderer::EnergyAnimation> energyAnims;
+static uint32_t energySeenDraws = UINT32_MAX, energySeenGeneration = UINT32_MAX;
+static int energySeenScreen = -1;
+static double energyWave = 0;
+static std::vector<std::pair<std::string, double>> energyDotPhases;  // "<diagram>/<node>" -> phase
+struct EnergyDotBox { int16_t x, y; };
+static std::vector<EnergyDotBox> energyDotBoxes;
+static const int16_t ENERGY_DOT_BOX = 10;  // DOT_R 3.5, its soft edge and a pixel either side
+static unsigned long energyLastStepMs = 0, energyLastMotionMs = 0, energyWindowMs = 0;
+static uint32_t energySteps = 0, energyWindowSteps = 0, energyDotsUs = 0, energyWaveUs = 0, energyRestoreUs = 0, energyRasterUs = 0, energyFlushUs = 0;
+static float energyStepsPerSecond = 0;
+static size_t energyDotCount = 0;
 
-static const int16_t SPIKE_X = 0, SPIKE_Y = 60, SPIKE_W = 580, SPIKE_H = 420;
-static const uint32_t SPIKE_STEP_MS = 100;
-static const float SPIKE_WAVE_PX = 48.0f, SPIKE_WAVE_SECONDS = 4.0f;
-static const int SPIKE_DOT_R = 4;
-static int spikeLines = 0;
-static uint16_t *spikeStill = nullptr;  // the still picture of the spike's area
-static uint32_t spikeGeneration = 0;
-static unsigned long spikeLastStepMs = 0, spikeWindowMs = 0;
-static uint32_t spikeSteps = 0, spikeWindowSteps = 0, spikeDotsUs = 0, spikeWaveUs = 0, spikeBlitUs = 0;
-static float spikeStepsPerSecond = 0;
-static float spikePhase = 0, spikeWavePhase = 0;
-static int16_t spikeColTop[SPIKE_W], spikeColBottom[SPIKE_W];
-// The band's whole pixels row by row, for the wave's round two: rows are
-// what a framebuffer stores together, so a row's run is one copy.
-static int16_t spikeRowX0[SPIKE_H], spikeRowX1[SPIKE_H];
-// One row of the wave's colours, in internal RAM: the source of every copy.
-static DRAM_ATTR uint16_t spikeWaveRow[SPIKE_W];
-struct SpikeLine { int16_t x0, y0, x1, y1; uint16_t colour; };
-static SpikeLine spikeLineSet[8];
-static const int SPIKE_MAX_DOTS = 96;
-static int16_t spikeDotX[SPIKE_MAX_DOTS], spikeDotY[SPIKE_MAX_DOTS];
-static int spikeDotCount = 0;
-
-static uint16_t spikeRgb(uint8_t r, uint8_t g, uint8_t b) { return ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3); }
-static const uint8_t SPIKE_BAND[3] = {224, 108, 31};  // energyEngine, light
-
-// The band's colour at a column: 0.42 - 0.16 cos towards the black ground.
-static uint16_t spikeWaveColour(int16_t x)
+static double &energyDotPhase(const std::string &key)
 {
-  const float t = 0.42f - 0.16f * cosf(2.0f * PI * ((x - spikeWavePhase * SPIKE_WAVE_PX) / SPIKE_WAVE_PX));
-  return spikeRgb((uint8_t)(SPIKE_BAND[0] * (1 - t)), (uint8_t)(SPIKE_BAND[1] * (1 - t)), (uint8_t)(SPIKE_BAND[2] * (1 - t)));
+  for (auto &p : energyDotPhases)
+    if (p.first == key) return p.second;
+  energyDotPhases.push_back({key, 0.0});
+  return energyDotPhases.back().second;
 }
 
-static void spikeDrawStill()
+// Rows y0..y1 out of the cache, in every framebuffer.
+static void energyWriteBack(int16_t y0, int16_t y1)
 {
-  canvas->setRegion(SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H);
-  canvas->fillRect(SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H, 0x0000);
-  // The band: a cubic outline flattened to 24 segments a side, as the core will.
-  std::vector<PolygonRaster::Point> band;
-  auto ease = [](float t) { return t * t * (3 - 2 * t); };
-  for (int i = 0; i <= 24; i++) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(80 + 150 * ease(t))}); }
-  for (int i = 24; i >= 0; i--) { float t = i / 24.0f; band.push_back({PolygonRaster::toEighths(30 + 250 * t), PolygonRaster::toEighths(250 + 150 * ease(t))}); }
-  for (int x = 0; x < SPIKE_W; x++) { spikeColTop[x] = 32767; spikeColBottom[x] = -1; }
-  for (int y = 0; y < SPIKE_H; y++) { spikeRowX0[y] = 32767; spikeRowX1[y] = -1; }
-  PolygonRaster::Sink sink;
-  sink.fullRun = [](int16_t y, int16_t x0, int16_t x1) {
-    for (int16_t x = x0; x <= x1; x++)
-    {
-      canvas->drawPixel(x, y, spikeWaveColour(x));
-      if (x >= 0 && x < SPIKE_W) { if (y < spikeColTop[x]) spikeColTop[x] = y; if (y > spikeColBottom[x]) spikeColBottom[x] = y; }
-      const int ry = y - SPIKE_Y;
-      if (ry >= 0 && ry < SPIKE_H) { if (x < spikeRowX0[ry]) spikeRowX0[ry] = x; if (x > spikeRowX1[ry]) spikeRowX1[ry] = x; }
-    }
-  };
-  sink.partial = [](int16_t y, int16_t x, uint8_t c) {
-    const float a = c / 16.0f * 0.58f;
-    canvas->drawPixel(x, y, spikeRgb((uint8_t)(SPIKE_BAND[0] * a), (uint8_t)(SPIKE_BAND[1] * a), (uint8_t)(SPIKE_BAND[2] * a)));
-  };
-  PolygonRaster::fill(band, SPIKE_Y, SPIKE_Y + SPIKE_H - 1, sink);
-  // The lines to the bus, faint, and the bus.
-  const int16_t bx = 440, by = 270;
-  const int16_t ends[8][2] = {{330, 110}, {440, 90}, {550, 120}, {340, 440}, {550, 430}, {320, 270}, {560, 300}, {420, 450}};
-  const uint16_t colours[3] = {spikeRgb(201, 148, 0), spikeRgb(47, 122, 216), spikeRgb(47, 154, 82)};
-  for (int i = 0; i < spikeLines && i < 8; i++)
+  const int16_t H = canvas->height();
+  y0 = max<int16_t>(0, y0);
+  y1 = min<int16_t>(H - 1, y1);
+  for (size_t f = 0; f < panel.bufferCount() && y1 >= y0; f++) panel.writeBack(f, y0, y1);
+}
+
+
+
+// A dot's old box back from the canvas into every framebuffer.
+static void energyRestoreDots(int16_t &rowLo, int16_t &rowHi)
+{
+  const uint16_t *src = canvas->getBuffer();
+  const int16_t W = canvas->width(), H = canvas->height();
+  for (const EnergyDotBox &b : energyDotBoxes)
   {
-    spikeLineSet[i] = {ends[i][0], ends[i][1], bx, by, colours[i % 3]};
-    for (int w = -3; w <= 3; w++)
+    const int16_t x0 = max<int16_t>(0, b.x), x1 = min<int16_t>(W, b.x + ENERGY_DOT_BOX);
+    if (x1 <= x0) continue;
+    for (int16_t y = max<int16_t>(0, b.y); y < min<int16_t>(H, b.y + ENERGY_DOT_BOX); y++)
     {
-      const bool steep = abs(by - ends[i][1]) > abs(bx - ends[i][0]);
-      if (steep) canvas->drawLine(ends[i][0] + w, ends[i][1], bx + w, by, spikeRgb(60, 60, 60));
-      else canvas->drawLine(ends[i][0], ends[i][1] + w, bx, by + w, spikeRgb(60, 60, 60));
+      for (size_t f = 0; f < panel.bufferCount(); f++)
+        memcpy(panel.buffer(f) + (size_t)y * W + x0, src + (size_t)y * W + x0, (size_t)(x1 - x0) * sizeof(uint16_t));
     }
+    rowLo = min(rowLo, b.y);
+    rowHi = max<int16_t>(rowHi, b.y + ENERGY_DOT_BOX - 1);
   }
-  canvas->fillCircle(bx, by, 14, spikeRgb(103, 80, 164));
-  canvas->clearRegion();
-  // The still picture, kept, to put back what a dot leaves.
-  if (!spikeStill) spikeStill = (uint16_t *)ps_malloc((size_t)SPIKE_W * SPIKE_H * sizeof(uint16_t));
-  const uint16_t *buf = canvas->getBuffer();
-  for (int16_t row = 0; row < SPIKE_H; row++)
-    memcpy(spikeStill + (size_t)row * SPIKE_W, buf + (size_t)(SPIKE_Y + row) * 800 + SPIKE_X, SPIKE_W * sizeof(uint16_t));
-  spikeDotCount = 0;
-  panel.blitRegion(canvas->getBuffer(), SPIKE_X, SPIKE_Y, SPIKE_W, SPIKE_H);
-  spikeGeneration = renderGeneration;
+  energyDotBoxes.clear();
 }
 
-static void spikeStart(int lines)
+static void energyStep()
 {
-  spikeLines = lines < 0 ? 0 : (lines > 8 ? 8 : lines);
-  spikeSteps = spikeWindowSteps = 0;
-  spikeDotsUs = spikeWaveUs = spikeBlitUs = 0;
-  spikeStepsPerSecond = 0;
-  spikeWindowMs = spikeLastStepMs = millis();
-  if (spikeLines == 0) { renderAndPresent("energy spike off"); return; }
-  spikeDrawStill();
-}
-
-static void spikeStep()
-{
-  // A touch goes first (spec decision: «a touch, a swipe or another
-  // object's redraw goes first»): no step while a finger is down, and the
-  // step runs at the end of loop(), after the touch was read - at the start
-  // it ran before a sample that had just arrived, and a tap waited for it.
-  if (spikeLines == 0 || !canvas || displayIsOff || holdActive) return;
-  // Steps on a fixed 100 ms grid, not 100 ms after the last one: the loop's
-  // own turn would stretch every gap and the rate would sag below ten.
+  if (!canvas || !renderer || displayIsOff || holdActive || openPopup >= 0 || swipe.active() || setupModeActive) return;
   const unsigned long now = millis();
-  if (now - spikeLastStepMs < SPIKE_STEP_MS) return;
-  static unsigned long lastMotionMs = 0;
-  const float dt = (lastMotionMs ? now - lastMotionMs : SPIKE_STEP_MS) / 1000.0f;
-  lastMotionMs = now;
-  spikeLastStepMs += SPIKE_STEP_MS;
-  if (now - spikeLastStepMs >= 2 * SPIKE_STEP_MS) spikeLastStepMs = now;
-  // A full render repainted the area: the still picture again first.
-  if (renderGeneration != spikeGeneration) spikeDrawStill();
+  if (now - energyLastStepMs < ENERGY_STEP_MS) return;
+  const double dt = (energyLastMotionMs ? now - energyLastMotionMs : ENERGY_STEP_MS) / 1000.0;
+  energyLastMotionMs = now;
+  energyLastStepMs += ENERGY_STEP_MS;
+  if (now - energyLastStepMs >= 2 * ENERGY_STEP_MS) energyLastStepMs = now;
 
-  static int16_t rx[2 * SPIKE_MAX_DOTS + 1], ry[2 * SPIKE_MAX_DOTS + 1], rw[2 * SPIKE_MAX_DOTS + 1], rh[2 * SPIKE_MAX_DOTS + 1];
-  size_t rects = 0;
+  const int screen = activeScreen();
+  int16_t rowLo = INT16_MAX, rowHi = -1;
   const uint32_t t0 = micros();
-  // The dots: old boxes back from the still picture, new ones drawn.
-  const int box = 2 * SPIKE_DOT_R + 2;
-  uint16_t *buf = canvas->getBuffer();
-  for (int d = 0; d < spikeDotCount; d++)
+  const uint32_t tr = micros();
+  energyRestoreDots(rowLo, rowHi);
+  energyRestoreUs += micros() - tr;
+  if (renderer->energyDrawCount() != energySeenDraws || renderGeneration != energySeenGeneration || screen != energySeenScreen)
   {
-    const int16_t x = spikeDotX[d] - SPIKE_DOT_R - 1, y = spikeDotY[d] - SPIKE_DOT_R - 1;
-    for (int16_t row = 0; row < box; row++)
-    {
-      const int16_t yy = y + row;
-      if (yy < SPIKE_Y || yy >= SPIKE_Y + SPIKE_H || x < SPIKE_X || x + box > SPIKE_X + SPIKE_W) continue;
-      memcpy(buf + (size_t)yy * 800 + x, spikeStill + (size_t)(yy - SPIKE_Y) * SPIKE_W + (x - SPIKE_X), box * sizeof(uint16_t));
-    }
-    rx[rects] = x; ry[rects] = y; rw[rects] = box; rh[rects] = box; rects++;
+    energyAnims = renderer->energyAnimations(screen);
+    energySeenDraws = renderer->energyDrawCount();
+    energySeenGeneration = renderGeneration;
+    energySeenScreen = screen;
   }
-  spikePhase = fmodf(spikePhase + dt / 1.2f, 1.0f);
-  spikeDotCount = 0;
-  for (int i = 0; i < spikeLines; i++)
+  if (energyAnims.empty()) return;
+
+  // The dots: on by their pace, drawn over the still picture into every framebuffer.
+  const uint16_t *src = canvas->getBuffer();
+  const int16_t W = canvas->width(), H = canvas->height();
+  energyDotCount = 0;
+  for (const auto &a : energyAnims)
   {
-    const SpikeLine &l = spikeLineSet[i];
-    const float len = sqrtf((float)(l.x1 - l.x0) * (l.x1 - l.x0) + (float)(l.y1 - l.y0) * (l.y1 - l.y0));
-    const int count = (int)(len / 26.0f);
-    for (int k = 0; k < count && spikeDotCount < SPIKE_MAX_DOTS; k++)
+    for (const auto &l : a.lines)
     {
-      const float f = (k + spikePhase) / count;
-      const int16_t x = (int16_t)(l.x0 + (l.x1 - l.x0) * f), y = (int16_t)(l.y0 + (l.y1 - l.y0) * f);
-      canvas->fillCircle(x, y, SPIKE_DOT_R, l.colour);
-      spikeDotX[spikeDotCount] = x; spikeDotY[spikeDotCount] = y; spikeDotCount++;
-      rx[rects] = x - SPIKE_DOT_R - 1; ry[rects] = y - SPIKE_DOT_R - 1; rw[rects] = box; rh[rects] = box; rects++;
+      double &phase = energyDotPhase(std::string(a.id.c_str()) + "/" + l.id);
+      phase = energydiagram::advanceDots(phase, dt, l.watts);
+      for (const energydiagram::Point &d : energydiagram::dotsOnLine(l.line, phase, l.gives, l.watts))
+      {
+        const uint32_t td = micros();
+        ColorScreenRenderer::energyDotPixels(d.x, d.y, [&](int16_t x, int16_t y, uint8_t c) {
+          if (x < 0 || y < 0 || x >= W || y >= H) return;
+          const uint16_t px = ColorScreenRenderer::energyBlend(src[(size_t)y * W + x], l.colour, c);
+          for (size_t f = 0; f < panel.bufferCount(); f++) panel.buffer(f)[(size_t)y * W + x] = px;
+        });
+        energyRasterUs += micros() - td;
+        const EnergyDotBox box{(int16_t)(lroundf(d.x) - ENERGY_DOT_BOX / 2), (int16_t)(lroundf(d.y) - ENERGY_DOT_BOX / 2)};
+        rowLo = min(rowLo, box.y);
+        rowHi = max<int16_t>(rowHi, box.y + ENERGY_DOT_BOX - 1);
+        energyDotBoxes.push_back(box);
+        energyDotCount++;
+      }
     }
   }
   const uint32_t t1 = micros();
-  // The wave, round two (2026-10-11): one row of colours worked out in
-  // internal RAM - a column's colour depends on its x alone -, then each row
-  // of the band copied from it straight into every framebuffer and the
-  // canvas, and written back out of the cache. Painted so, the band is owed
-  // by no buffer, and no present pays for it. (Round one repainted the
-  // canvas and owed the band's rectangle: a tap got 66 % slower. Every
-  // other step was tried too: slower still.)
-  spikeWavePhase = fmodf(spikeWavePhase + dt / SPIKE_WAVE_SECONDS, 1.0f);
-  if (spikeWave)
+
+  // The wave: a row of colours per band - a column's colour is by its x
+  // alone -, then each run of the band's whole pixels copied from it into
+  // the canvas and every framebuffer.
+  energyWave = energydiagram::advanceWave(energyWave, dt);
+  static std::vector<uint16_t> row;
+  row.resize(W);
+  uint16_t *canvasBuf = canvas->getBuffer();
+  for (const auto &a : energyAnims)
   {
-    for (int16_t x = 0; x < SPIKE_W; x++) spikeWaveRow[x] = spikeWaveColour(x);
-    int16_t first = -1, last = -1;
-    for (size_t b = 0; b <= panel.bufferCount(); b++)
+    if (!a.sankey) continue;
+    for (uint8_t band = 0; band < a.bandRgb.size(); band++)
     {
-      uint16_t *dst = b < panel.bufferCount() ? panel.buffer(b) : buf;
-      for (int16_t row = 0; row < SPIKE_H; row++)
+      int16_t lo = INT16_MAX, hi = -1;
+      for (const auto &r : a.runs)
+        if (r.band == band) { lo = min(lo, r.x0); hi = max(hi, r.x1); }
+      if (hi < lo) continue;
+      for (int16_t x = lo; x <= hi; x++) row[x] = ColorScreenRenderer::energyWaveColour(a, band, x, energyWave);
+      for (const auto &r : a.runs)
       {
-        const int16_t x0 = spikeRowX0[row], x1 = spikeRowX1[row];
-        if (x1 < x0) continue;
-        if (first < 0) first = row;
-        last = row;
-        memcpy(dst + (size_t)(SPIKE_Y + row) * 800 + x0, spikeWaveRow + x0, (size_t)(x1 - x0 + 1) * sizeof(uint16_t));
+        if (r.band != band) continue;
+        const size_t at = (size_t)r.y * W + r.x0, n = (size_t)(r.x1 - r.x0 + 1) * sizeof(uint16_t);
+        memcpy(canvasBuf + at, row.data() + r.x0, n);
+        for (size_t f = 0; f < panel.bufferCount(); f++) memcpy(panel.buffer(f) + at, row.data() + r.x0, n);
+        rowLo = min(rowLo, r.y);
+        rowHi = max(rowHi, r.y);
       }
     }
-    if (first >= 0)
-      for (size_t b = 0; b < panel.bufferCount(); b++) panel.writeBack(b, SPIKE_Y + first, SPIKE_Y + last);
   }
+  // One range out of the cache: a box at a time cost more (2026-10-12).
+  const uint32_t tf = micros();
+  if (rowHi >= rowLo) energyWriteBack(rowLo, rowHi);
+  energyFlushUs += micros() - tf;
   const uint32_t t2 = micros();
-  panel.blitRegions(buf, rx, ry, rw, rh, rects);
-  const uint32_t t3 = micros();
-  spikeDotsUs += t1 - t0;
-  spikeWaveUs += t2 - t1;
-  spikeBlitUs += t3 - t2;
-  spikeSteps++;
-  spikeWindowSteps++;
-  if (now - spikeWindowMs >= 2000)
+  energyDotsUs += t1 - t0;
+  energyWaveUs += t2 - t1;
+  energySteps++;
+  energyWindowSteps++;
+  if (now - energyWindowMs >= 2000)
   {
-    spikeStepsPerSecond = spikeWindowSteps * 1000.0f / (now - spikeWindowMs);
-    spikeWindowSteps = 0;
-    spikeWindowMs = now;
+    energyStepsPerSecond = energyWindowSteps * 1000.0f / (now - energyWindowMs);
+    energyWindowSteps = 0;
+    energyWindowMs = now;
   }
 }
 
-static String spikeReport()
+static String energyReport()
 {
-  if (spikeLines == 0) return "off (?set=energyspike=<lines> starts it, 1-8)";
-  const float n = spikeSteps ? (float)spikeSteps : 1.0f;
-  return String(spikeLines) + " lines, " + String(spikeDotCount) + " dots, " + (spikeWave ? "wave, " : "no wave, ") + String(spikeStepsPerSecond, 1) +
-         " steps/s, per step: dots " + String(spikeDotsUs / n / 1000.0f, 2) + " ms, wave " +
-         String(spikeWaveUs / n / 1000.0f, 2) + " ms, blit " + String(spikeBlitUs / n / 1000.0f, 2) + " ms";
+  if (energyAnims.empty()) return "still (no diagram with Motion on this screen)";
+  const float n = energySteps ? (float)energySteps : 1.0f;
+  return String((unsigned)energyAnims.size()) + " diagram(s), " + String((unsigned)energyDotCount) + " dots, " + String(energyStepsPerSecond, 1) +
+         " steps/s, per step: dots " + String(energyDotsUs / n / 1000.0f, 2) + " ms (restore " + String(energyRestoreUs / n / 1000.0f, 2) + ", raster " +
+         String(energyRasterUs / n / 1000.0f, 2) + ", flush " + String(energyFlushUs / n / 1000.0f, 2) + "), wave " + String(energyWaveUs / n / 1000.0f, 2) + " ms";
 }
 
 void loop()
@@ -3076,8 +3051,8 @@ void loop()
     pendingTopicOverflow = false;
   }
 
-  // The energy diagram's spike, after the touch and the values (see there).
-  spikeStep();
+  // The energy diagram's motion, after the touch and the values (see there).
+  energyStep();
 
   {
     const uint32_t turn = micros() - turnStart;
