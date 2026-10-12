@@ -432,7 +432,8 @@
     "box",
     "switcher",
     "panel",
-    "navigator"
+    "navigator",
+    "energy-diagram"
   ],
   "supportsSoftwareButtons": true
 }
