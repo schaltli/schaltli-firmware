@@ -19,6 +19,7 @@
 #include <string>
 
 #include "project/EnergyDiagram.h"
+#include "project/PolygonRaster.h"
 
 using namespace energydiagram;
 
@@ -247,6 +248,67 @@ static void dots_and_waves_every_vector() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "dot and wave vectors failed, see above");
 }
 
+static void shapes_every_vector() {
+    JsonArrayConst cases = doc["shapes"].as<JsonArrayConst>();
+    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(8, cases.size(), "fewer shapes than the designer has");
+    int failures = 0;
+    for (JsonObjectConst c : cases) {
+        JsonArrayConst a = c["args"].as<JsonArrayConst>();
+        auto n = [&](int i) { return a[i].as<double>(); };
+        const std::string kind = c["kind"].as<std::string>();
+        std::vector<Point8> pts = kind == "disc"      ? discOutline(n(0), n(1), n(2))
+                                  : kind == "ring"    ? ringOutline(n(0), n(1), n(2), n(3))
+                                  : kind == "capsule" ? capsuleOutline(n(0), n(1), n(2), n(3), n(4))
+                                  : kind == "arc"     ? arcOutline(n(0), n(1), n(2), n(3), a[4].as<int>())
+                                  : kind == "bar"     ? barOutline(n(0), n(1), n(2), n(3), n(4), a[5].as<bool>())
+                                                      : rectOutline(n(0), n(1), n(2), n(3));
+        std::vector<PolygonRaster::Point> raster;
+        long long sumX = 0, sumY = 0;
+        for (const Point8& p : pts) {
+            raster.push_back({p.x, p.y});
+            sumX += p.x;
+            sumY += p.y;
+        }
+        long long full = 0, partial = 0, coverage = 0, weighted = 0;
+        PolygonRaster::Sink sink;
+        sink.fullRun = [&](int16_t y, int16_t x0, int16_t x1) {
+            for (int x = x0; x <= x1; x++) {
+                full++;
+                coverage += 16;
+                weighted += 16LL * (x * 7 + y * 13);
+            }
+        };
+        sink.partial = [&](int16_t y, int16_t x, uint8_t cov) {
+            partial++;
+            coverage += cov;
+            weighted += (long long)cov * (x * 7 + y * 13);
+        };
+        PolygonRaster::fill(raster, 0, 2000, sink);
+        JsonObjectConst e = c["expected"];
+        if ((long long)pts.size() != (e["points"] | -1LL) || sumX != (e["sumX"] | -1LL) || sumY != (e["sumY"] | -1LL) || full != (e["full"] | -1LL) ||
+            partial != (e["partial"] | -1LL) || coverage != (e["coverage"] | -1LL) || weighted != (e["weighted"] | -1LL)) {
+            failures++;
+            std::printf("FAIL shape %s: %zu points, %lld %lld, full %lld partial %lld coverage %lld weighted %lld\n", c["name"].as<const char*>(), pts.size(), sumX,
+                        sumY, full, partial, coverage, weighted);
+        }
+    }
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "shape vectors failed, see above");
+}
+
+static void rgb565_and_mixing() {
+    for (JsonObjectConst c : doc["rgb565"].as<JsonArrayConst>()) {
+        const std::string hex = c["hex"].as<std::string>();
+        const long v = std::strtol(hex.c_str() + 1, nullptr, 16);
+        TEST_ASSERT_EQUAL_UINT16(c["expected"].as<uint16_t>(), rgb565((v >> 16) & 255, (v >> 8) & 255, v & 255));
+        const std::array<int, 3> e = expand565(c["expected"].as<uint16_t>());
+        TEST_ASSERT_EQUAL_INT(c["expanded"][0].as<int>(), e[0]);
+        TEST_ASSERT_EQUAL_INT(c["expanded"][1].as<int>(), e[1]);
+        TEST_ASSERT_EQUAL_INT(c["expanded"][2].as<int>(), e[2]);
+    }
+    for (JsonObjectConst c : doc["mix565"].as<JsonArrayConst>())
+        TEST_ASSERT_EQUAL_UINT16(c["expected"].as<uint16_t>(), mix565(c["under"].as<uint16_t>(), c["over"].as<uint16_t>(), c["w"].as<int>()));
+}
+
 static void watts_in_a_line() {
     TEST_ASSERT_EQUAL_STRING("92 W", withWatts("{watts} W", true, 92.4).c_str());
     TEST_ASSERT_EQUAL_STRING("93 W", withWatts("{watts} W", true, 92.5).c_str());
@@ -290,6 +352,8 @@ int main(int, char**) {
     RUN_TEST(flow_every_vector);
     RUN_TEST(boxes_every_vector);
     RUN_TEST(dots_and_waves_every_vector);
+    RUN_TEST(shapes_every_vector);
+    RUN_TEST(rgb565_and_mixing);
     RUN_TEST(watts_in_a_line);
     RUN_TEST(a_tap);
     return UNITY_END();

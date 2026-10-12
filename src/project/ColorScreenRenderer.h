@@ -11,6 +11,9 @@
 #include "PillRaster.h"
 #include "ArcRaster.h"
 #include "NavigatorLayout.h"
+#include "EnergyDiagram.h"
+#include "PolygonRaster.h"
+#include <array>
 #include <functional>
 
 // Color (RGB565) counterpart of schaltli-eink's ScreenRenderer -
@@ -177,6 +180,48 @@ public:
 
   // Every topic (bare) an object's live values read, combined topics
   // followed to the topics under them - what a device subscribes to.
+  // An energy diagram (contract 2.8) at a moment of its motion: the wave's
+  // phase and each line's dots' (by node id); none - everything at phase 0.
+  using EnergyDotPhases = std::vector<std::pair<std::string, double>>;
+  bool renderEnergyDiagram(const ScreenObject& obj, float wavePhase = 0, const EnergyDotPhases* dots = nullptr);
+  // How often a diagram has been drawn: a board moving one takes its
+  // measure again when this changes (a value, a screen, a region redraw).
+  uint32_t energyDrawCount() const { return energyDrawCount_; }
+
+  // What moves in a diagram with Motion on (spec decision 10), worked out
+  // from the values now: a Sankey's bands as the runs of whole pixels a
+  // column's colour is painted into, or a Flow's lines that carry watts.
+  // Places are on the canvas. Drawn for motion, a diagram's still picture
+  // has no dots: the board draws them, and never into the canvas.
+  struct EnergyAnimation {
+    String id;
+    bool sankey = false;
+    struct Run {
+      int16_t y, x0, x1;
+      uint8_t band;
+    };
+    std::vector<Run> runs;
+    std::vector<std::array<int, 3>> bandRgb;
+    std::array<int, 3> ground{{255, 255, 255}};
+    int16_t originX = 0;  // the diagram's x: a column's colour is by its x in the diagram
+    struct Line {
+      std::string id;
+      energydiagram::FlowLine line;  // on the canvas
+      bool gives = false;
+      double watts = 0;
+      uint16_t colour = 0;
+    };
+    std::vector<Line> lines;
+  };
+  std::vector<EnergyAnimation> energyAnimations(int screenIndex);
+  // The action of the node a tap at (x, y) in the diagram lands on, if it
+  // has one (decision 13); never the bus.
+  const ButtonAction* energyActionAt(const ScreenObject& obj, double x, double y) const;
+  // A dot's pixels at (cx, cy) on the canvas, each with its coverage 1..16.
+  static void energyDotPixels(double cx, double cy, const std::function<void(int16_t, int16_t, uint8_t)>& pixel);
+  static uint16_t energyBlend(uint16_t under, uint16_t over, uint8_t coverage);
+  // A band's colour at canvas column x at a wave phase.
+  static uint16_t energyWaveColour(const EnergyAnimation& a, uint8_t band, int16_t x, double wave);
   static std::vector<std::string> liveTopics(const ScreenObject& obj,
                                              const std::vector<combined::CombinedTopic>& combinedTopics);
 
@@ -297,6 +342,9 @@ private:
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
                      int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);
   bool renderBox(const ScreenObject& obj);
+  void energyInputs(const EnergyDiagramProps& e, std::vector<energydiagram::Node>& nodes,
+                    std::vector<energydiagram::Value>& values) const;
+  uint32_t energyDrawCount_ = 0;
   bool renderLine(const ScreenObject& obj);
   bool renderLabel(const ScreenObject& obj);
   bool renderMQTTDataField(const ScreenObject& obj);

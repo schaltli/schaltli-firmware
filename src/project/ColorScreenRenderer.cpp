@@ -555,6 +555,21 @@ std::vector<std::string> ColorScreenRenderer::liveTopics(const ScreenObject& obj
 
 bool ColorScreenRenderer::readsTopic(const ScreenObject& obj, const String& topic,
                                      const std::vector<combined::CombinedTopic>& combinedTopics) {
+  // An energy diagram reads its nodes' watts and charge, and its lines are
+  // live texts (contract 2.8).
+  if (obj.properties.energy) {
+    for (const EnergyNodeProps& n : obj.properties.energy->nodes) {
+      if (topic == n.topic || topic == n.chargeTopic) return true;
+      for (const EnergyLine& line : n.lines) {
+        ScreenObject text;
+        text.type = "text";
+        text.properties.text = line.text;
+        text.properties.liveValues = line.liveValues;
+        if (readsTopic(text, topic, combinedTopics)) return true;
+      }
+    }
+    return false;
+  }
   if (obj.type == "text") {
     const std::string text(obj.properties.text.c_str());
     if (placeholders::mayContainPlaceholder(text)) {
@@ -2618,6 +2633,7 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
   if (obj.type == "switcher") {
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
+  if (obj.type == "energy-diagram") return renderEnergyDiagram(obj);
   if (obj.type == "panel") {
     // Only ever meaningful as a tab-control's own child, handled by
     // renderTabControl() above - a stray top-level "panel" (malformed
@@ -2658,12 +2674,17 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     // (docs/2026-09-17-settable-level.md im Designer-Repo). Ohne Schreibtopic
     // nicht - ein Tank, den man nur liest, soll einen Finger nicht abfangen,
     // der in Wahrheit die Seite blaettern wollte.
-    if (!objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
+    //
+    // Ein Energiediagramm faengt nur auf einem Knoten mit Aktion (Vertrag
+    // 2.8): anderswo soll der Finger blaettern koennen.
+    const bool energy = o->type == "energy-diagram";
+    if (!energy && !objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
 
     const int16_t ox = dx + o->x;
     const int16_t oy = dy + o->y;
     if (x < ox || x >= ox + o->width) continue;
     if (y < oy || y >= oy + o->height) continue;
+    if (energy && energyActionAt(*o, x - ox, y - oy) == nullptr) continue;
     treffer = o;
     objX = ox;
     objY = oy;

@@ -13,6 +13,7 @@
 // designer; a renderer rounds them where it draws.
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -191,6 +192,32 @@ DiagramBoxes flowBoxes(const FlowLayout& layout, const LabelMetrics& m);
 // The node a tap at (x, y), relative to the diagram, lands on; "" for none.
 std::string nodeAtTap(bool sankey, const std::vector<Node>& nodes, const std::vector<Resolved>& resolved, Size size, double fullScale,
                       double x, double y);
+
+// ---- Shapes, pixel for pixel (energy-firmware, 2026-10-12): every shape
+// the diagram fills is an outline in eighths of a pixel, filled by
+// PolygonRaster and mixed in RGB565 in whole numbers - the designer does
+// the same (lib/polygon-raster.ts), so both draw the same pixels. Only
+// + - * / and square roots go into an outline, and the sines of whole
+// degrees from ArcSinTable.h.
+struct Point8 {
+    int32_t x = 0;
+    int32_t y = 0;
+};
+
+int32_t toEighths(double px);
+int circleStep(double r);
+std::vector<Point8> discOutline(double cx, double cy, double r);
+std::vector<Point8> ringOutline(double cx, double cy, double outer, double inner);
+std::vector<Point8> capsuleOutline(double x0, double y0, double x1, double y1, double width);
+std::vector<Point8> arcOutline(double cx, double cy, double r, double width, int sweep);
+std::vector<Point8> rectOutline(double x, double y, double width, double height);
+std::vector<Point8> barOutline(double x, double y, double width, double height, double radius, bool left);
+std::vector<Point8> bandOutline(const Band& band);
+
+uint16_t rgb565(int r, int g, int b);
+std::array<int, 3> expand565(uint16_t c);
+// `over` on `under` with weight w of 256, each channel rounded.
+uint16_t mix565(uint16_t under, uint16_t over, int w);
 
 // ---- Motion (spec decision 10)
 constexpr double DOT_PACE = 40;

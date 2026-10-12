@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "project/ArcSinTable.h"
+
 namespace energydiagram {
 
 namespace {
@@ -199,7 +201,7 @@ FlowLayout flowLayout(const std::vector<Node>& nodes, const std::vector<Resolved
     for (const Resolved& n : resolved) {
         const bool live = n.watts > 0;
         const double dx = out.busX - n.x, dy = out.busY - n.y;
-        const double len = std::hypot(dx, dy);
+        const double len = std::sqrt(dx * dx + dy * dy);
         const double ux = len > 0 ? dx / len : 0, uy = len > 0 ? dy / len : 0;
         const bool ringed = n.role == Role::Storage;
         const double outer = FLOW_NODE_R + (ringed ? FLOW_RING_GAP : 0);
@@ -305,6 +307,134 @@ std::string nodeAtTap(bool sankey, const std::vector<Node>& nodes, const std::ve
     return "";
 }
 
+// ---- Shapes
+
+namespace {
+
+double sinDeg(int deg) { return ARC_SIN_TABLE[((deg % 360) + 360) % 360] / (double)ARC_SIN_SCALE; }
+double cosDeg(int deg) { return sinDeg(deg + 90); }
+Point8 at8(double x, double y) { return {toEighths(x), toEighths(y)}; }
+
+}  // namespace
+
+int32_t toEighths(double px) {
+    const double e = px * 8;
+    return (int32_t)(e < 0 ? -std::floor(-e + 0.5) : std::floor(e + 0.5));
+}
+
+int circleStep(double r) { return r <= 4 ? 15 : r <= 16 ? 6 : r <= 40 ? 3 : 2; }
+
+std::vector<Point8> discOutline(double cx, double cy, double r) {
+    const int step = circleStep(r);
+    std::vector<Point8> out;
+    for (int d = 0; d < 360; d += step) out.push_back(at8(cx + r * cosDeg(d), cy + r * sinDeg(d)));
+    return out;
+}
+
+std::vector<Point8> ringOutline(double cx, double cy, double outer, double inner) {
+    std::vector<Point8> out = discOutline(cx, cy, outer);
+    out.push_back(out[0]);
+    const int step = circleStep(inner);
+    for (int d = 360; d >= 0; d -= step) out.push_back(at8(cx + inner * cosDeg(d), cy + inner * sinDeg(d)));
+    return out;
+}
+
+std::vector<Point8> capsuleOutline(double x0, double y0, double x1, double y1, double width) {
+    const double dx = x1 - x0, dy = y1 - y0;
+    const double len = std::sqrt(dx * dx + dy * dy);
+    const double ux = len > 0 ? dx / len : 1, uy = len > 0 ? dy / len : 0;
+    const double r = width / 2;
+    const int step = circleStep(r);
+    std::vector<Point8> out;
+    auto cap = [&](double cx, double cy, int from) {
+        for (int d = from; d <= from + 180; d += step) {
+            const double c = cosDeg(d), s = sinDeg(d);
+            out.push_back(at8(cx + r * (c * ux - s * uy), cy + r * (c * uy + s * ux)));
+        }
+    };
+    cap(x1, y1, -90);
+    cap(x0, y0, 90);
+    return out;
+}
+
+std::vector<Point8> arcOutline(double cx, double cy, double r, double width, int sweep) {
+    if (sweep >= 360) return ringOutline(cx, cy, r + width / 2, r - width / 2);
+    const double h = width / 2;
+    const int from = -90, to = -90 + sweep;
+    std::vector<Point8> out;
+    auto arc = [&](double radius, int a, int b) {
+        const int step = circleStep(radius);
+        if (a <= b) {
+            for (int d = a; d < b; d += step) out.push_back(at8(cx + radius * cosDeg(d), cy + radius * sinDeg(d)));
+        } else {
+            for (int d = a; d > b; d -= step) out.push_back(at8(cx + radius * cosDeg(d), cy + radius * sinDeg(d)));
+        }
+        out.push_back(at8(cx + radius * cosDeg(b), cy + radius * sinDeg(b)));
+    };
+    auto cap = [&](double ex, double ey, int a) {
+        const int step = circleStep(h);
+        for (int d = a; d <= a + 180; d += step) out.push_back(at8(ex + h * cosDeg(d), ey + h * sinDeg(d)));
+    };
+    arc(r + h, from, to);
+    cap(cx + r * cosDeg(to), cy + r * sinDeg(to), to);
+    arc(r - h, to, from);
+    cap(cx + r * cosDeg(from), cy + r * sinDeg(from), from + 180);
+    return out;
+}
+
+std::vector<Point8> rectOutline(double x, double y, double width, double height) {
+    return {at8(x, y), at8(x + width, y), at8(x + width, y + height), at8(x, y + height)};
+}
+
+std::vector<Point8> barOutline(double x, double y, double width, double height, double radius, bool left) {
+    std::vector<Point8> out;
+    auto corner = [&](double cx, double cy, int a) {
+        for (int d = a; d <= a + 90; d += 15) out.push_back(at8(cx + radius * cosDeg(d), cy + radius * sinDeg(d)));
+    };
+    if (left) {
+        out.push_back(at8(x + width, y));
+        out.push_back(at8(x + width, y + height));
+        if (radius > 0) {
+            corner(x + radius, y + height - radius, 90);
+            corner(x + radius, y + radius, 180);
+        } else {
+            out.push_back(at8(x, y + height));
+            out.push_back(at8(x, y));
+        }
+    } else {
+        out.push_back(at8(x, y));
+        if (radius > 0) {
+            corner(x + width - radius, y + radius, 270);
+            corner(x + width - radius, y + height - radius, 0);
+        } else {
+            out.push_back(at8(x + width, y));
+            out.push_back(at8(x + width, y + height));
+        }
+        out.push_back(at8(x, y + height));
+    }
+    return out;
+}
+
+std::vector<Point8> bandOutline(const Band& band) {
+    std::vector<Point8> out;
+    for (const Point& p : band.polygon) out.push_back(at8(p.x, p.y));
+    return out;
+}
+
+uint16_t rgb565(int r, int g, int b) { return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3)); }
+
+std::array<int, 3> expand565(uint16_t c) {
+    const int r5 = (c >> 11) & 0x1f, g6 = (c >> 5) & 0x3f, b5 = c & 0x1f;
+    return {{(r5 * 527 + 23) >> 6, (g6 * 259 + 33) >> 6, (b5 * 527 + 23) >> 6}};
+}
+
+uint16_t mix565(uint16_t under, uint16_t over, int w) {
+    if (w >= 256) return over;
+    if (w <= 0) return under;
+    const std::array<int, 3> u = expand565(under), o = expand565(over);
+    return rgb565((u[0] * (256 - w) + o[0] * w + 128) >> 8, (u[1] * (256 - w) + o[1] * w + 128) >> 8, (u[2] * (256 - w) + o[2] * w + 128) >> 8);
+}
+
 // ---- Motion
 
 double dotGap(double watts) {
@@ -320,7 +450,7 @@ static double wrap(double v) {
 double advanceDots(double phase, double seconds, double watts) { return wrap(phase + (seconds * DOT_PACE) / dotGap(watts)); }
 
 std::vector<Point> dotsOnLine(const FlowLine& line, double phase, bool gives, double watts) {
-    const double len = std::hypot(line.x1 - line.x0, line.y1 - line.y0);
+    const double len = std::sqrt((line.x1 - line.x0) * (line.x1 - line.x0) + (line.y1 - line.y0) * (line.y1 - line.y0));
     const double gap = dotGap(watts);
     std::vector<Point> out;
     for (double d = phase * gap; d < len; d += gap) {
