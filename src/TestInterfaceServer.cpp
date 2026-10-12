@@ -399,6 +399,7 @@ void TestInterfaceServer::handleProjectUploadChunk() {
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (uploadFile_) uploadFile_.write(upload.buf, upload.currentSize);
   } else if (upload.status == UPLOAD_FILE_END) {
+    installed_ = false;
     if (!uploadFile_) return;
     uploadFile_.close();
 
@@ -426,12 +427,12 @@ void TestInterfaceServer::handleProjectUploadChunk() {
 
     if (ok) {
       lastInstallError_ = "";
-      // Reboot to pick the newly-installed /PROJECT/project.json up fresh,
-      // rather than tearing down and rebuilding live render state
-      // mid-request. A HIL orchestrator polling for the device to come back
-      // already expects this.
-      delay(2000);
-      ESP.restart();
+      // Rebooted once the answer is out (handleProjectUploadComplete), to
+      // pick the newly-installed /PROJECT/project.json up fresh rather than
+      // rebuild live render state mid-request. Rebooting here, before it,
+      // left every caller without an answer: curl waited out its 25 s on
+      // each of 28 installs of a test:all (2026-10-12).
+      installed_ = true;
     } else {
       Serial.println("[TestInterface] install failed");
     }
@@ -439,7 +440,15 @@ void TestInterfaceServer::handleProjectUploadChunk() {
 }
 
 void TestInterfaceServer::handleProjectUploadComplete() {
-  sendJSONResponse(true, "Processing upload...");
+  if (!installed_) {
+    sendJSONResponse(false, lastInstallError_.isEmpty() ? String("install failed") : lastInstallError_);
+    return;
+  }
+  installed_ = false;
+  sendJSONResponse(true, "Installed - rebooting");
+  // A second for the answer to reach the caller before the reset.
+  delay(1000);
+  ESP.restart();
 }
 
 // Writes the incoming image into the app slot that is NOT running.

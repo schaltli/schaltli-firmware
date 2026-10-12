@@ -219,4 +219,7 @@ private:
   // spent two upload attempts looking like a device that simply ignored
   // them.
   String lastInstallError_;
+  // A project installed by the upload, its answer not yet sent: the reboot
+  // waits for it (handleProjectUploadComplete).
+  bool installed_ = false;
 };
