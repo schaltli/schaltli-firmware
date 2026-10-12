@@ -49,6 +49,7 @@ private:
   std::vector<CalibrationPoint> parseCalibrationPoints(JsonArray pointsArray);
   std::vector<Point> parseLinePoints(JsonArray pointsArray);
   ButtonAction parseButtonAction(JsonObject actionJson);
+  EnergyDiagramProps parseEnergyDiagram(JsonObject propsJson);
   std::vector<ScreenButtonAction> parseScreenButtonActions(JsonObject buttonActionsJson);
   void parseHardwareButtons(JsonArray hardwareButtonsArray);
 

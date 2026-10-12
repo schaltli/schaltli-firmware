@@ -53,6 +53,23 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
     f(state.iconPathActive, state.iconPathActiveDark);
   }
   for (ValueIconPair& pair : p.valueIconPairs) f(pair.path, pair.pathDark);
+  // The energy diagram's colours, its nodes' and their icons' looks (2.8).
+  if (p.energy) {
+    EnergyDiagramProps& e = *p.energy;
+    f(e.textColor, e.textColorDark);
+    f(e.mutedColor, e.mutedColorDark);
+    f(e.busColor, e.busColorDark);
+    f(e.idleColor, e.idleColorDark);
+    f(e.chargeColor, e.chargeColorDark);
+    f(e.dischargeColor, e.dischargeColorDark);
+    for (EnergyNodeProps& n : e.nodes) {
+      f(n.color, n.colorDark);
+      f(n.icon.live, n.icon.liveDark);
+      f(n.icon.charge, n.icon.chargeDark);
+      f(n.icon.discharge, n.icon.dischargeDark);
+      f(n.icon.muted, n.icon.mutedDark);
+    }
+  }
   for (ScreenObject& child : obj.children) forEachObjectPair(child, f);
 }
 

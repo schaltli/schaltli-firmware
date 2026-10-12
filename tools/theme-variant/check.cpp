@@ -89,6 +89,23 @@ static ProjectConfig sample() {
   level.properties.trackEdgeColorDark = "transparent";
   s.objects.push_back(level);
 
+  // An energy diagram (contract 2.8, 2026-10-12): its colours, a node's
+  // colour and its icon's looks.
+  ScreenObject energy;
+  energy.properties.energy.p.reset(new EnergyDiagramProps());
+  energy.properties.energy->busColor = "#6750a4";
+  energy.properties.energy->busColorDark = "#d0bcff";
+  energy.properties.energy->dischargeColor = "#d0453f";
+  energy.properties.energy->dischargeColorDark = "#ff8a80";
+  EnergyNodeProps node;
+  node.color = "#c99400";
+  node.colorDark = "#ffd54f";
+  node.icon.live = "/PROJECT/assets/n.bmp";
+  node.icon.liveDark = "/PROJECT/assets/n-dark.bmp";
+  node.icon.muted = "/PROJECT/assets/m.bmp";
+  energy.properties.energy->nodes.push_back(node);
+  s.objects.push_back(energy);
+
   p.screens.push_back(s);
   return p;
 }
@@ -107,6 +124,9 @@ static bool same(const ProjectConfig& a, const ProjectConfig& b) {
   if (!(x.objects[5].properties.strokeColorDark == y.objects[5].properties.strokeColorDark)) return false;
   if (!(x.objects[6].properties.fillEndColor == y.objects[6].properties.fillEndColor)) return false;
   if (!(x.objects[6].properties.trackColor == y.objects[6].properties.trackColor)) return false;
+  const EnergyDiagramProps& ex = *x.objects[7].properties.energy;
+  const EnergyDiagramProps& ey = *y.objects[7].properties.energy;
+  if (!(ex.busColor == ey.busColor) || !(ex.nodes[0].color == ey.nodes[0].color) || !(ex.nodes[0].icon.live == ey.nodes[0].icon.live)) return false;
   return true;
 }
 
@@ -133,6 +153,16 @@ int main() {
   expect(s.objects[6].properties.fillEndColor == "#3ee08f", "a level's gradient end");
   expect(s.objects[6].properties.trackColor == "#766b8f", "a level's track");
   expect(s.objects[6].properties.trackEdgeColor == "transparent", "a level's track edge, none in both");
+  const EnergyDiagramProps& e = *s.objects[7].properties.energy;
+  expect(e.busColor == "#d0bcff", "an energy diagram's bus");
+  expect(e.dischargeColor == "#ff8a80", "an energy diagram's discharge colour");
+  expect(e.nodes[0].color == "#ffd54f", "an energy node's colour");
+  expect(e.nodes[0].icon.live == "/PROJECT/assets/n-dark.bmp", "an energy node's live icon");
+  expect(e.nodes[0].icon.muted == "/PROJECT/assets/m.bmp", "a look without a dark bake keeps its own");
+  // A copied object has a diagram of its own: swapping the copy leaves the original.
+  ScreenObject copy = s.objects[7];
+  copy.properties.energy->busColor = "#000000";
+  expect(e.busColor == "#d0bcff", "a copy's diagram is its own");
 
   themevariant::apply(p, true);
   expect(s.backgroundColor == "#15202b", "dark twice is still dark, not light again");

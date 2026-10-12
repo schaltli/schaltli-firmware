@@ -414,6 +414,9 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
   }
+  if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
+    obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));
+  }
 
   // Recursive: only "switcher" and "panel" objects carry children in
   // practice, but parsing is generic (matches the designer's ScreenObject
@@ -861,6 +864,72 @@ std::vector<Point> ProjectLoader::parseLinePoints(JsonArray pointsArray) {
   }
 
   return points;
+}
+
+// The energy diagram's data (contract 2.8). Colours carry no default here:
+// the export always writes them.
+EnergyDiagramProps ProjectLoader::parseEnergyDiagram(JsonObject p) {
+  EnergyDiagramProps e;
+  e.sankey = String(p["mode"] | "flow") == "sankey";
+  e.motion = p["motion"] | true;
+  e.fullScale = p["fullScale"] | 1000.0f;
+  if (!(e.fullScale > 0)) e.fullScale = 1000;
+  e.fontId = p["fontId"] | "";
+  e.valueFontId = p["valueFontId"] | e.fontId.c_str();
+  e.fontSize = p["fontSize"] | 16;
+  e.valueFontSize = p["valueFontSize"] | e.fontSize;
+  e.textColor = p["textColor"] | "#1d1b20";
+  e.textColorDark = p["textColorDark"] | "";
+  e.mutedColor = p["mutedColor"] | "#49454f";
+  e.mutedColorDark = p["mutedColorDark"] | "";
+  e.busColor = p["busColor"] | "#6750a4";
+  e.busColorDark = p["busColorDark"] | "";
+  e.idleColor = p["idleColor"] | "#cac4d0";
+  e.idleColorDark = p["idleColorDark"] | "";
+  e.chargeColor = p["chargeColor"] | "#2f9a52";
+  e.chargeColorDark = p["chargeColorDark"] | "";
+  e.dischargeColor = p["dischargeColor"] | "#d0453f";
+  e.dischargeColorDark = p["dischargeColorDark"] | "";
+  if (!p["nodes"].is<JsonArray>()) return e;
+  for (JsonObject nj : p["nodes"].as<JsonArray>()) {
+    EnergyNodeProps n;
+    n.id = nj["id"] | "";
+    n.role = nj["role"] | "rest";
+    n.name = nj["name"] | "";
+    n.x = nj["x"] | 0.0f;
+    n.y = nj["y"] | 0.0f;
+    n.topic = nj["topic"] | "";
+    n.chargeTopic = nj["chargeTopic"] | "";
+    n.reverseSign = nj["reverseSign"] | false;
+    n.color = nj["color"] | "";
+    n.colorDark = nj["colorDark"] | "";
+    if (nj["icon"].is<JsonObject>()) {
+      JsonObject ij = nj["icon"];
+      n.hasIcon = true;
+      n.icon.size = ij["size"] | 0;
+      n.icon.live = resolveAssetPath(ij["live"] | "");
+      n.icon.liveDark = resolveAssetPath(ij["liveDark"] | "");
+      n.icon.charge = resolveAssetPath(ij["charge"] | "");
+      n.icon.chargeDark = resolveAssetPath(ij["chargeDark"] | "");
+      n.icon.discharge = resolveAssetPath(ij["discharge"] | "");
+      n.icon.dischargeDark = resolveAssetPath(ij["dischargeDark"] | "");
+      n.icon.muted = resolveAssetPath(ij["muted"] | "");
+      n.icon.mutedDark = resolveAssetPath(ij["mutedDark"] | "");
+    }
+    if (nj["lines"].is<JsonArray>()) {
+      for (JsonObject lj : nj["lines"].as<JsonArray>()) {
+        if (n.lines.size() >= 3) break;
+        EnergyLine line;
+        line.text = lj["text"] | "";
+        line.liveText = lj["liveText"] | "";
+        if (lj["liveValues"].is<JsonArray>()) line.liveValues = livevalue::parseLiveValues(lj["liveValues"].as<JsonArrayConst>());
+        n.lines.push_back(line);
+      }
+    }
+    if (nj["action"].is<JsonObject>()) n.action = parseButtonAction(nj["action"].as<JsonObject>());
+    e.nodes.push_back(n);
+  }
+  return e;
 }
 
 ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {

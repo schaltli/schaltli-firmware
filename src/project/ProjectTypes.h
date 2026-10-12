@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <memory>
 #include <vector>
 
 #include "PopupFence.h"
@@ -105,6 +106,72 @@ struct ButtonAction {
   // moves one step, and which way ("up"/"down"). main.cpp's adjustLevel().
   String targetObjectId;
   String direction;
+};
+
+// The energy diagram (designer docs/device-contract.md 2.8, generation
+// 1.7): its data as the export gives it. The places come from
+// EnergyDiagram.h, worked out from the topics' values when it is drawn.
+struct EnergyLine {
+  String text;      // `{watts}` filled in before it is resolved
+  String liveText;  // with `{live:<id>}`, read in preference to `text`
+  std::vector<livevalue::LiveValue> liveValues;
+};
+// A node's icon, baked per look (2.8): with watts `live` - a storage
+// `charge` or `discharge` - and at 0 W `muted`.
+struct EnergyIcon {
+  int size = 0;
+  String live, liveDark;
+  String charge, chargeDark;
+  String discharge, dischargeDark;
+  String muted, mutedDark;
+};
+struct EnergyNodeProps {
+  String id;
+  String role;  // source, sink, storage, rest, bus
+  String name;
+  float x = 0;
+  float y = 0;
+  String topic;
+  String chargeTopic;
+  bool reverseSign = false;
+  String color, colorDark;
+  bool hasIcon = false;
+  EnergyIcon icon;
+  std::vector<EnergyLine> lines;
+  ButtonAction action;
+};
+struct EnergyDiagramProps {
+  bool sankey = false;
+  bool motion = true;
+  float fullScale = 1000;
+  String fontId, valueFontId;
+  int fontSize = 16;
+  int valueFontSize = 16;
+  String textColor, textColorDark;
+  String mutedColor, mutedColorDark;
+  String busColor, busColorDark;
+  String idleColor, idleColorDark;
+  String chargeColor, chargeColorDark;
+  String dischargeColor, dischargeColorDark;
+  std::vector<EnergyNodeProps> nodes;
+};
+
+// An energy diagram's data behind a pointer that copies what it points at:
+// a copied object (a master's on each of its screens) has its own, so the
+// dark swap (ThemeVariant.h) never meets one diagram twice.
+struct EnergyDiagramHandle {
+  std::unique_ptr<EnergyDiagramProps> p;
+  EnergyDiagramHandle() = default;
+  EnergyDiagramHandle(const EnergyDiagramHandle& o) : p(o.p ? new EnergyDiagramProps(*o.p) : nullptr) {}
+  EnergyDiagramHandle& operator=(const EnergyDiagramHandle& o) {
+    if (this != &o) p.reset(o.p ? new EnergyDiagramProps(*o.p) : nullptr);
+    return *this;
+  }
+  EnergyDiagramHandle(EnergyDiagramHandle&&) = default;
+  EnergyDiagramHandle& operator=(EnergyDiagramHandle&&) = default;
+  explicit operator bool() const { return static_cast<bool>(p); }
+  EnergyDiagramProps& operator*() const { return *p; }
+  EnergyDiagramProps* operator->() const { return p.get(); }
 };
 
 // Base properties for screen objects
@@ -281,6 +348,10 @@ struct ObjectProperties {
   String liveText;
   std::vector<livevalue::LiveValue> liveValues;
   String liveIconId;
+
+  // An energy diagram's own data (above); empty for every other type, so
+  // the other objects pay a pointer for it.
+  EnergyDiagramHandle energy;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
