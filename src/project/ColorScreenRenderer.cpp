@@ -545,6 +545,20 @@ std::vector<std::string> ColorScreenRenderer::liveTopics(const ScreenObject& obj
   auto add = [&out](const std::string& topic) {
     if (std::find(out.begin(), out.end(), topic) == out.end()) out.push_back(topic);
   };
+  // An energy diagram: its nodes' watts and charge, and what their lines
+  // read (contract 2.8). The knob subscribes by this; until 2026-10-12 it
+  // heard none of them.
+  if (obj.properties.energy) {
+    for (const EnergyNodeProps& n : obj.properties.energy->nodes) {
+      if (!n.topic.isEmpty()) add(n.topic.c_str());
+      if (!n.chargeTopic.isEmpty()) add(n.chargeTopic.c_str());
+      for (const EnergyLine& line : n.lines) {
+        ScreenObject text;
+        text.properties.liveValues = line.liveValues;
+        for (const std::string& t : liveTopics(text, combinedTopics)) add(t);
+      }
+    }
+  }
   for (const livevalue::LiveValue& lv : obj.properties.liveValues) {
     if (lv.source.ns == "topic") add(lv.source.path.substr(0, lv.source.path.find('#')));
     if (lv.source.ns == "combined")

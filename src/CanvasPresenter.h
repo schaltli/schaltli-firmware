@@ -46,6 +46,14 @@ public:
   // Dial's single pushImage() after ColorScreenRenderer::render().
   void present();
 
+  // Only the rectangle x0..x1, y0..y1 changed: LVGL flushes that, not the
+  // screen. For the energy diagram's motion (2026-10-12), which changes a
+  // few dots ten times a second. Not counted in presentCount().
+  void presentRegion(int16_t x0, int16_t y0, int16_t x1, int16_t y1);
+
+  // How often present() ran: anything else that changed the canvas.
+  uint32_t presentCount() const { return presentCount_; }
+
   // The LVGL object showing the rendered screen. Exposed so later work can
   // compose around it - z-order it above an animated background, fade it
   // during a screen transition, overlay LVGL widgets on top.
@@ -174,4 +182,5 @@ private:
   int16_t transitionBaseX_ = 0;
   int16_t transitionBaseY_ = 0;
   bool transitionActive_ = false;
+  uint32_t presentCount_ = 0;
 };

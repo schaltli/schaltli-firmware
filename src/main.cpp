@@ -141,6 +141,10 @@ static void enterSetupMode();
 static void adjustLevel(const ButtonAction &action, int32_t steps);
 static void dispatchDetents(const char *buttonId, int32_t count);
 static void dispatchInput(const char *buttonId);
+// The energy diagram's motion, defined before loop() (see there).
+static void energyLiftDots();
+static void energyStep();
+static String energyReport();
 
 // ---------------------------------------------------------------- display
 
@@ -439,6 +443,7 @@ static bool renderScreenIndex(int index) {
   // Another screen closes an open popup, wherever the change came from.
   if (openPopup >= 0 && index != currentScreenIndex) openPopup = -1;
 
+  energyLiftDots();
   const int64_t renderStart = esp_timer_get_time();
   if (!screenRenderer->renderScreen(index)) return false;
   // An open popup over its screen: the screen halved outside the fence, the
@@ -573,6 +578,7 @@ static void presentCanvas() {
 
 static void openPopupAt(int index) {
   if (screenRenderer == nullptr) return;
+  energyLiftDots();
   const ProjectConfig &project = projectLoader.getProject();
   const Screen *popup = screenOrPopupAt(project, index);
   if (popup == nullptr) return;
@@ -1266,6 +1272,8 @@ static void prerenderNeighbours() {
 
 static void tryStartDrag(int dx, int dy) {
   dragDecided = true;
+  // The screen slides as its still picture.
+  energyLiftDots();
   // A swipe on an open popup closes it at release; it never pages.
   if (openPopup >= 0) return;
   if (!canvasPresenter.canTransition() || screenRenderer == nullptr) return;
@@ -1424,6 +1432,23 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   int16_t objY = 0;
   const ScreenObject *treffer = screenRenderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (treffer == nullptr) return false;
+
+  // A node of an energy diagram with an action (contract 2.8): the hit test
+  // only lets a diagram catch a tap on one. As on the 4.3B.
+  if (treffer->type == "energy-diagram") {
+    const ButtonAction *action = screenRenderer->energyActionAt(*treffer, x - objX, y - objY);
+    if (action == nullptr) return false;
+    Serial.printf("[tap] energy diagram \"%s\" action %s\n", treffer->id.c_str(), action->type.c_str());
+    popupOriginKnown = true;
+    popupOriginX = x - 20;
+    popupOriginY = y - 20;
+    popupOriginW = 40;
+    popupOriginH = 40;
+    const ButtonAction copy = *action;
+    dispatchButtonAction(copy);
+    popupOriginKnown = false;
+    return true;
+  }
 
   if (treffer->type == "button") {
     Serial.printf("[tap] button \"%s\"\n", treffer->id.c_str());
@@ -2087,6 +2112,8 @@ static String buildDebugJson() {
     out += ",\"runningFrom\":\"" + String(runningSlot ? runningSlot->label : "?") + "\"";
   }
   out += ",\"firmwareBuild\":\"" FIRMWARE_BUILD "\"";
+  out += ",\"energyMotion\":\"" + energyReport() + "\"";
+  if (screenRenderer) out += ",\"energyDraw\":\"" + screenRenderer->energyProfile() + "\"";
   out += ",\"installsOnlyFor\":\"" DEVICE_ID "\"";
   // The same words as the 4.3B's "popup:" line, for hil/popup.js.
   out += ",\"popup\":\"" +
@@ -2735,6 +2762,7 @@ static void onMqttMessage(const String &topic, const String &payload) {
   // as a whole picture (renderTopicChangePartial stands down).
   const bool popupUses = openPopup >= 0 && screenUsesTopic(screenOrPopupAt(project, openPopup)->objects, topic);
   if (!popupUses && !screenUsesTopic(project.screens[currentScreenIndex].objects, topic)) return;
+  energyLiftDots();
   if (renderTopicChangePartial(topic, oldValue)) {
     // Der Bildschirmpuffer ist jetzt teilweise neu; das Bild muss trotzdem
     // aufs Panel. present() schiebt den Puffer, closeOpenFrame() haelt die
@@ -3204,6 +3232,219 @@ void setup() {
   setupWiFi();
 }
 
+// ---------------------------------------------------------------------------
+// The energy diagram's motion (designer docs/2026-10-11-energy-diagram.md,
+// decision 10; device contract 2.8), as on the 4.3B: a Flow's dots running
+// along its lines, a Sankey's wave through its bands, ten steps a second at
+// the end of loop(), none while a finger is down, a popup or the screen
+// menu is up, a swipe runs or the screen is dark.
+//
+// The difference is where the picture lives. LVGL shows the canvas itself
+// (CanvasPresenter, zero-copy), so the dots go into the canvas, and a still
+// copy of it puts their old boxes back. Whatever else writes the canvas
+// lifts the dots first (energyLiftDots), so the canvas it leaves has none;
+// its present() then says the still copy is old. Only the rectangle a step
+// changed goes to LVGL (presentRegion).
+// ---------------------------------------------------------------------------
+static const uint32_t ENERGY_STEP_MS = 100;
+static std::vector<ColorScreenRenderer::EnergyAnimation> energyAnims;
+static uint32_t energySeenPresents = UINT32_MAX;
+static int energySeenScreen = -1;
+static uint16_t *energyStill = nullptr;  // the canvas without dots, SCREEN_SIZE x SCREEN_SIZE
+static double energyWave = 0;
+static std::vector<std::pair<std::string, double>> energyDotPhases;  // "<diagram>/<node>" -> phase
+struct EnergyDotBox { int16_t x, y; };
+static std::vector<EnergyDotBox> energyDotBoxes;
+static const int16_t ENERGY_DOT_BOX = 10;  // DOT_R 3.5, its soft edge and a pixel either side
+static unsigned long energyLastStepMs = 0, energyLastMotionMs = 0, energyWindowMs = 0;
+static uint32_t energySteps = 0, energyWindowSteps = 0, energyDotsUs = 0, energyWaveUs = 0, energyFlushUs = 0;
+static float energyStepsPerSecond = 0;
+static size_t energyDotCount = 0;
+// The longest step, apart: one that worked the moving parts out again after
+// a redraw (the still copy, the Sankey's runs), and an ordinary one.
+static uint32_t energyWorstStepUs = 0, energyWorstRecomputeUs = 0;
+
+static double &energyDotPhase(const std::string &key) {
+  for (auto &p : energyDotPhases)
+    if (p.first == key) return p.second;
+  energyDotPhases.push_back({key, 0.0});
+  return energyDotPhases.back().second;
+}
+
+struct EnergyDirty {
+  int16_t x0 = INT16_MAX, y0 = INT16_MAX, x1 = -1, y1 = -1;
+  void add(int16_t ax, int16_t ay, int16_t bx, int16_t by) {
+    x0 = std::min(x0, ax);
+    y0 = std::min(y0, ay);
+    x1 = std::max(x1, bx);
+    y1 = std::max(y1, by);
+  }
+};
+
+// The dots' old boxes back from the still copy.
+static void energyRestoreDots(EnergyDirty &dirty) {
+  if (energyStill == nullptr) {
+    energyDotBoxes.clear();
+    return;
+  }
+  uint16_t *dst = canvasPresenter.canvas().getBuffer();
+  const int16_t W = SCREEN_SIZE, H = SCREEN_SIZE;
+  for (const EnergyDotBox &b : energyDotBoxes) {
+    const int16_t x0 = std::max<int16_t>(0, b.x), x1 = std::min<int16_t>(W, b.x + ENERGY_DOT_BOX);
+    if (x1 <= x0) continue;
+    for (int16_t y = std::max<int16_t>(0, b.y); y < std::min<int16_t>(H, b.y + ENERGY_DOT_BOX); y++)
+      memcpy(dst + (size_t)y * W + x0, energyStill + (size_t)y * W + x0, (size_t)(x1 - x0) * sizeof(uint16_t));
+    dirty.add(x0, b.y, x1 - 1, b.y + ENERGY_DOT_BOX - 1);
+  }
+  energyDotBoxes.clear();
+}
+
+static void energyLiftDots() {
+  if (energyDotBoxes.empty()) return;
+  EnergyDirty dirty;
+  energyRestoreDots(dirty);
+  canvasPresenter.presentRegion(dirty.x0, dirty.y0, dirty.x1, dirty.y1);
+}
+
+static void energyStep() {
+  if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || openPopup >= 0 || touchIsDown || dragActive ||
+      dragAnimating || signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive() ||
+      (screenMenu && screenMenu->isActive()))
+    return;
+  const unsigned long now = millis();
+  if (now - energyLastStepMs < ENERGY_STEP_MS) return;
+  const double dt = (energyLastMotionMs ? now - energyLastMotionMs : ENERGY_STEP_MS) / 1000.0;
+  energyLastMotionMs = now;
+  energyLastStepMs += ENERGY_STEP_MS;
+  if (now - energyLastStepMs >= 2 * ENERGY_STEP_MS) energyLastStepMs = now;
+
+  const int screen = activeScreen();
+  const uint32_t t0 = micros();
+  EnergyDirty dirty;
+  uint16_t *canvasBuf = canvasPresenter.canvas().getBuffer();
+  const int16_t W = SCREEN_SIZE, H = SCREEN_SIZE;
+  // Not the renderer's count of diagrams drawn: the neighbours drawn into
+  // the spare canvases count too, and leave this one as it was.
+  const bool recompute = canvasPresenter.presentCount() != energySeenPresents || screen != energySeenScreen;
+  if (recompute) {
+    // Someone else drew: the canvas has no dots (they were lifted), and is
+    // the still picture from now on.
+    energyDotBoxes.clear();
+    energyAnims = screenRenderer->energyAnimations(screen);
+    energySeenPresents = canvasPresenter.presentCount();
+    energySeenScreen = screen;
+    if (energyAnims.empty()) return;
+    if (energyStill == nullptr)
+      energyStill = (uint16_t *)heap_caps_malloc((size_t)W * H * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (energyStill == nullptr) {
+      // No room for the still copy: the diagram stands, as drawn.
+      energyAnims.clear();
+      return;
+    }
+    // Only the diagrams' rows: the whole screen is 259 KB, about 12 ms.
+    int16_t rowLo = 0, rowHi = H - 1;
+    const ProjectConfig &project = projectLoader.getProject();
+    if (screen >= 0 && screen < (int)project.screens.size()) {
+      int16_t lo = INT16_MAX, hi = -1;
+      bool nested = false;
+      for (const auto &obj : project.screens[screen].objects) {
+        if (obj.type == "energy-diagram") {
+          lo = std::min<int16_t>(lo, obj.y);
+          hi = std::max<int16_t>(hi, obj.y + obj.height - 1);
+        } else if (!obj.children.empty()) {
+          nested = true;  // a diagram in a panel stands where its parent puts it
+        }
+      }
+      if (!nested && hi >= lo) {
+        rowLo = std::max<int16_t>(0, lo);
+        rowHi = std::min<int16_t>(H - 1, hi);
+      }
+    }
+    memcpy(energyStill + (size_t)rowLo * W, canvasBuf + (size_t)rowLo * W, (size_t)(rowHi - rowLo + 1) * W * sizeof(uint16_t));
+  } else {
+    energyRestoreDots(dirty);
+  }
+  if (energyAnims.empty() || energyStill == nullptr) return;
+
+  // The dots: on by their pace, drawn over the still picture.
+  energyDotCount = 0;
+  for (const auto &a : energyAnims) {
+    for (const auto &l : a.lines) {
+      double &phase = energyDotPhase(std::string(a.id.c_str()) + "/" + l.id);
+      phase = energydiagram::advanceDots(phase, dt, l.watts);
+      // A storage's dots run on into its track, lighter on the bar, fading.
+      std::vector<energydiagram::PathDot> path;
+      if (l.storage)
+        path = energydiagram::storageDots(l.line, l.node, phase, l.gives, l.watts);
+      else
+        for (const energydiagram::Point &p : energydiagram::dotsOnLine(l.line, phase, l.gives, l.watts)) path.push_back({p.x, p.y, 1, false, true});
+      for (const energydiagram::PathDot &d : path) {
+        const uint16_t ink = d.onBar ? energydiagram::mix565(l.colour, 0xFFFF, (int)energydiagram::jsRound(energydiagram::BAR_DOT_LIGHT * 256)) : l.colour;
+        const int strength = (int)energydiagram::jsRound(d.alpha * 256);
+        ColorScreenRenderer::energyDotPixels(d.x, d.y, [&](int16_t x, int16_t y, uint8_t c) {
+          if (x < 0 || y < 0 || x >= W || y >= H) return;
+          canvasBuf[(size_t)y * W + x] = energydiagram::mix565(energyStill[(size_t)y * W + x], ink, c * strength / 16);
+        });
+        const EnergyDotBox box{(int16_t)(lroundf(d.x) - ENERGY_DOT_BOX / 2), (int16_t)(lroundf(d.y) - ENERGY_DOT_BOX / 2)};
+        dirty.add(box.x, box.y, box.x + ENERGY_DOT_BOX - 1, box.y + ENERGY_DOT_BOX - 1);
+        energyDotBoxes.push_back(box);
+        energyDotCount++;
+      }
+    }
+  }
+  const uint32_t t1 = micros();
+
+  // The wave: a row of colours per band - a column's colour is by its x
+  // alone -, each run of the band's whole pixels copied from it into the
+  // canvas and the still copy.
+  energyWave = energydiagram::advanceWave(energyWave, dt);
+  static std::vector<uint16_t> row;
+  row.resize(W);
+  for (const auto &a : energyAnims) {
+    if (!a.sankey) continue;
+    for (uint8_t band = 0; band < a.bandRgb.size(); band++) {
+      int16_t lo = INT16_MAX, hi = -1;
+      for (const auto &r : a.runs)
+        if (r.band == band) {
+          lo = std::min(lo, r.x0);
+          hi = std::max(hi, r.x1);
+        }
+      if (hi < lo) continue;
+      for (int16_t x = lo; x <= hi; x++) row[x] = ColorScreenRenderer::energyWaveColour(a, band, x, energyWave);
+      for (const auto &r : a.runs) {
+        if (r.band != band) continue;
+        const size_t at = (size_t)r.y * W + r.x0, n = (size_t)(r.x1 - r.x0 + 1) * sizeof(uint16_t);
+        memcpy(canvasBuf + at, row.data() + r.x0, n);
+        memcpy(energyStill + at, row.data() + r.x0, n);
+        dirty.add(r.x0, r.y, r.x1, r.y);
+      }
+    }
+  }
+  const uint32_t tf = micros();
+  canvasPresenter.presentRegion(dirty.x0, dirty.y0, dirty.x1, dirty.y1);
+  energyFlushUs += micros() - tf;
+  uint32_t &worst = recompute ? energyWorstRecomputeUs : energyWorstStepUs;
+  worst = std::max<uint32_t>(worst, micros() - t0);
+  energyDotsUs += t1 - t0;
+  energyWaveUs += tf - t1;
+  energySteps++;
+  energyWindowSteps++;
+  if (now - energyWindowMs >= 2000) {
+    energyStepsPerSecond = energyWindowSteps * 1000.0f / (now - energyWindowMs);
+    energyWindowSteps = 0;
+    energyWindowMs = now;
+  }
+}
+
+static String energyReport() {
+  if (energyAnims.empty()) return "still (no diagram with Motion on this screen)";
+  const float n = energySteps ? (float)energySteps : 1.0f;
+  return String((unsigned)energyAnims.size()) + " diagram(s), " + String((unsigned)energyDotCount) + " dots, " +
+         String(energyStepsPerSecond, 1) + " steps/s, per step: dots " + String(energyDotsUs / n / 1000.0f, 2) + " ms, wave " +
+         String(energyWaveUs / n / 1000.0f, 2) + " ms, invalidate " + String(energyFlushUs / n / 1000.0f, 2) + " ms; worst step " +
+         String(energyWorstStepUs / 1000.0f, 1) + " ms, worst after a redraw " + String(energyWorstRecomputeUs / 1000.0f, 1) + " ms";
+}
+
 void loop() {
 #if INPUT_DEBUG
   const uint32_t loopStart = millis();
@@ -3346,6 +3587,7 @@ void loop() {
   // is up, so it is copied aside once and restored per frame instead.
   if (screenMenu && screenMenu->isActive()) {
     if (!menuBackdropReady) {
+      energyLiftDots();
       menuBackdropReady = canvasPresenter.copyCanvasToSlot(MENU_BACKDROP_SLOT);
       // Borrowed, so the neighbour cache must not think a screen is still in
       // there. prerenderNeighbours() refills it once the menu is gone.
@@ -3383,6 +3625,7 @@ void loop() {
     deployManager.handleDeployMessage(payload);
   }
   firmwareUpdater.service();
+  PHASE("energy", energyStep());
 
   delay(5);
 #if INPUT_DEBUG

@@ -166,6 +166,7 @@ bool CanvasPresenter::adoptTransitionCanvas() {
   memcpy(canvas_->getBuffer(), transitionCanvas_[activeSlot_]->getBuffer(),
          (size_t)width_ * (size_t)height_ * sizeof(uint16_t));
   lv_obj_invalidate(image_);
+  presentCount_++;
   return true;
 }
 
@@ -223,4 +224,18 @@ void CanvasPresenter::present() {
   // re-setting the source) keeps LVGL's own dirty-area tracking intact, so
   // a later composed overlay isn't forced to redraw with it.
   lv_obj_invalidate(image_);
+  presentCount_++;
+}
+
+void CanvasPresenter::presentRegion(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+  if (image_ == nullptr || x1 < x0 || y1 < y0) return;
+  // The image sits centred on a screen its own size, so its pixels are the
+  // screen's.
+  lv_area_t area;
+  area.x1 = max<int16_t>(0, x0);
+  area.y1 = max<int16_t>(0, y0);
+  area.x2 = min<int16_t>(width_ - 1, x1);
+  area.y2 = min<int16_t>(height_ - 1, y1);
+  if (area.x2 < area.x1 || area.y2 < area.y1) return;
+  lv_obj_invalidate_area(image_, &area);
 }

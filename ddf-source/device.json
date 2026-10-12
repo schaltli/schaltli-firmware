@@ -428,7 +428,8 @@
     "live-line",
     "box",
     "switcher",
-    "panel"
+    "panel",
+    "energy-diagram"
   ],
   "supportsSoftwareButtons": true,
   "deviceActions": [
