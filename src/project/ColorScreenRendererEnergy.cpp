@@ -107,6 +107,16 @@ struct DiagramPixels {
     }
   }
 
+  void release() {
+    free(data);
+    free(touched);
+    data = nullptr;
+    touched = nullptr;
+    capacity = 0;
+    key.clear();
+    id.clear();
+  }
+
   void put(int x, int y, uint16_t colour, int weight) {
     profPuts++;
     if (x < 0 || y < 0 || x >= w || y >= h) return;
@@ -224,6 +234,13 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
   px.reuse = !key.empty() && key == px.key && px.w == obj.width && px.h == obj.height;
   if (!px.reuse) {
     px.begin(obj.width, obj.height, ground);
+    // No room beside the other kept pictures (a full-screen diagram on the
+    // PaperS3's 960x540): they go, this one is drawn.
+    if (px.w == 0 && obj.width > 0 && obj.height > 0) {
+      for (DiagramPixels& other : diagramPictures)
+        if (&other != &px) other.release();
+      px.begin(obj.width, obj.height, ground);
+    }
     px.key = key;
     px.id = obj.id.c_str();
   }
@@ -291,7 +308,7 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
       // A live line at half strength, under its dots.
       px.fill(ed::capsuleOutline(line.x0, line.y0, line.x1, line.y1, line.width), colour, line.live ? 128 : 256);
       // Moving, the board draws the dots over the still picture.
-      if (!line.live || (e.motion && dots == nullptr)) continue;
+      if (!line.live || (e.motion && animates_ && dots == nullptr)) continue;
       double phase = 0;
       if (dots) {
         for (const auto& d : *dots)
@@ -337,7 +354,22 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
     boxes = ed::flowBoxes(layout, m);
   }
   const uint32_t tShapes = micros();
-  canvas_->setClip(obj.x, obj.y, obj.width, obj.height);
+  // Everything the diagram draws stays in its box, its labels too, as the
+  // designer clips them: a text sets its own clip, so the box is a region,
+  // cut with one already set (a partial redraw). On the round knob a label
+  // ran out below the box (2026-10-12).
+  const bool hadRegion = canvas_->regionActive();
+  const int16_t prX = canvas_->regionX(), prY = canvas_->regionY(), prW = canvas_->regionW(), prH = canvas_->regionH();
+  {
+    int16_t x0 = obj.x, y0 = obj.y, x1 = obj.x + obj.width, y1 = obj.y + obj.height;
+    if (hadRegion) {
+      x0 = std::max<int16_t>(x0, prX);
+      y0 = std::max<int16_t>(y0, prY);
+      x1 = std::min<int16_t>(x1, prX + prW);
+      y1 = std::min<int16_t>(y1, prY + prH);
+    }
+    canvas_->setRegion(x0, y0, std::max<int16_t>(0, x1 - x0), std::max<int16_t>(0, y1 - y0));
+  }
   px.drawOn(canvas_, obj.x, obj.y);
   const uint32_t tDrawn = micros();
 
@@ -397,7 +429,8 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
   const uint32_t tEnd = micros();
   energyProfile_ = "begin " + String((tBegin - tStart) / 1000.0f, 1) + " ms, shapes " + String((tShapes - tBegin) / 1000.0f, 1) + " ms, onto the canvas " +
                    String((tDrawn - tShapes) / 1000.0f, 1) + " ms, labels and icons " + String((tEnd - tDrawn) / 1000.0f, 1) + " ms; " + String(profFills) + " fills " + String(profFillUs / 1000.0f, 1) + " ms, " + String(profPuts) + " pixels";
-  canvas_->clearClip();
+  if (hadRegion) canvas_->setRegion(prX, prY, prW, prH);
+  else canvas_->clearRegion();
   return true;
 }
 
@@ -407,7 +440,7 @@ std::vector<ColorScreenRenderer::EnergyAnimation> ColorScreenRenderer::energyAni
   if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return out;
   const std::array<int, 3> groundRgb = ed::expand565(parseHexColor(currentScreenBgHex_));
   for (const ScreenObject& obj : project.screens[screenIndex].objects) {
-    if (obj.type != "energy-diagram" || !obj.properties.energy || !obj.properties.energy->motion) continue;
+    if (!animates_ || obj.type != "energy-diagram" || !obj.properties.energy || !obj.properties.energy->motion) continue;
     const EnergyDiagramProps& e = *obj.properties.energy;
     std::vector<ed::Node> nodes;
     std::vector<ed::Value> values;

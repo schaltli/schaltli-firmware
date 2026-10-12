@@ -12,7 +12,8 @@
     "colorDepth": "4bit",
     "widthMm": 103.68,
     "heightMm": 58.32,
-    "popupCloseRadius": 26
+    "popupCloseRadius": 26,
+    "motion": false
   },
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",
@@ -429,7 +430,8 @@
     "box",
     "switcher",
     "panel",
-    "navigator"
+    "navigator",
+    "energy-diagram"
   ],
   "supportsSoftwareButtons": true
 }

@@ -372,6 +372,18 @@ static bool handleTap(int16_t x, int16_t y)
   const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr) return false;
 
+  // A node of an energy diagram with an action (contract 2.8): the hit test
+  // only lets a diagram catch a tap on one. As on the 4.3B.
+  if (hit->type == "energy-diagram")
+  {
+    const ButtonAction *action = renderer->energyActionAt(*hit, x - objX, y - objY);
+    if (action == nullptr) return false;
+    Serial.printf("[papers3] tap: energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());
+    const ButtonAction copy = *action;
+    dispatchButtonAction(copy);
+    return true;
+  }
+
   if (hit->type == "button")
   {
     Serial.printf("[papers3] tap: button \"%s\"\n", hit->id.c_str());
@@ -694,6 +706,8 @@ static bool setupPanelAndProject()
 
   displayAdapter = new PanelDisplayAdapter(*canvas, panel, panel.width(), panel.height());
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+  // Paper animates nothing: the energy diagram stands, dots at phase 0.
+  renderer->setAnimates(false);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());

@@ -187,6 +187,10 @@ public:
   // How often a diagram has been drawn: a board moving one takes its
   // measure again when this changes (a value, a screen, a region redraw).
   uint32_t energyDrawCount() const { return energyDrawCount_; }
+  // false on a board that animates nothing (the PaperS3, its DDF's
+  // screen.motion false): every diagram drawn still, dots at phase 0, as
+  // with Motion off - as the designer draws it for that device.
+  void setAnimates(bool animates) { animates_ = animates; }
   // Where the last diagram drawn spent its time, for /api/debug.
   const String& energyProfile() const { return energyProfile_; }
 
@@ -350,6 +354,7 @@ private:
   void energyInputs(const EnergyDiagramProps& e, std::vector<energydiagram::Node>& nodes,
                     std::vector<energydiagram::Value>& values) const;
   uint32_t energyDrawCount_ = 0;
+  bool animates_ = true;
   String energyProfile_;
   bool renderLine(const ScreenObject& obj);
   bool renderLabel(const ScreenObject& obj);
