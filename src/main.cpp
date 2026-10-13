@@ -645,6 +645,9 @@ static void closePopup(const char *reason) {
 //
 // An empty type means nothing is configured, which is a normal state, not an
 // error - most screens bind only some of their inputs.
+// Defined with the MQTT handling below: a local topic stays on this display.
+static void writeProjectTopic(const String &topic, const String &payload);
+
 static void dispatchButtonAction(const ButtonAction &action) {
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
   const ProjectConfig &project = projectLoader.getProject();
@@ -666,7 +669,7 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // (temperature, fan, brightness), bound per screen, rather than paging
     // through screens the way the M5 Dial's encoder does.
     latMark("pub", action.mqttMessage.c_str());
-    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+    writeProjectTopic(action.mqttTopic, action.mqttMessage);
   } else if (action.type == "device-action") {
     // Actions the *device* offers and the designer only names - declared in
     // this board's DDF as deviceActions. Unknown ids are skipped and logged,
@@ -1492,7 +1495,7 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   // Nicht retained: das ist ein Befehl, kein Zustand. Der Zustand kommt ueber
   // das Lese-Topic zurueck und faerbt das Segment - so zeigt der Schalter,
   // was wirklich passiert ist, statt was er zu tun glaubte.
-  mqttClient.publish(treffer->properties.writeTopic, wert, false);
+  writeProjectTopic(treffer->properties.writeTopic, wert);
   return true;
 }
 
@@ -1565,7 +1568,7 @@ static void applyLevelDragValue(const String &payload, bool force) {
   if (!force && !changed) return;
   levelDragLastPublishMs = now;
   // Nicht retained: ein Befehl, kein Zustand - genau wie beim Switch.
-  mqttClient.publish(levelDragWriteTopic, payload, false);
+  writeProjectTopic(levelDragWriteTopic, payload);
 }
 
 // Faengt dieser Druck einen bedienbaren Balken? Dann gehoert ihm die Geste,
@@ -1619,7 +1622,7 @@ static void updateLevelDrag(int16_t x, int16_t y) {
 static void endLevelDrag() {
   if (levelDragObjId.isEmpty()) return;
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty()) {
-    mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
+    writeProjectTopic(levelDragWriteTopic, levelDragPayload);
     Serial.printf("[level] losgelassen auf %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
     levelAwaitValue = levelDragPayload;
     levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
@@ -1678,7 +1681,7 @@ static void adjustLevel(const ButtonAction &action, int32_t steps) {
   canvasPresenter.invalidateSlots();
   menuBackdropReady = false;
   renderScreenIndex(currentScreenIndex);
-  mqttClient.publish(level->properties.writeTopic, payload, false);
+  writeProjectTopic(level->properties.writeTopic, payload);
   Serial.printf("[level] %d Raste(n) %s -> %s = %s\n", (int)steps, action.direction.c_str(),
                 level->properties.writeTopic.c_str(), payload.c_str());
   levelAwaitValue = payload;
@@ -2520,6 +2523,8 @@ static void subscribeToAllTopics() {
   // A popup's objects read their topics as a screen's do; until 2026-10-06
   // only the screens were walked, and a popup's switch never heard its state.
   for (const auto &popup : project.popups) collectTopics(popup.objects, topics);
+  // A local topic is the display's own and never subscribed (contract 2.9).
+  topics.erase(std::remove_if(topics.begin(), topics.end(), [](const String &t) { return projectLoader.isLocalTopic(t); }), topics.end());
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
   Serial.printf("[mqtt] subscribed to %d project topic(s)\n", (int)topics.size());
@@ -2686,6 +2691,26 @@ static void applyWantedTheme() {
   renderScreenIndex(currentScreenIndex);
 }
 
+static void applyTopicValue(const String &topic, const String &payload);
+
+// Local topics (designer contract 2.9): a write to one waits here for
+// loop(), which applies it as an arriving message - never from inside a
+// touch or a button handler, where drawing is not this code's to do.
+static std::vector<std::pair<String, String>> localWrites;
+
+// When /api/debug?set=restart asked for one; 0 = not asked.
+static unsigned long restartAtMs = 0;
+
+// Every write to a project topic: a local one is this display's value, any
+// other goes to the broker - not retained, a command, not a state.
+static void writeProjectTopic(const String &topic, const String &payload) {
+  if (projectLoader.isLoaded() && projectLoader.isLocalTopic(topic)) {
+    localWrites.push_back({topic, payload});
+    return;
+  }
+  mqttClient.publish(topic, payload, false);
+}
+
 static void onMqttMessage(const String &topic, const String &payload) {
   // Light or dark for the whole installation. Handled before the project's
   // own topics: it is not one of them unless a Theme switch reads it too, in
@@ -2716,6 +2741,16 @@ static void onMqttMessage(const String &topic, const String &payload) {
   }
 
   if (!projectLoader.isLoaded()) return;
+  // A real topic under a local topic's name does not reach the display
+  // (contract 2.9) - a subscription from an earlier project, say.
+  if (projectLoader.isLocalTopic(topic)) return;
+  applyTopicValue(topic, payload);
+}
+
+// A project topic's new value, from the broker or - for a local topic - from
+// a write on this display (writeProjectTopic, applied from loop()): kept,
+// and drawn as an arriving message is.
+static void applyTopicValue(const String &topic, const String &payload) {
   latMark("rx", payload.c_str());
   // Vor dem Ueberschreiben merken - der Ausschnitt ergibt sich aus der
   // Differenz zwischen altem und neuem Wert.
@@ -3077,6 +3112,13 @@ static void setupWiFi() {
         if (setArg.startsWith("theme=")) {
           wantedThemeDark = themevariant::isDarkPayload(setArg.substring(6));
           applyWantedTheme();
+        }
+        // set=restart: a restart as after a power cut, half a second after
+        // this answer - for the HIL checks that nothing is kept over one
+        // (designer contract 2.9: a local topic starts at initial again).
+        if (setArg == "restart") {
+          restartAtMs = millis() + 500;
+          return String("restarting");
         }
         if (setArg == "describe") {
           return screenRenderer ? screenRenderer->describeScreen(currentScreenIndex)
@@ -3456,6 +3498,15 @@ void loop() {
   // Before lv_timer_handler(), so LVGL and the gesture detector both work
   // from the same single reading of a register that clears when read.
   PHASE("sampleTouch", sampleTouch());
+
+  if (restartAtMs != 0 && (long)(millis() - restartAtMs) >= 0) ESP.restart();
+
+  // What this display wrote to its local topics, taken in as arrivals.
+  if (!localWrites.empty()) {
+    std::vector<std::pair<String, String>> writes;
+    writes.swap(localWrites);
+    for (const auto &w : writes) applyTopicValue(w.first, w.second);
+  }
 
   // Ein losgelassener Balken, dessen Endwert nie beantwortet wurde: dann gilt
   // doch das letzte Wort der Anlage (Entscheidung 6c) - nur spaeter.
