@@ -2607,6 +2607,7 @@ const ScreenObject* ColorScreenRenderer::getActivePanel(const ScreenObject& tabC
 bool ColorScreenRenderer::renderTabControl(const ScreenObject& obj, const String& pressedButtonId,
                                             const String& pendingSwitchId, int pendingSwitchStateIndex,
                                             const String& pressedSwitchId, int pressedSwitchStateIndex) {
+  switcherDrawCount_++;
   const ScreenObject* activePanel = getActivePanel(obj);
   if (activePanel == nullptr) return true;  // No panel matches - draw nothing.
 

@@ -187,6 +187,9 @@ public:
   // How often a diagram has been drawn: a board moving one takes its
   // measure again when this changes (a value, a screen, a region redraw).
   uint32_t energyDrawCount() const { return energyDrawCount_; }
+  // How often a switcher was drawn: a panel shown anew may hold a diagram,
+  // or no longer hold one, and the animations are worked out again.
+  uint32_t switcherDrawCount() const { return switcherDrawCount_; }
   // false on a board that animates nothing (the PaperS3, its DDF's
   // screen.motion false): every diagram drawn still, dots at phase 0, as
   // with Motion off - as the designer draws it for that device.
@@ -354,6 +357,7 @@ private:
   void energyInputs(const EnergyDiagramProps& e, std::vector<energydiagram::Node>& nodes,
                     std::vector<energydiagram::Value>& values) const;
   uint32_t energyDrawCount_ = 0;
+  uint32_t switcherDrawCount_ = 0;
   bool animates_ = true;
   String energyProfile_;
   bool renderLine(const ScreenObject& obj);

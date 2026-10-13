@@ -437,9 +437,31 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
 std::vector<ColorScreenRenderer::EnergyAnimation> ColorScreenRenderer::energyAnimations(int screenIndex) {
   std::vector<EnergyAnimation> out;
   const ProjectConfig& project = projectLoader_.getProject();
-  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return out;
+  // A screen or a popup (screenOrPopupAt): a popup's objects stand on the
+  // screen as they are, as renderPopup() draws them.
+  const Screen* screen = screenOrPopupAt(project, screenIndex);
+  if (screen == nullptr) return out;
   const std::array<int, 3> groundRgb = ed::expand565(parseHexColor(currentScreenBgHex_));
-  for (const ScreenObject& obj : project.screens[screenIndex].objects) {
+  // The diagrams on view (docs/2026-10-13-local-topics.md, decision 8): the
+  // screen's own and, in a switcher, its active panel's only, moved by the
+  // switcher's place as renderTabControl() draws them - nested too.
+  std::vector<ScreenObject> onView;
+  std::function<void(const std::vector<ScreenObject>&, int16_t, int16_t)> collect =
+      [&](const std::vector<ScreenObject>& objects, int16_t dx, int16_t dy) {
+        for (const ScreenObject& o : objects) {
+          if (o.type == "energy-diagram") {
+            ScreenObject moved = o;
+            moved.x += dx;
+            moved.y += dy;
+            onView.push_back(moved);
+          } else if (o.type == "switcher") {
+            const ScreenObject* panel = getActivePanel(o);
+            if (panel != nullptr) collect(panel->children, dx + o.x, dy + o.y);
+          }
+        }
+      };
+  collect(screen->objects, 0, 0);
+  for (const ScreenObject& obj : onView) {
     if (!animates_ || obj.type != "energy-diagram" || !obj.properties.energy || !obj.properties.energy->motion) continue;
     const EnergyDiagramProps& e = *obj.properties.energy;
     std::vector<ed::Node> nodes;

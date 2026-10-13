@@ -3307,7 +3307,7 @@ static void energyLiftDots() {
 }
 
 static void energyStep() {
-  if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || openPopup >= 0 || touchIsDown || dragActive ||
+  if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || touchIsDown || dragActive ||
       dragAnimating || signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive() ||
       (screenMenu && screenMenu->isActive()))
     return;

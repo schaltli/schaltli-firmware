@@ -2353,7 +2353,7 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
 // ---------------------------------------------------------------------------
 static const uint32_t ENERGY_STEP_MS = 100;
 static std::vector<ColorScreenRenderer::EnergyAnimation> energyAnims;
-static uint32_t energySeenDraws = UINT32_MAX, energySeenGeneration = UINT32_MAX;
+static uint32_t energySeenDraws = UINT32_MAX, energySeenGeneration = UINT32_MAX, energySeenSwitchers = UINT32_MAX;
 static int energySeenScreen = -1;
 static double energyWave = 0;
 static std::vector<std::pair<std::string, double>> energyDotPhases;  // "<diagram>/<node>" -> phase
@@ -2406,7 +2406,7 @@ static void energyRestoreDots(int16_t &rowLo, int16_t &rowHi)
 
 static void energyStep()
 {
-  if (!canvas || !renderer || displayIsOff || holdActive || openPopup >= 0 || swipe.active() || setupModeActive) return;
+  if (!canvas || !renderer || displayIsOff || holdActive || swipe.active() || setupModeActive) return;
   const unsigned long now = millis();
   if (now - energyLastStepMs < ENERGY_STEP_MS) return;
   const double dt = (energyLastMotionMs ? now - energyLastMotionMs : ENERGY_STEP_MS) / 1000.0;
@@ -2420,10 +2420,14 @@ static void energyStep()
   const uint32_t tr = micros();
   energyRestoreDots(rowLo, rowHi);
   energyRestoreUs += micros() - tr;
-  if (renderer->energyDrawCount() != energySeenDraws || renderGeneration != energySeenGeneration || screen != energySeenScreen)
+  // A popup's diagrams move as a screen's (its index is activeScreen()'s), and
+  // a switcher drawn anew may show a diagram, or no longer show one.
+  if (renderer->energyDrawCount() != energySeenDraws || renderer->switcherDrawCount() != energySeenSwitchers ||
+      renderGeneration != energySeenGeneration || screen != energySeenScreen)
   {
     energyAnims = renderer->energyAnimations(screen);
     energySeenDraws = renderer->energyDrawCount();
+    energySeenSwitchers = renderer->switcherDrawCount();
     energySeenGeneration = renderGeneration;
     energySeenScreen = screen;
   }
