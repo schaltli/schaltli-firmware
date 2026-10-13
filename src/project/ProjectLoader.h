@@ -21,6 +21,9 @@ public:
   String getTopicValue(const String& topic) const override;
   void setTopicValue(const String& topic, const String& value) override;
   bool hasTopicValue(const String& topic) const override;
+  // Whether the project declares this topic (a "#path" ignored) local
+  // (designer contract 2.9). A name nobody declared is never local.
+  bool isLocalTopic(const String& topicOrPath) const;
   ButtonAction getButtonAction(int screenIndex, const String& buttonId) const override;
   void applyThemeVariant(bool dark) override;
   std::optional<std::string> getCombinedValue(const String& name) const override;

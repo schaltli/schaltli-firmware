@@ -265,8 +265,26 @@ void ProjectLoader::parseTopics(JsonArray topicsArray) {
       }
     }
 
+    // A local topic starts at its initial value, as if it had arrived - at
+    // boot and after every deploy, since both load the project (contract 2.9).
+    topic.local = topicJson["local"] | false;
+    if (topic.local && !topicJson["initial"].isNull()) {
+      topic.initial = topicJson["initial"].as<String>();
+      topic.currentValue = topic.initial;
+      topic.arrived = true;
+    }
+
     project_.topics.push_back(topic);
   }
+}
+
+bool ProjectLoader::isLocalTopic(const String& topicOrPath) const {
+  const int hash = topicOrPath.indexOf('#');
+  const String bare = hash >= 0 ? topicOrPath.substring(0, hash) : topicOrPath;
+  for (const auto& t : project_.topics) {
+    if (t.local && t.topic == bare) return true;
+  }
+  return false;
 }
 
 void ProjectLoader::parseFonts(JsonArray fontsArray) {

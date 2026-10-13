@@ -431,6 +431,7 @@
     "panel",
     "energy-diagram"
   ],
+  "supportedFeatures": ["local-topics"],
   "supportsSoftwareButtons": true,
   "deviceActions": [
     "showScreenMenu"

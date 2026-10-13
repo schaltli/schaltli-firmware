@@ -520,6 +520,11 @@ struct MQTTTopic {
   // docs/2026-09-25-text-placeholders.md).
   bool arrived = false;
   std::vector<JsonSubtopic> subtopics;     // only meaningful when type == "json"
+  // A topic the display keeps itself (designer contract 2.9): never
+  // subscribed, a write is its value and is never published. It starts at
+  // `initial` after every load where the project gives one.
+  bool local = false;
+  String initial;
 };
 
 // Font definition with metrics
