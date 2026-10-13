@@ -548,10 +548,13 @@ std::vector<std::string> ColorScreenRenderer::liveTopics(const ScreenObject& obj
   // An energy diagram: its nodes' watts and charge, and what their lines
   // read (contract 2.8). The knob subscribes by this; until 2026-10-12 it
   // heard none of them.
+  // A topic with a JSON field (`ble/charger/watts#value`) is subscribed
+  // without it, as a live value's is.
   if (obj.properties.energy) {
+    auto bare = [](const String& t) { return std::string(t.c_str()).substr(0, std::string(t.c_str()).find('#')); };
     for (const EnergyNodeProps& n : obj.properties.energy->nodes) {
-      if (!n.topic.isEmpty()) add(n.topic.c_str());
-      if (!n.chargeTopic.isEmpty()) add(n.chargeTopic.c_str());
+      if (!n.topic.isEmpty()) add(bare(n.topic));
+      if (!n.chargeTopic.isEmpty()) add(bare(n.chargeTopic));
       for (const EnergyLine& line : n.lines) {
         ScreenObject text;
         text.properties.liveValues = line.liveValues;
@@ -573,7 +576,9 @@ bool ColorScreenRenderer::readsTopic(const ScreenObject& obj, const String& topi
   // live texts (contract 2.8).
   if (obj.properties.energy) {
     for (const EnergyNodeProps& n : obj.properties.energy->nodes) {
-      if (topic == n.topic || topic == n.chargeTopic) return true;
+      // The arriving topic has no JSON field; a node's may (`…#value`).
+      auto reads = [&topic](const String& t) { const int hash = t.indexOf('#'); return topic == (hash < 0 ? t : t.substring(0, hash)); };
+      if ((!n.topic.isEmpty() && reads(n.topic)) || (!n.chargeTopic.isEmpty() && reads(n.chargeTopic))) return true;
       for (const EnergyLine& line : n.lines) {
         ScreenObject text;
         text.type = "text";
