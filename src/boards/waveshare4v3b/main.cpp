@@ -756,7 +756,9 @@ static void subscribeToProjectTopics()
 {
   if (topicsSubscribed || !projectLoader.isLoaded() || !mqttClient.isConnected()) return;
   std::vector<String> topics;
-  for (const auto &t : projectLoader.getProject().topics) topics.push_back(t.topic);
+  // A local topic is the display's own and never subscribed (contract 2.9).
+  for (const auto &t : projectLoader.getProject().topics)
+    if (!t.local) topics.push_back(t.topic);
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
   Serial.printf("[4v3b] subscribed to %d project topic(s)\n", (int)topics.size());
@@ -792,6 +794,112 @@ static TaskLoad taskLoad;  // ?set=tasks=1
 // Set while "WLAN nicht erreichbar" is on the panel, so the project comes
 // back the moment the link does rather than on the next value.
 static bool noWifiScreenShown = false;
+
+// Local topics (designer contract 2.9): a write to one waits here for loop(),
+// which applies it as an arriving message - after the switch that wrote it
+// has marked what it asked for, so the value answers that mark.
+static std::vector<std::pair<String, String>> localWrites;
+
+// Every write to a project topic: a local one is this display's value, any
+// other goes to the broker - not retained, a command, not a state. True when
+// it was taken.
+static bool writeProjectTopic(const String &topic, const String &payload)
+{
+  if (projectLoader.isLoaded() && projectLoader.isLocalTopic(topic))
+  {
+    localWrites.push_back({topic, payload});
+    return true;
+  }
+  return mqttClient.publish(topic, payload, false);
+}
+
+// A project topic's new value, from the broker or - for a local topic - from
+// a write on this display (writeProjectTopic, applied from loop()): kept, and
+// drawn as an arriving message is.
+static void applyTopicValue(const String &topic, const String &payload)
+{
+  // The answer a switch's mark is waiting for - its own read topic, and no
+  // other. The theme's answer is one too, so this comes before it.
+  if (!pendingSwitchId.isEmpty() && topic == pendingReadTopic) pendingAnswered = true;
+
+  // Light or dark. Before the project's own topics: it is not one of them
+  // unless a Theme switch reads it too, which then gets the value as well.
+  if (topic == String(TOPIC_PREFIX) + "/state/theme")
+  {
+    wantedThemeDark = themevariant::isDarkPayload(payload);
+    if (projectLoader.isLoaded()) projectLoader.setTopicValue(topic, payload);
+    applyWantedTheme();
+    // The navigator's light/dark switch shows the value even where the
+    // variant stays (a first "light"): drawn again, as applyWantedTheme
+    // only does on a change (designer contract 2.7, 2026-10-11).
+    if (projectLoader.isLoaded()) renderPending = true;
+    return;
+  }
+  // The installation's word ends the request: the marker goes, and the fill
+  // shows what was reported - even when that is not what was asked for
+  // (decision 6c).
+  if (renderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
+  {
+    // After the release, only the answer to the value it was released on
+    // ends the request. The answers to the values the drag passed through
+    // are still on their way then, and each used to end it and be drawn -
+    // the fill went to one of them and on to the end value, two jumps
+    // after the finger lifted (2026-09-27, in the van). Kept, not drawn,
+    // until the end value's answer comes or the wait runs out (loop()).
+    //
+    // And while the finger is still down, no answer ends it: the finger is
+    // still asking. An answer used to, and when the finger then rested
+    // before lifting, nothing set the marker again - the handle fell back
+    // to a value the drag had passed through, then went on to the end value.
+    const bool fingerDown = !levelDragObjId.isEmpty();
+    const bool awaiting = !levelAwaitValue.isEmpty() && (long)(levelAwaitUntilMs - millis()) > 0 &&
+                          fabsf(payload.toFloat() - levelAwaitValue.toFloat()) > 0.001f;
+    if (fingerDown || awaiting)
+    {
+      projectLoader.setTopicValue(topic, payload);
+      return;
+    }
+    renderer->clearAskedValue();
+    levelAskedTopic = "";
+    levelAwaitValue = "";
+  }
+
+  // Read before it is overwritten: the partial redraw needs the value the
+  // screen is still showing.
+  const String previous = projectLoader.getTopicValue(topic);
+  projectLoader.setTopicValue(topic, payload);
+
+  bool known = false;
+  for (int i = 0; i < pendingTopicCount; i++)
+  {
+    if (pendingTopics[i].topic == topic) { known = true; break; }
+  }
+  if (!known)
+  {
+    if (pendingTopicCount < MAX_PENDING_TOPICS)
+    {
+      pendingTopics[pendingTopicCount].topic = topic;
+      pendingTopics[pendingTopicCount].oldValue = previous;
+      pendingTopicCount++;
+    }
+    else
+    {
+      // More topics than rectangles worth drawing. A full screen is the
+      // honest answer rather than a partial one that misses something.
+      pendingTopicOverflow = true;
+    }
+  }
+
+  // Never drawn from here. This runs inside mqttClient.loop(), so a
+  // render costing 180ms happened between two touch samples and, during a
+  // transition, drew the outgoing screen straight over the frame being
+  // composed. Measured on a real gesture: 7 composed frames in 3.4
+  // seconds of dragging, the rest of the time spent here.
+  //
+  // The value is stored the moment it lands. Only the drawing waits, and
+  // the loop decides when.
+  renderPending = true;
+}
 
 static void setupNetworking()
 {
@@ -1328,87 +1436,10 @@ static void setupNetworking()
       pendingDeploy = true;
       return;
     }
-    // The answer a switch's mark is waiting for - its own read topic, and no
-    // other. The theme's answer is one too, so this comes before it.
-    if (!pendingSwitchId.isEmpty() && topic == pendingReadTopic) pendingAnswered = true;
-
-    // Light or dark. Before the project's own topics: it is not one of them
-    // unless a Theme switch reads it too, which then gets the value as well.
-    if (topic == String(TOPIC_PREFIX) + "/state/theme")
-    {
-      wantedThemeDark = themevariant::isDarkPayload(payload);
-      if (projectLoader.isLoaded()) projectLoader.setTopicValue(topic, payload);
-      applyWantedTheme();
-      // The navigator's light/dark switch shows the value even where the
-      // variant stays (a first "light"): drawn again, as applyWantedTheme
-      // only does on a change (designer contract 2.7, 2026-10-11).
-      if (projectLoader.isLoaded()) renderPending = true;
-      return;
-    }
-    // The installation's word ends the request: the marker goes, and the fill
-    // shows what was reported - even when that is not what was asked for
-    // (decision 6c).
-    if (renderer != nullptr && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
-    {
-      // After the release, only the answer to the value it was released on
-      // ends the request. The answers to the values the drag passed through
-      // are still on their way then, and each used to end it and be drawn -
-      // the fill went to one of them and on to the end value, two jumps
-      // after the finger lifted (2026-09-27, in the van). Kept, not drawn,
-      // until the end value's answer comes or the wait runs out (loop()).
-      //
-      // And while the finger is still down, no answer ends it: the finger is
-      // still asking. An answer used to, and when the finger then rested
-      // before lifting, nothing set the marker again - the handle fell back
-      // to a value the drag had passed through, then went on to the end value.
-      const bool fingerDown = !levelDragObjId.isEmpty();
-      const bool awaiting = !levelAwaitValue.isEmpty() && (long)(levelAwaitUntilMs - millis()) > 0 &&
-                            fabsf(payload.toFloat() - levelAwaitValue.toFloat()) > 0.001f;
-      if (fingerDown || awaiting)
-      {
-        projectLoader.setTopicValue(topic, payload);
-        return;
-      }
-      renderer->clearAskedValue();
-      levelAskedTopic = "";
-      levelAwaitValue = "";
-    }
-
-    // Read before it is overwritten: the partial redraw needs the value the
-    // screen is still showing.
-    const String previous = projectLoader.getTopicValue(topic);
-    projectLoader.setTopicValue(topic, payload);
-
-    bool known = false;
-    for (int i = 0; i < pendingTopicCount; i++)
-    {
-      if (pendingTopics[i].topic == topic) { known = true; break; }
-    }
-    if (!known)
-    {
-      if (pendingTopicCount < MAX_PENDING_TOPICS)
-      {
-        pendingTopics[pendingTopicCount].topic = topic;
-        pendingTopics[pendingTopicCount].oldValue = previous;
-        pendingTopicCount++;
-      }
-      else
-      {
-        // More topics than rectangles worth drawing. A full screen is the
-        // honest answer rather than a partial one that misses something.
-        pendingTopicOverflow = true;
-      }
-    }
-
-    // Never drawn from here. This runs inside mqttClient.loop(), so a
-    // render costing 180ms happened between two touch samples and, during a
-    // transition, drew the outgoing screen straight over the frame being
-    // composed. Measured on a real gesture: 7 composed frames in 3.4
-    // seconds of dragging, the rest of the time spent here.
-    //
-    // The value is stored the moment it lands. Only the drawing waits, and
-    // the loop decides when.
-    renderPending = true;
+    // A real topic under a local topic's name does not reach the display
+    // (designer contract 2.9) - a subscription from an earlier project, say.
+    if (projectLoader.isLoaded() && projectLoader.isLocalTopic(topic)) return;
+    applyTopicValue(topic, payload);
   });
   mqttClient.connect();
   Serial.printf("[4v3b] mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
@@ -1892,7 +1923,7 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     // Not retained: this is a command, not a state. What comes back on the
     // read topic is what the panel then shows.
-    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+    writeProjectTopic(action.mqttTopic, action.mqttMessage);
     Serial.printf("[tap] send-mqtt %s = %s\n", action.mqttTopic.c_str(), action.mqttMessage.c_str());
   }
   else if (action.type == "device-action")
@@ -2099,7 +2130,7 @@ static void applyLevelDragValue(const String &payload, bool force)
   if (!force && (now - levelDragLastPublishMs < LEVEL_PUBLISH_MIN_MS || !changed)) return;
   levelDragLastPublishMs = now;
   // Not retained: a command, not a state - exactly as a Switch publishes.
-  mqttClient.publish(levelDragWriteTopic, payload, false);
+  writeProjectTopic(levelDragWriteTopic, payload);
 }
 
 static bool beginLevelDrag(int16_t x, int16_t y)
@@ -2159,7 +2190,7 @@ static void endLevelDrag()
   if (levelDragObjId.isEmpty()) return;
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty())
   {
-    mqttClient.publish(levelDragWriteTopic, levelDragPayload, false);
+    writeProjectTopic(levelDragWriteTopic, levelDragPayload);
     // What the answer has to say before the fill moves (see the MQTT
     // callback). Long enough for a van's bridge and its Pekaway to answer,
     // short enough that a value it would not take is shown soon.
@@ -2291,7 +2322,7 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // Not retained: a command, not a state. The state comes back on the read
   // topic and colours the segment, so the switch shows what actually
   // happened rather than what it believed it was doing.
-  const bool sent = mqttClient.publish(hit->properties.writeTopic, value, false);
+  const bool sent = writeProjectTopic(hit->properties.writeTopic, value);
   // Marked as asked-for either way. If the command did not even leave the
   // device, the mark expiring is the honest outcome - the alternative is a
   // segment that looks switched because we said so.
@@ -2987,6 +3018,13 @@ void loop()
 
   const uint32_t mqttT0 = micros();
   mqttClient.loop();
+  // What this display wrote to its local topics, taken in as arrivals.
+  if (!localWrites.empty())
+  {
+    std::vector<std::pair<String, String>> writes;
+    writes.swap(localWrites);
+    for (const auto &w : writes) applyTopicValue(w.first, w.second);
+  }
   subscribeToProjectTopics();
   firmwareUpdater.service();
   if (pendingDeploy)
