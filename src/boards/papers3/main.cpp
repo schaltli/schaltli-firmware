@@ -253,6 +253,40 @@ static int switchSegmentFor(const ScreenObject *hit, int16_t x, int16_t objX)
 
 static void closePopup(const char *reason);
 
+// A project topic's new value, from the broker or - for a local topic - from
+// a write on this display (writeProjectTopic, applied from loop()): kept, and
+// drawn by the loop as an arriving message is.
+static void applyTopicValue(const String &topic, const String &payload)
+{
+  // Was die Anlage meldet, beendet die Anforderung: der Marker geht, die
+  // Fuellung zeigt den gemeldeten Wert (Entscheidung 6c).
+  if (renderer && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
+  {
+    renderer->clearAskedValue();
+    levelAskedTopic = "";
+  }
+  projectLoader.setTopicValue(topic, payload);
+  renderPending = true;
+}
+
+// Local topics (designer contract 2.9): a write to one waits here for loop(),
+// which applies it as an arriving message - after the level that wrote it
+// has marked what it asked for, so the value answers that mark.
+static std::vector<std::pair<String, String>> localWrites;
+
+// Every write to a project topic: a local one is this display's value, any
+// other goes to the broker - not retained, a command, not a state. True when
+// it was taken.
+static bool writeProjectTopic(const String &topic, const String &payload)
+{
+  if (projectLoader.isLoaded() && projectLoader.isLocalTopic(topic))
+  {
+    localWrites.push_back({topic, payload});
+    return true;
+  }
+  return mqttClient.publish(topic, payload, false);
+}
+
 static void dispatchButtonAction(const ButtonAction &action)
 {
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
@@ -287,7 +321,7 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     // Not retained: a command, not a state. What comes back on the read
     // topic is what the panel then shows.
-    mqttClient.publish(action.mqttTopic, action.mqttMessage, false);
+    writeProjectTopic(action.mqttTopic, action.mqttMessage);
   }
   else if (action.type == "open-popup")
   {
@@ -415,7 +449,7 @@ static bool handleTap(int16_t x, int16_t y)
     Serial.printf("[papers3] tap: level \"%s\" -> %s = %s\n", hit->id.c_str(),
                   hit->properties.writeTopic.c_str(), payload.c_str());
     // Not retained: a command, not a state.
-    mqttClient.publish(hit->properties.writeTopic, payload, false);
+    writeProjectTopic(hit->properties.writeTopic, payload);
     // One refresh for the marker, and the request ends when the installation
     // speaks about that same setpoint (onMqttMessage).
     levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic
@@ -436,7 +470,7 @@ static bool handleTap(int16_t x, int16_t y)
   // Not retained: a command, not a state. The state comes back on the read
   // topic and colours the segment, so the switch shows what actually
   // happened rather than what it believed it was doing.
-  const bool sent = mqttClient.publish(hit->properties.writeTopic, value, false);
+  const bool sent = writeProjectTopic(hit->properties.writeTopic, value);
   Serial.printf("[papers3] tap: Switch \"%s\" segment %d -> %s = %s%s\n", hit->id.c_str(), index,
                 hit->properties.writeTopic.c_str(), value.c_str(),
                 sent ? "" : "  (NOT published - broker away)");
@@ -664,7 +698,9 @@ static void subscribeToProjectTopics()
 {
   if (topicsSubscribed || !projectLoader.isLoaded() || !mqttClient.isConnected()) return;
   std::vector<String> topics;
-  for (const auto &t : projectLoader.getProject().topics) topics.push_back(t.topic);
+  // A local topic is the display's own and never subscribed (contract 2.9).
+  for (const auto &t : projectLoader.getProject().topics)
+    if (!t.local) topics.push_back(t.topic);
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
   Serial.printf("[papers3] subscribed to %d project topic(s)\n", (int)topics.size());
@@ -969,15 +1005,10 @@ static void setupNetworking()
       pendingDeploy = true;
       return;
     }
-    // Was die Anlage meldet, beendet die Anforderung: der Marker geht, die
-    // Fuellung zeigt den gemeldeten Wert (Entscheidung 6c).
-    if (renderer && !levelAskedTopic.isEmpty() && topic == levelAskedTopic)
-    {
-      renderer->clearAskedValue();
-      levelAskedTopic = "";
-    }
-    projectLoader.setTopicValue(topic, payload);
-    renderPending = true;
+    // A real topic under a local topic's name does not reach the display
+    // (designer contract 2.9) - a subscription from an earlier project, say.
+    if (projectLoader.isLoaded() && projectLoader.isLocalTopic(topic)) return;
+    applyTopicValue(topic, payload);
   });
   mqttClient.connect();
   Serial.printf("[papers3] mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
@@ -1044,6 +1075,13 @@ void loop()
   serviceTouch();
   testInterface.handleClient();
   mqttClient.loop();
+  // What this display wrote to its local topics, taken in as arrivals.
+  if (!localWrites.empty())
+  {
+    std::vector<std::pair<String, String>> writes;
+    writes.swap(localWrites);
+    for (const auto &w : writes) applyTopicValue(w.first, w.second);
+  }
   subscribeToProjectTopics();
   firmwareUpdater.service();
   if (pendingDeploy)
