@@ -1027,6 +1027,13 @@ static void setupNetworking()
 void setup()
 {
   Serial.begin(115200);
+  // Writes never wait for a reader. The USB serial counts as connected once
+  // a host has read from it or written to it - hil-on, hil?, a monitor - and
+  // from then on every print with nobody reading waited up to 100 ms for
+  // room. The knob logs a lot: a few minutes of HIL and its loop spent so
+  // long in prints that WiFi and MQTT starved, until a hard reset
+  // (2026-10-14).
+  Serial.setTxTimeoutMs(0);
   delay(200);
   Serial.printf("\n[papers3] %s %s, DDF %s\n", DEVICE_ID, FIRMWARE_VERSION, DDF_HASH);
 

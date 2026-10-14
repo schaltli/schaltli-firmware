@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <functional>
 
 // The test interface switched over USB (DeviceSettings.h): one line on the
 // serial port, 115200 baud -
@@ -7,6 +8,10 @@
 //   hil-on <password>   on, with that password, then a restart
 //   hil-off             off, then a restart
 //   hil?                says whether it is on
+//   hil-diag            WiFi, memory and whatever the board adds (setDiag)
+//
+// hil-diag answers while the network does not: the loop keeps running when
+// a board loses its network, so this is how to look at it then.
 //
 // The other way besides the setup portal, and the one HIL uses: the boards
 // on the test bench hang on USB anyway, and USB, like the portal, needs the
@@ -16,7 +21,11 @@ public:
   // From loop(). Reads what has arrived, never waits.
   void service();
 
+  // A line of the board's own for hil-diag - its MQTT state, say.
+  void setDiag(std::function<String()> diag) { diag_ = diag; }
+
 private:
   void run(const String &line);
   String line_;
+  std::function<String()> diag_;
 };

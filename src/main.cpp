@@ -3145,6 +3145,13 @@ static void setupWiFi() {
         // it started, and the hello then emptied test-interface.
         if (mqttClient.isConnected()) publishHello();
       }
+      // What hil-diag adds over USB: the broker connection and its history.
+      testInterfaceSwitch.setDiag([]() {
+        return String("mqtt ") + (mqttClient.isConnected() ? "connected" : "down") +
+               " (connects " + String(mqttClient.connectCount()) + ", reconnect attempts " + String(mqttClient.reconnectCount()) +
+               ", last state " + String(mqttClient.lastDisconnectState()) + "), test interface " +
+               (testInterface.isRunning() ? "running" : "off");
+      });
 
       // Nothing installed yet: say so on screen rather than leaving a blank
       // panel that looks like a failure.
@@ -3164,6 +3171,13 @@ static void setupWiFi() {
 
 void setup() {
   Serial.begin(115200);
+  // Writes never wait for a reader. The USB serial counts as connected once
+  // a host has read from it or written to it - hil-on, hil?, a monitor - and
+  // from then on every print with nobody reading waited up to 100 ms for
+  // room. The knob logs a lot: a few minutes of HIL and its loop spent so
+  // long in prints that WiFi and MQTT starved, until a hard reset
+  // (2026-10-14).
+  Serial.setTxTimeoutMs(0);
   delay(500);
 
   // A previous deep-sleep experiment latched LCD_RST/TOUCH_RST low via
