@@ -387,8 +387,15 @@ String peekProjectDeviceId(const String& zipPath) {
   // e-paper ProjectInstaller's identical comment for why the default (10)
   // isn't enough for a real project once tab-control/panel nesting,
   // icon-pair arrays etc. are involved.
+  // Only the one field is kept (a filter): parsed whole, a large project's
+  // strings - each a small allocation, and small ones go to internal RAM -
+  // took ~114 KB of it for a moment, on every install, leaving 1 KB for
+  // WiFi (30 pages on the 4.3B, 2026-10-14). The reboot after an install
+  // hid it from every reading until a refused install did not reboot.
+  JsonDocument filter;
+  filter["deviceId"] = true;
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::NestingLimit(30));
+  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
   free(jsonData);
   if (err) return "";
 
@@ -479,8 +486,11 @@ long peekProjectSystemGenerationMajor(const String& zipPath) {
     return -1;
   }
 
+  // Only the one field is kept - see peekProjectDeviceId() above.
+  JsonDocument filter;
+  filter["systemGeneration"] = true;
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::NestingLimit(30));
+  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
   free(jsonData);
   if (err) return -1;
 
@@ -499,7 +509,66 @@ long peekProjectSystemGenerationMajor(const String& zipPath) {
   return major;
 }
 
+// Bytes the files under `path` take, recursively.
+size_t treeBytes(const String& path) {
+  File dir = LittleFS.open(path);
+  if (!dir || !dir.isDirectory()) return 0;
+  size_t total = 0;
+  for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+    String child = path + "/" + String(f.name()).substring(String(f.name()).lastIndexOf('/') + 1);
+    total += f.isDirectory() ? treeBytes(child) : f.size();
+    f.close();
+  }
+  return total;
+}
+
+// What the zip's files take unpacked, `_source/` left out as below.
+bool unpackedBytes(const String& zipPath, size_t& out) {
+  File zipFile = LittleFS.open(zipPath, "r");
+  if (!zipFile) return false;
+  ZipFileReadContext readCtx{&zipFile};
+  mz_zip_archive zip;
+  memset(&zip, 0, sizeof(zip));
+  useDictReservingAllocator(zip);
+  useStreamingReader(zip, readCtx);
+  bool ok = mz_zip_reader_init(&zip, zipFile.size(), 0);
+  out = 0;
+  if (ok) {
+    int n = (int)mz_zip_reader_get_num_files(&zip);
+    for (int i = 0; i < n; i++) {
+      mz_zip_archive_file_stat st;
+      if (!mz_zip_reader_file_stat(&zip, i, &st) || mz_zip_reader_is_file_a_directory(&zip, i)) continue;
+      if (String(st.m_filename).startsWith("_source/")) continue;
+      out += (size_t)st.m_uncomp_size;
+    }
+    mz_zip_reader_end(&zip);
+  }
+  zipFile.close();
+  return ok;
+}
+
 bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
+  // Room first, before the running project goes: a project too large for
+  // the filesystem used to fail half way through unpacking, unnoticed - the
+  // writes were not checked, the CRC was taken over what was read - and
+  // the board said «Installed» and came up with no project (2026-10-14, 30
+  // pages on the 4.3B). Now it says so and keeps the project it has.
+  // LittleFS rounds every file up to its blocks and keeps metadata: 10 %
+  // and one block per file are what that costs, with room over.
+  {
+    size_t needed = 0;
+    if (unpackedBytes(zipPath, needed)) {
+      size_t total = LittleFS.totalBytes();
+      size_t used = LittleFS.usedBytes();
+      size_t freeAfter = total - used + treeBytes("/PROJECT");
+      size_t withOverhead = needed + needed / 10 + 64 * 1024;
+      if (withOverhead > freeAfter) {
+        errorOut = "The project is too large for this device: it needs " + String((unsigned)(withOverhead / 1024)) + " KB unpacked, the device has " +
+                   String((unsigned)(freeAfter / 1024)) + " KB. Fewer screens or smaller images make it fit.";
+        return false;
+      }
+    }
+  }
   if (LittleFS.exists("/PROJECT")) {
     // Checked, not assumed. Silently installing on top of a directory that
     // could not be cleared is what filled this filesystem up over months.
@@ -594,8 +663,15 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
         break;
       }
       crc = mz_crc32(crc, buffer, bytesRead);
-      totalWritten += bytesRead;
-      outFile.write(buffer, bytesRead);
+      size_t written = outFile.write(buffer, bytesRead);
+      totalWritten += written;
+      if (written != bytesRead) {
+        // The filesystem is full (or failing): what was written is short,
+        // which the check below reports.
+        mz_zip_reader_extract_iter_free(pState);
+        Serial.printf("[ProjectInstaller] short write for %s: %u of %u bytes\n", file_stat.m_filename, (unsigned)written, (unsigned)bytesRead);
+        break;
+      }
     }
     if (totalWritten != file_stat.m_uncomp_size || crc != file_stat.m_crc32) {
       Serial.printf("[ProjectInstaller] extract verification failed for %s\n", file_stat.m_filename);
@@ -610,7 +686,7 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
   zipFile.close();
 
   if (!success) {
-    errorOut = "Zip extraction failed";
+    errorOut = "Zip extraction failed - the device's storage may be full";
     return false;
   }
 
