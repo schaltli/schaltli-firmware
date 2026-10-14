@@ -74,6 +74,7 @@
 #include "../../MqttClient.h"
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
+#include "../../DeviceRequests.h"
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
@@ -355,6 +356,8 @@ static bool pendingDeploy = false;
 static String pendingDeployPayload;
 static TestInterfaceServer testInterface;
 static DeviceProtocol protocol(mqttClient);
+// ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
+static DeviceRequests deviceRequests(mqttClient);
 static bool topicsSubscribed = false;
 static bool setupModeActive = false;
 
@@ -1402,6 +1405,7 @@ static void setupNetworking()
   // replays its subscription list on every reconnect, so queueing it once
   // covers every later connection too.
   mqttClient.subscribe(protocol.deviceTopic("deploy"));
+  deviceRequests.subscribe();
 
   // Firmware over the air (FirmwareUpdater.h). The screen says what is
   // happening, lit even if it had gone dark, and the project comes back if
@@ -1421,10 +1425,12 @@ static void setupNetworking()
   // answers with the current theme on every connect.
   mqttClient.subscribe(String(TOPIC_PREFIX) + "/state/theme");
   mqttClient.setConnectedCallback([]() {
-    protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
+    protocol.publishHello();
+    protocol.publishTestInterface("http://" + WiFi.localIP().toString());
     Serial.println("[4v3b] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
+    if (deviceRequests.onMessage(topic)) return;
     if (topic == protocol.deviceTopic("firmware"))
     {
       firmwareUpdater.onMessage(payload);
@@ -3027,6 +3033,7 @@ void loop()
   }
   subscribeToProjectTopics();
   firmwareUpdater.service();
+  deviceRequests.service();
   if (pendingDeploy)
   {
     pendingDeploy = false;

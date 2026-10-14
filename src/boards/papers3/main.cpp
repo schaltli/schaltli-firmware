@@ -30,6 +30,7 @@
 #include "../../MqttClient.h"
 #include "../../NvsConfigStorage.h"
 #include "../../TestInterfaceServer.h"
+#include "../../DeviceRequests.h"
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
@@ -75,6 +76,8 @@ static bool setupModeActive = false;
 
 static MqttClient mqttClient;
 static DeviceProtocol protocol(mqttClient);
+// ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
+static DeviceRequests deviceRequests(mqttClient);
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
 // A deploy trigger, held from the MQTT callback until loop() runs it.
@@ -971,6 +974,7 @@ static void setupNetworking()
   // replays its subscription list on every reconnect, so queueing it once
   // covers every later connection too.
   mqttClient.subscribe(protocol.deviceTopic("deploy"));
+  deviceRequests.subscribe();
 
   // Firmware over the air (FirmwareUpdater.h). The notice is one clean
   // paint, nothing more during the download - each progress step would be a
@@ -990,10 +994,12 @@ static void setupNetworking()
   });
   mqttClient.subscribe(protocol.deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() {
-    protocol.publishHello("http://" + WiFi.localIP().toString() + "/ddf.zip");
+    protocol.publishHello();
+    protocol.publishTestInterface("http://" + WiFi.localIP().toString());
     Serial.println("[papers3] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
+    if (deviceRequests.onMessage(topic)) return;
     if (topic == protocol.deviceTopic("firmware"))
     {
       firmwareUpdater.onMessage(payload);
@@ -1084,6 +1090,7 @@ void loop()
   }
   subscribeToProjectTopics();
   firmwareUpdater.service();
+  deviceRequests.service();
   if (pendingDeploy)
   {
     pendingDeploy = false;

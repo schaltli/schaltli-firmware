@@ -187,6 +187,44 @@ bool MqttClient::publishAction(const String& actionName) {
   return success;
 }
 
+// The PUBLISH header written here rather than by PubSubClient's
+// beginPublish(): 2.8 builds the remaining length from a uint16_t, so a
+// 293775-byte description went out announced as 31631 bytes - the broker
+// took the first 31631 as the message and the rest as garbage, and dropped
+// the connection (found on the PaperS3, 2026-10-14). QoS 0, so no packet id:
+// fixed header, topic, payload.
+bool MqttClient::beginLargePublish(const String& topic, size_t length, bool retain) {
+  if (topic.isEmpty() || !isConnected()) {
+    return false;
+  }
+  const size_t topicLength = topic.length();
+  size_t remaining = 2 + topicLength + length;
+  uint8_t header[5];
+  size_t n = 0;
+  header[n++] = 0x30 | (retain ? 1 : 0);
+  do {
+    uint8_t digit = remaining % 128;
+    remaining /= 128;
+    if (remaining > 0) digit |= 0x80;
+    header[n++] = digit;
+  } while (remaining > 0 && n < sizeof(header));
+  if (remaining > 0) return false;
+  uint8_t topicLen[2] = {(uint8_t)(topicLength >> 8), (uint8_t)(topicLength & 0xFF)};
+  return wifiClient_.write(header, n) == n &&
+         wifiClient_.write(topicLen, 2) == 2 &&
+         wifiClient_.write((const uint8_t*)topic.c_str(), topicLength) == topicLength;
+}
+
+size_t MqttClient::writeLargePublish(const uint8_t* data, size_t length) {
+  return wifiClient_.write(data, length);
+}
+
+// No flush(): on the ESP32 it discards what has arrived, not what is
+// waiting to go out. The writes above have handed every byte to the socket.
+bool MqttClient::endLargePublish() {
+  return isConnected();
+}
+
 bool MqttClient::publish(const String& topic, const String& payload, bool retain) {
   if (topic.isEmpty() || !isConnected()) {
     return false;

@@ -39,6 +39,7 @@
 #include "CanvasDisplayAdapter.h"
 #include "NvsConfigStorage.h"
 #include "TestInterfaceServer.h"
+#include "DeviceRequests.h"
 #include "FirmwareUpdater.h"
 #include "BootReport.h"
 #include "WiFiSetupServer.h"
@@ -107,6 +108,8 @@ static TestInterfaceServer testInterface;
 static ProjectLoader projectLoader;
 static ColorScreenRenderer *screenRenderer = nullptr;
 static MqttClient mqttClient;
+// ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
+static DeviceRequests deviceRequests(mqttClient);
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
 
@@ -2542,18 +2545,21 @@ static void publishHello() {
   // an older major says so in the dialog rather than refusing the download
   // afterwards, where the only evidence is a serial log nobody is watching.
   doc["systemGeneration"] = String(SYSTEM_GENERATION_MAJOR) + "." + String(SYSTEM_GENERATION_MINOR);
-  // ddfHash+url are what make this device appear under "Announced Devices"
-  // at all - without them the designer treats it as firmware that publishes
-  // no DDF and skips it. The hash is the identity of the bytes served at
-  // url, and the designer verifies one against the other: if they disagree
-  // the fetch is refused rather than cached, so an announcement that lies
-  // is visible instead of quietly poisoning the designer's copy.
+  // ddfHash is what makes this device appear under "Announced Devices" at
+  // all. It is the identity of the description the device hands over on
+  // `ddf` when asked (DeviceRequests.h), and the designer verifies one
+  // against the other: if they disagree the bytes are refused rather than
+  // cached. No `url` since 2026-10-14 (schaltli-designer#70): the
+  // description goes over the broker, so the designer reaches no device
+  // directly.
   doc["ddfHash"] = DDF_HASH;
-  doc["url"] = "http://" + WiFi.localIP().toString() + "/ddf.zip";
   String payload;
   serializeJson(doc, payload);
   mqttClient.publish(deviceTopic("hello"), payload, true);
   Serial.println("[mqtt] published hello");
+  // Where the test interface answers, for HIL only (DeviceProtocol.h's
+  // publishTestInterface, contract §6).
+  mqttClient.publish(deviceTopic("test-interface"), "{\"url\":\"http://" + WiFi.localIP().toString() + "\"}", true);
 }
 
 static void publishDeployStatus(const String &deployId, const String &state, const String &error, int percent) {
@@ -2730,6 +2736,7 @@ static void onMqttMessage(const String &topic, const String &payload) {
   // incoming parsing, so those publishes look fine locally while nothing
   // watching the broker ever sees them.
   // Firmware over the air: stored here, run from loop(), for the same reason.
+  if (deviceRequests.onMessage(topic)) return;
   if (topic == deviceTopic("firmware")) {
     firmwareUpdater.onMessage(payload);
     return;
@@ -2821,6 +2828,7 @@ static void setupMqtt(const WiFiCredentials &creds) {
   // replays its own subscription list on every reconnect, so queueing it once
   // up front covers every later connection too.
   mqttClient.subscribe(deviceTopic("deploy"));
+  deviceRequests.subscribe();
   // Firmware over the air (FirmwareUpdater.h), reporting on deploy-status like a
   // project deploy.
   firmwareUpdater.setPublishStatusHandler(publishDeployStatus);
@@ -3676,6 +3684,7 @@ void loop() {
     deployManager.handleDeployMessage(payload);
   }
   firmwareUpdater.service();
+  deviceRequests.service();
   PHASE("energy", energyStep());
 
   delay(5);

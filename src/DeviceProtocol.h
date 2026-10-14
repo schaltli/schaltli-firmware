@@ -34,18 +34,16 @@ public:
     return String(TOPIC_PREFIX) + "/" + client_.getClientId() + "/" + leaf;
   }
 
-  // ddfHash and url are what make a device appear under "Announced Devices"
-  // at all - without them the designer treats it as firmware that publishes
-  // no DDF and skips it. The hash is the identity of the bytes served at
-  // url, and the designer verifies one against the other: on a mismatch the
-  // fetch is refused rather than cached, so an announcement that lies is
-  // visible instead of quietly poisoning the designer's copy.
+  // ddfHash is what makes a device appear under "Announced Devices" at all.
+  // It is the identity of the description the device hands over on `ddf`
+  // when asked (DeviceRequests.h), and the designer verifies one against the
+  // other: on a mismatch the bytes are refused rather than cached, so an
+  // announcement that lies is visible instead of quietly poisoning the
+  // designer's copy.
   //
-  // ddfUrl is passed in rather than built here so this file needs no WiFi
-  // and no web server - a device that cannot serve its own DDF passes an
-  // empty string and is simply skipped by auto-discovery, which is the
-  // documented behaviour rather than a failure.
-  void publishHello(const String &ddfUrl)
+  // No `url` since 2026-10-14 (schaltli-designer#70): the description goes
+  // over the broker, so the designer needs to reach no device directly.
+  void publishHello()
   {
     JsonDocument doc;
     doc["deviceId"] = DEVICE_ID;
@@ -59,10 +57,27 @@ public:
     // where the only evidence is a serial log nobody is watching.
     doc["systemGeneration"] = String(SYSTEM_GENERATION_MAJOR) + "." + String(SYSTEM_GENERATION_MINOR);
     doc["ddfHash"] = DDF_HASH;
-    if (!ddfUrl.isEmpty()) doc["url"] = ddfUrl;
     String payload;
     serializeJson(doc, payload);
     client_.publish(deviceTopic("hello"), payload, true);
+  }
+
+  // Where this device's test interface answers, for HIL only
+  // (docs/device-contract.md §6): retained while it is switched on, emptied
+  // while it is off - so a device says where its door is only when someone
+  // opened it on purpose. An empty baseUrl clears it.
+  void publishTestInterface(const String &baseUrl)
+  {
+    if (baseUrl.isEmpty())
+    {
+      client_.publish(deviceTopic("test-interface"), "", true);
+      return;
+    }
+    JsonDocument doc;
+    doc["url"] = baseUrl;
+    String payload;
+    serializeJson(doc, payload);
+    client_.publish(deviceTopic("test-interface"), payload, true);
   }
 
   void publishDeployStatus(const String &deployId, const String &state, const String &error, int percent)

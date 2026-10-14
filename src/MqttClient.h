@@ -77,6 +77,17 @@ public:
   bool publish(const String& topic, const String& payload, bool retain = false) override;
   
   /**
+   * Publish a payload too large for the 1 KB buffer - a device's description
+   * (about 300 KB), its recovery copy - in pieces: begin with the whole
+   * length, write it in chunks, end. PubSubClient sends the pieces straight
+   * to the socket, so nothing the size of the payload is ever held in RAM
+   * (docs/device-contract.md §4, `ddf`).
+   */
+  bool beginLargePublish(const String& topic, size_t length, bool retain);
+  size_t writeLargePublish(const uint8_t* data, size_t length);
+  bool endLargePublish();
+
+  /**
    * Clear all subscriptions
    */
   void clearSubscriptions() override;

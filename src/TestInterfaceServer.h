@@ -9,7 +9,6 @@
 // subset: only the two endpoints that need nothing but a rendered canvas.
 //
 //   GET  /snapshot.bmp - the current framebuffer, 24-bit BMP
-//   GET  /ddf.zip      - this device's own DDF, compiled in via ddf_zip.h
 //   POST /api/project  - upload+install a project zip, then reboot into it
 //   POST /api/firmware - upload+install a firmware image, then reboot into
 //                        it. The partition table carries two app slots, so
@@ -41,7 +40,8 @@
 // milestone is sequenced this way.
 //
 // Still to come as the rest of the stack lands: GET /api/topic-values and
-// POST /api/mqtt (MQTT client), GET /recovery-project (deploy manager).
+// POST /api/mqtt (MQTT client). The recovery copy is not here: it goes
+// over the broker (DeviceRequests.h, recovery/get, since 2026-10-14).
 class TestInterfaceServer {
 public:
   // Renders the given screen index in full and blits it. Returns false for
@@ -165,7 +165,6 @@ public:
 
 private:
   void handleSnapshot();
-  void handleDdfZip();
   void handleScreenSwitch();
   void handleSignalMode();
   void handleMqttConfigure();
@@ -175,7 +174,6 @@ private:
   void handleGetTopicValues();
   void handleInput();
   void handleTouch();
-  void handleRecoveryProject();
   void handleFilesystemInfo();
   void handleSettingsPage();
   void handleSettingsGet();

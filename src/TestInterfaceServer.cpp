@@ -1,7 +1,6 @@
 #include "TestInterfaceServer.h"
 #include <Update.h>
 #include "FirmwareImage.h"
-#include "ddf_zip.h"
 #include "DeviceInfo.h"
 #include "DeviceSettingsEndpoint.h"
 #include "DeviceSettingsHTML.h"
@@ -18,7 +17,6 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_ = new WebServer(port);
   webServer_->on("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
   webServer_->on("/panel.bmp", HTTP_GET, [this]() { this->handlePanel(); });
-  webServer_->on("/ddf.zip", HTTP_GET, [this]() { this->handleDdfZip(); });
   webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
   webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
   webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
@@ -27,7 +25,6 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
-  webServer_->on("/recovery-project", HTTP_GET, [this]() { this->handleRecoveryProject(); });
   // What the filesystem is holding, and why the last install refused. A
   // project install writes the upload to LittleFS before unpacking it, so a
   // filesystem with no room refuses installs while the device otherwise
@@ -156,18 +153,6 @@ void TestInterfaceServer::handleMqttConfigure() {
 // itself - swipe decoding and quadrature decoding still need a human's hands
 // to verify - but everything downstream of "an input fired" becomes testable
 // without one, which is the part that changes most often.
-// GET /recovery-project - the last successfully-verified deploy, which
-// DeployManager promoted to RECOVERY_PROJECT_PATH and has kept unchanged
-// since (it survives a failed extraction; see DeployManager.cpp).
-//
-// Ported from screenbee-m5dial on 2026-08-23, having been missed when this
-// firmware was written: DeployManager saved the copy and DeviceInfo.h
-// described the endpoint that reads it back, but the handler itself never
-// existed here. The designer's "Recover project from device" therefore got
-// a 404 from every Waveshare and reported that the device had never had a
-// project deployed - while the device was displaying that very project.
-// Storing something recoverable and offering no way to fetch it is worse
-// than not storing it, because it reads as a deliberate answer.
 // A page, not only an endpoint: these are the settings a person changes by
 // hand, and "curl the device" is no answer for someone who wants their
 // screen to stay lit a little longer.
@@ -230,31 +215,6 @@ void TestInterfaceServer::handleSettingsSave() {
   // Applied live rather than at the next boot - see setSettingsChangedHandler.
   if (settingsChangedHandler_) settingsChangedHandler_();
   sendJSONResponse(true, message);
-}
-
-void TestInterfaceServer::handleRecoveryProject() {
-  if (!LittleFS.exists(RECOVERY_PROJECT_PATH)) {
-    webServer_->send(404, "text/plain", "No recovery copy available on this device yet");
-    return;
-  }
-
-  File f = LittleFS.open(RECOVERY_PROJECT_PATH, "r");
-  if (!f) {
-    webServer_->send(500, "text/plain", "Failed to open the recovery copy");
-    return;
-  }
-
-  webServer_->setContentLength(f.size());
-  webServer_->sendHeader("Content-Disposition", "attachment; filename=\"recovered_project.zip\"");
-  webServer_->send(200, "application/zip", "");
-
-  uint8_t buffer[1024];
-  while (f.available()) {
-    size_t n = f.read(buffer, sizeof(buffer));
-    if (n == 0) break;
-    webServer_->client().write(buffer, n);
-  }
-  f.close();
 }
 
 void TestInterfaceServer::handleTouch() {
@@ -620,15 +580,6 @@ void TestInterfaceServer::handlePanel() {
     return;
   }
   sendBMP(shadow);
-}
-
-void TestInterfaceServer::handleDdfZip() {
-  // send_P(), not send() - the zip's raw bytes contain embedded 0x00s
-  // throughout, and every send() overload takes a null-terminated
-  // String/const char* with no explicit length, which would silently
-  // truncate at the first one. Only send_P()'s 4-arg overload accepts an
-  // explicit content length.
-  webServer_->send_P(200, "application/zip", (const char*)DDF_ZIP, sizeof(DDF_ZIP));
 }
 
 // RGB565 -> 8-bit-per-channel uses bit replication (top bits repeated into

@@ -3,11 +3,11 @@
 #include <ArduinoJson.h>
 #include <esp_heap_caps.h>
 
-// By name, not by relative path: this file is shared by every board, and
-// the header it wants is the one the current build's include path
-// provides. "../ddf_zip.h" pointed at whichever board happened to keep
-// its copy in src/, which is how the 4.3B came to serve the knob's DDF.
-#include "ddf_zip.h"
+// Through DdfBytes, the one file that includes the board's ddf_zip.h (by
+// name, not by relative path: "../ddf_zip.h" pointed at whichever board
+// happened to keep its copy in src/, which is how the 4.3B came to serve
+// the knob's DDF).
+#include "../DdfBytes.h"
 #include "ProjectInstaller.h"
 
 namespace {
@@ -23,7 +23,7 @@ namespace {
 // simply re-broke it, and the crash looked nothing like its cause - a
 // garbage pointer inside miniz, four frames from anything of ours.
 uint8_t* extractFromDdf(const char* name, size_t* outSize) {
-  uint8_t* data = ProjectInstaller::extractEntryFromMemoryZip(DDF_ZIP, sizeof(DDF_ZIP), name, outSize);
+  uint8_t* data = ProjectInstaller::extractEntryFromMemoryZip(ddfZipBytes(), ddfZipSize(), name, outSize);
   if (data != nullptr) {
     Serial.printf("[ddf-fonts] extracted %s (%u bytes)\n", name, (unsigned)*outSize);
   }
