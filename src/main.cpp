@@ -2307,6 +2307,10 @@ static String buildDebugJson() {
   out += ",\"screenIndex\":" + String(currentScreenIndex);
   out += ",\"pendingScreenRender\":" + String(pendingScreenRender ? "true" : "false");
   out += ",\"freeInternalHeap\":" + String((uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  // The low-water mark since boot: the knob lost its network when this
+  // reached a few hundred bytes - WiFi and lwIP had no room for their
+  // buffers (2026-10-14). hil/internal-heap.js holds it up.
+  out += ",\"minFreeInternalHeap\":" + String((uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
   // Newest last. gapMs is the wall-clock distance from the previous screen
   // change, so a fast bezel spin shows up as a run of small gaps - if gapMs
   // is consistently below render+lvgl+qspi, input is arriving faster than

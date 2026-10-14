@@ -123,7 +123,8 @@ void createDirectoriesForPath(const String& path) {
 //    history on TestInterfaceServer::runValidateAndExtractOnDedicatedTask().
 //
 // The fix: reserve both fixed-size buffers miniz needs for DEFLATE
-// extraction as *padded static* buffers (BSS, not heap - allocated once at
+// extraction as *padded static* buffers (BSS until 2026-10-14, since then
+// reserved once in PSRAM - see reservedRegion() below; not heap - allocated once at
 // link time, never competes with runtime fragmentation, and immune to the
 // tinfl_decompress overrun found below since there's guard space on both
 // sides): the ~9.5KB iterator state struct (mz_zip_reader_extract_iter_state
@@ -150,36 +151,54 @@ void createDirectoriesForPath(const String& path) {
 // buffer exists to avoid in the first place).
 const size_t kGuardPad = 4096;
 
-uint8_t g_dictWindowRegion[TINFL_LZ_DICT_SIZE + kGuardPad * 2];
-uint8_t* const g_dictWindowBuffer = g_dictWindowRegion + kGuardPad;
+// Reserved once, in PSRAM, on first use and never given back: the same
+// promise as BSS (allocated once, nothing competes with it afterwards, the
+// guard space around it), without its cost. As static arrays the two
+// regions took ~58 KB of the ~320 KB internal RAM for good, though only a
+// deploy uses them - and WiFi and lwIP need that RAM for their buffers: the
+// knob ran out of it under HIL load and lost its network (2026-10-14,
+// minimum free 684 bytes). PSRAM has megabytes to spare; internal RAM only
+// where there is no PSRAM.
+uint8_t* reservedRegion(size_t bytes) {
+  void* p = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!p) p = malloc(bytes);
+  return (uint8_t*)p;
+}
+
+uint8_t* dictWindowBuffer() {
+  static uint8_t* const region = reservedRegion(TINFL_LZ_DICT_SIZE + kGuardPad * 2);
+  return region ? region + kGuardPad : nullptr;
+}
 bool g_dictWindowInUse = false;
 
 const size_t kIterStateSize = sizeof(mz_zip_reader_extract_iter_state);
-uint8_t g_iterStateRegion[kIterStateSize + kGuardPad * 2];
-uint8_t* const g_iterStateBuffer = g_iterStateRegion + kGuardPad;
+uint8_t* iterStateBuffer() {
+  static uint8_t* const region = reservedRegion(kIterStateSize + kGuardPad * 2);
+  return region ? region + kGuardPad : nullptr;
+}
 bool g_iterStateInUse = false;
 
 void* dictReservingAlloc(void* opaque, size_t items, size_t size) {
   (void)opaque;
   size_t realSize = items * size;
-  if (realSize == TINFL_LZ_DICT_SIZE && !g_dictWindowInUse) {
+  if (realSize == TINFL_LZ_DICT_SIZE && !g_dictWindowInUse && dictWindowBuffer()) {
     g_dictWindowInUse = true;
-    return g_dictWindowBuffer;
+    return dictWindowBuffer();
   }
-  if (realSize == kIterStateSize && !g_iterStateInUse) {
+  if (realSize == kIterStateSize && !g_iterStateInUse && iterStateBuffer()) {
     g_iterStateInUse = true;
-    return g_iterStateBuffer;
+    return iterStateBuffer();
   }
   return malloc(realSize);
 }
 void dictReservingFree(void* opaque, void* address) {
   (void)opaque;
   if (!address) return;
-  if (address == g_dictWindowBuffer) {
+  if (address == dictWindowBuffer()) {
     g_dictWindowInUse = false;
     return;
   }
-  if (address == g_iterStateBuffer) {
+  if (address == iterStateBuffer()) {
     g_iterStateInUse = false;
     return;
   }
