@@ -76,14 +76,9 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 <div id="mqtt-message" class="message"></div>
 <div class="form-group">
 <div style="display:flex;gap:10px;align-items:end">
-<div style="width:20%"><label for="mqttProtocol">Protocol</label>
-<select id="mqttProtocol" style="width:100%">
-<option value="mqtt://">mqtt://</option>
-<option value="mqtts://">mqtts://</option>
-</select></div>
-<div style="width:60%"><label for="mqttHost">Host</label>
+<div style="width:75%"><label for="mqttHost">Host</label>
 <input type="text" id="mqttHost" placeholder="192.168.1.107" required style="width:100%"></div>
-<div style="width:20%"><label for="mqttPort">Port</label>
+<div style="width:25%"><label for="mqttPort">Port</label>
 <input type="number" id="mqttPort" placeholder="1883" min="1" max="65535" required style="width:100%"></div>
 </div></div>
 <div class="form-group"><label for="mqttUsername">Username</label>
@@ -159,7 +154,7 @@ else{showMessage('wifi','error',data.message)}
 showMessage('wifi','error','Failed to save WiFi settings');
 });}
 function saveMqtt(){
-var protocol=document.getElementById('mqttProtocol').value;
+var protocol='mqtt://';
 var host=document.getElementById('mqttHost').value;
 var port=document.getElementById('mqttPort').value;
 var username=document.getElementById('mqttUsername').value;
@@ -182,7 +177,7 @@ else{showMessage('mqtt','error',data.message)}
 showMessage('mqtt','error','Failed to save MQTT settings');
 });}
 function testMqtt(){
-var protocol=document.getElementById('mqttProtocol').value;
+var protocol='mqtt://';
 var host=document.getElementById('mqttHost').value;
 var port=document.getElementById('mqttPort').value;
 var username=document.getElementById('mqttUsername').value;

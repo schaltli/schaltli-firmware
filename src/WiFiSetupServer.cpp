@@ -332,6 +332,11 @@ void WiFiSetupServer::handleWiFiConfigure() {
   }
 }
 
+// `protocol` is always "mqtt://" since 2026-10-14: the page offered
+// mqtts:// too, and a board has no TLS client - the choice was stored and
+// never read, so a board set to mqtts:// talked in the clear
+// (schaltli-designer#70). The field stays in the request for the pages
+// already out there.
 void WiFiSetupServer::handleMqttConfigure() {
   if (!webServer_->hasArg("protocol") || !webServer_->hasArg("host") || !webServer_->hasArg("port")) {
     sendJSONResponse(false, "Missing MQTT protocol, host, or port");
