@@ -31,6 +31,7 @@
 #include "../../NvsConfigStorage.h"
 #include "../../TestInterfaceServer.h"
 #include "../../DeviceRequests.h"
+#include "../../TestInterfaceSwitch.h"
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
@@ -78,6 +79,8 @@ static MqttClient mqttClient;
 static DeviceProtocol protocol(mqttClient);
 // ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
 static DeviceRequests deviceRequests(mqttClient);
+// hil-on <password> / hil-off over USB (TestInterfaceSwitch.h).
+static TestInterfaceSwitch testInterfaceSwitch;
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
 // A deploy trigger, held from the MQTT callback until loop() runs it.
@@ -995,7 +998,7 @@ static void setupNetworking()
   mqttClient.subscribe(protocol.deviceTopic("firmware"));
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello();
-    protocol.publishTestInterface("http://" + WiFi.localIP().toString());
+    protocol.publishTestInterface(testInterface.isRunning() ? "http://" + WiFi.localIP().toString() : "");
     Serial.println("[papers3] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
@@ -1091,6 +1094,7 @@ void loop()
   subscribeToProjectTopics();
   firmwareUpdater.service();
   deviceRequests.service();
+  testInterfaceSwitch.service();
   if (pendingDeploy)
   {
     pendingDeploy = false;

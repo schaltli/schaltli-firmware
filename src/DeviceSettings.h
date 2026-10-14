@@ -63,4 +63,18 @@ bool setIdleScreenId(const String& id);
 // longer than this is a caller error rather than something to truncate.
 static const size_t MAX_IDLE_SCREEN_ID_LENGTH = 64;
 
+// The test interface (TestInterfaceServer): off from the factory, switched on
+// at the device with a password, kept across restarts (designer repo,
+// docs/device-contract.md §6, #70, 2026-10-14). Until then it was open on
+// port 80 in every firmware, without a login: anyone on the van's WiFi
+// could install a project or a firmware, move the board to another broker
+// or tap its screen. It is for HIL, and a person turns it on knowingly - in
+// the setup portal, which needs the device in their hands, or over USB.
+bool testInterfaceOn();
+String testInterfacePassword();
+// Off clears the password too. On needs one of MIN..MAX characters.
+bool setTestInterface(bool on, const String& password);
+static const size_t MIN_TEST_PASSWORD_LENGTH = 4;
+static const size_t MAX_TEST_PASSWORD_LENGTH = 64;
+
 }  // namespace DeviceSettings

@@ -107,6 +107,8 @@ public:
 
   // The canvas is passed to begin() rather than the constructor because it
   // only exists once CanvasPresenter has allocated it, which can fail.
+  // Starts nothing and returns false while the test interface is switched
+  // off (DeviceSettings::testInterfaceOn) - the factory state.
   bool begin(ClippedCanvas16& canvas, uint16_t port = 80);
 
   // Points the snapshot at a different canvas.
@@ -164,6 +166,10 @@ public:
   bool isRunning() const { return serverRunning_; }
 
 private:
+  bool authorized();
+  void guarded(const char* uri, HTTPMethod method, std::function<void()> handler);
+  void guarded(const char* uri, HTTPMethod method, std::function<void()> complete, std::function<void()> chunk);
+  String password_;
   void handleSnapshot();
   void handleScreenSwitch();
   void handleSignalMode();

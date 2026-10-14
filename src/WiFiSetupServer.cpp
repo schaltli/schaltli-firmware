@@ -270,6 +270,25 @@ void WiFiSetupServer::registerRoutes() {
   webServer_->on("/api/mqtt-test", HTTP_POST, [this]() { handleMqttTest(); });
   webServer_->on("/api/device-settings", HTTP_GET, [this]() { handleDeviceSettingsGet(); });
   webServer_->on("/api/device-settings", HTTP_POST, [this]() { handleDeviceSettingsSave(); });
+  // The test interface (DeviceSettings.h, contract §6): switched here, where
+  // the device is in someone's hands - never over the network. Takes effect
+  // with the restart that ends setup mode.
+  webServer_->on("/api/test-interface", HTTP_GET, [this]() {
+    webServer_->send(200, "application/json", DeviceSettings::testInterfaceOn() ? "{\"on\":true}" : "{\"on\":false}");
+  });
+  webServer_->on("/api/test-interface", HTTP_POST, [this]() {
+    const bool on = webServer_->arg("on") == "1";
+    const String password = webServer_->arg("password");
+    if (on && password.length() < DeviceSettings::MIN_TEST_PASSWORD_LENGTH) {
+      sendJSONResponse(false, "A password of at least 4 characters, please");
+      return;
+    }
+    if (!DeviceSettings::setTestInterface(on, password)) {
+      sendJSONResponse(false, "Could not save");
+      return;
+    }
+    sendJSONResponse(true, on ? "Test interface on after the restart" : "Test interface off after the restart");
+  });
   webServer_->on("/api/exit-setup", HTTP_POST, [this]() {
     exitRequested_ = true;
     webServer_->send(200, "application/json", "{\"success\":true,\"message\":\"Restarting\"}");

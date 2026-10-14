@@ -6,6 +6,8 @@ namespace {
 const char* NS_DEVICE = "device";
 const char* KEY_DISPLAY_OFF = "dispOffS";  // NVS keys are capped at 15 chars
 const char* KEY_IDLE_SCREEN = "idleScrId";
+const char* KEY_TEST_ON = "testOn";
+const char* KEY_TEST_PASSWORD = "testPw";
 }  // namespace
 
 namespace DeviceSettings {
@@ -46,6 +48,37 @@ bool setIdleScreenId(const String& id) {
   // getString's default already reads back as empty.
   const bool ok = id.isEmpty() ? (prefs.remove(KEY_IDLE_SCREEN) || !prefs.isKey(KEY_IDLE_SCREEN))
                                : (prefs.putString(KEY_IDLE_SCREEN, id) > 0);
+  prefs.end();
+  return ok;
+}
+
+bool testInterfaceOn() {
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, true)) return false;
+  const bool on = prefs.getBool(KEY_TEST_ON, false) && prefs.getString(KEY_TEST_PASSWORD, String()).length() >= MIN_TEST_PASSWORD_LENGTH;
+  prefs.end();
+  return on;
+}
+
+String testInterfacePassword() {
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, true)) return String();
+  const String value = prefs.getString(KEY_TEST_PASSWORD, String());
+  prefs.end();
+  return value;
+}
+
+bool setTestInterface(bool on, const String& password) {
+  if (on && (password.length() < MIN_TEST_PASSWORD_LENGTH || password.length() > MAX_TEST_PASSWORD_LENGTH)) return false;
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, false)) return false;
+  bool ok;
+  if (on) {
+    ok = prefs.putString(KEY_TEST_PASSWORD, password) > 0 && prefs.putBool(KEY_TEST_ON, true) > 0;
+  } else {
+    prefs.remove(KEY_TEST_PASSWORD);
+    ok = prefs.putBool(KEY_TEST_ON, false) > 0;
+  }
   prefs.end();
   return ok;
 }

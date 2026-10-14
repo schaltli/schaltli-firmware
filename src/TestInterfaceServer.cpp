@@ -3,6 +3,7 @@
 #include "FirmwareImage.h"
 #include "DeviceInfo.h"
 #include "DeviceSettingsEndpoint.h"
+#include "DeviceSettings.h"
 #include "DeviceSettingsHTML.h"
 #include "project/ProjectInstaller.h"
 #include <ArduinoJson.h>
@@ -12,54 +13,99 @@
 
 bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   if (serverRunning_) return true;
+  // Off from the factory (DeviceSettings.h): nothing listens until someone
+  // switched it on at the device, with a password (contract §6, #70).
+  if (!DeviceSettings::testInterfaceOn()) {
+    Serial.println("[TestInterface] off - switch it on in the setup portal or over USB (hil-on <password>)");
+    return false;
+  }
+  password_ = DeviceSettings::testInterfacePassword();
 
   canvas_ = &canvas;
   webServer_ = new WebServer(port);
-  webServer_->on("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
-  webServer_->on("/panel.bmp", HTTP_GET, [this]() { this->handlePanel(); });
-  webServer_->on("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
-  webServer_->on("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
-  webServer_->on("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
-  webServer_->on("/api/wifi", HTTP_POST, [this]() { this->handleWiFiConfigure(); });
-  webServer_->on("/api/scan", HTTP_GET, [this]() { this->handleWiFiScan(); });
-  webServer_->on("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
-  webServer_->on("/api/input", HTTP_POST, [this]() { this->handleInput(); });
-  webServer_->on("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
+  // WebServer keeps only the request headers it is told to.
+  const char* headers[] = {"Authorization"};
+  webServer_->collectHeaders(headers, 1);
+  guarded("/snapshot.bmp", HTTP_GET, [this]() { this->handleSnapshot(); });
+  guarded("/panel.bmp", HTTP_GET, [this]() { this->handlePanel(); });
+  guarded("/api/screen", HTTP_POST, [this]() { this->handleScreenSwitch(); });
+  guarded("/api/mqtt", HTTP_POST, [this]() { this->handleMqttConfigure(); });
+  guarded("/api/forget-wifi", HTTP_POST, [this]() { this->handleForgetWiFi(); });
+  guarded("/api/wifi", HTTP_POST, [this]() { this->handleWiFiConfigure(); });
+  guarded("/api/scan", HTTP_GET, [this]() { this->handleWiFiScan(); });
+  guarded("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
+  guarded("/api/input", HTTP_POST, [this]() { this->handleInput(); });
+  guarded("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
   // What the filesystem is holding, and why the last install refused. A
   // project install writes the upload to LittleFS before unpacking it, so a
   // filesystem with no room refuses installs while the device otherwise
   // behaves perfectly - it renders, answers, reports healthy. Without this
   // the only way to see that was a serial monitor, whose attach resets the
   // board.
-  webServer_->on("/api/fs", HTTP_GET, [this]() { this->handleFilesystemInfo(); });
+  guarded("/api/fs", HTTP_GET, [this]() { this->handleFilesystemInfo(); });
   // Device settings, served in normal operation rather than only from the
   // setup AP. Needing to put a device into setup mode to change how long
   // its screen stays lit would mean taking it off the network to adjust a
   // display preference - the same shape of problem as having to forget the
   // WiFi to reach the config page.
-  webServer_->on("/settings", HTTP_GET, [this]() { this->handleSettingsPage(); });
-  webServer_->on("/api/device-settings", HTTP_GET, [this]() { this->handleSettingsGet(); });
-  webServer_->on("/api/device-settings", HTTP_POST, [this]() { this->handleSettingsSave(); });
+  guarded("/settings", HTTP_GET, [this]() { this->handleSettingsPage(); });
+  guarded("/api/device-settings", HTTP_GET, [this]() { this->handleSettingsGet(); });
+  guarded("/api/device-settings", HTTP_POST, [this]() { this->handleSettingsSave(); });
   // Signalmodus an/aus. Absichtlich auch per GET: umgeschaltet wird das vom
   // Handy im selben Netz, waehrend man das Panel in der Hand haelt - und
   // dort tippt man eine URL in den Browser, keinen POST.
-  webServer_->on("/api/signal", HTTP_GET, [this]() { this->handleSignalMode(); });
-  webServer_->on("/api/signal", HTTP_POST, [this]() { this->handleSignalMode(); });
-  webServer_->on("/api/debug", HTTP_GET, [this]() {
+  guarded("/api/signal", HTTP_GET, [this]() { this->handleSignalMode(); });
+  guarded("/api/signal", HTTP_POST, [this]() { this->handleSignalMode(); });
+  guarded("/api/debug", HTTP_GET, [this]() {
     webServer_->send(200, "application/json",
                      debugHandler_ ? debugHandler_(webServer_->arg("set")) : String("{}"));
   });
-  webServer_->on(
+  guarded(
       "/api/project", HTTP_POST, [this]() { this->handleProjectUploadComplete(); },
       [this]() { this->handleProjectUploadChunk(); });
-  webServer_->on(
+  guarded(
       "/api/firmware", HTTP_POST, [this]() { this->handleFirmwareUploadComplete(); },
       [this]() { this->handleFirmwareUploadChunk(); });
   webServer_->begin();
   serverRunning_ = true;
 
-  Serial.printf("[TestInterface] listening on port %u: /snapshot.bmp, /ddf.zip, /api/screen, /api/project, /api/firmware\n", port);
+  Serial.printf("[TestInterface] listening on port %u, with a password: /snapshot.bmp, /api/screen, /api/project, /api/firmware\n", port);
   return true;
+}
+
+// Every request carries the password: `Authorization: Bearer <password>`,
+// or `?pw=<password>` for what a person types into a browser (the signal
+// mode, /settings). Anything else is refused, and an upload's bytes are
+// dropped before they reach the filesystem.
+bool TestInterfaceServer::authorized() {
+  if (password_.isEmpty()) return false;
+  if (webServer_->header("Authorization") == "Bearer " + password_) return true;
+  return webServer_->hasArg("pw") && webServer_->arg("pw") == password_;
+}
+
+void TestInterfaceServer::guarded(const char* uri, HTTPMethod method, std::function<void()> handler) {
+  webServer_->on(uri, method, [this, handler]() {
+    if (!authorized()) {
+      webServer_->send(401, "text/plain", "The test interface needs its password");
+      return;
+    }
+    handler();
+  });
+}
+
+void TestInterfaceServer::guarded(const char* uri, HTTPMethod method, std::function<void()> complete, std::function<void()> chunk) {
+  webServer_->on(
+      uri, method,
+      [this, complete]() {
+        if (!authorized()) {
+          webServer_->send(401, "text/plain", "The test interface needs its password");
+          return;
+        }
+        complete();
+      },
+      [this, chunk]() {
+        if (authorized()) chunk();
+      });
 }
 
 void TestInterfaceServer::sendJSONResponse(bool success, const String& message) {

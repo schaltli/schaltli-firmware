@@ -75,6 +75,7 @@
 #include "../../DeployManager.h"
 #include "../../TestInterfaceServer.h"
 #include "../../DeviceRequests.h"
+#include "../../TestInterfaceSwitch.h"
 #include "../../WiFiSupervisor.h"
 #include "../../BootReport.h"
 #include "../../FirmwareImage.h"
@@ -358,6 +359,8 @@ static TestInterfaceServer testInterface;
 static DeviceProtocol protocol(mqttClient);
 // ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
 static DeviceRequests deviceRequests(mqttClient);
+// hil-on <password> / hil-off over USB (TestInterfaceSwitch.h).
+static TestInterfaceSwitch testInterfaceSwitch;
 static bool topicsSubscribed = false;
 static bool setupModeActive = false;
 
@@ -1426,7 +1429,7 @@ static void setupNetworking()
   mqttClient.subscribe(String(TOPIC_PREFIX) + "/state/theme");
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello();
-    protocol.publishTestInterface("http://" + WiFi.localIP().toString());
+    protocol.publishTestInterface(testInterface.isRunning() ? "http://" + WiFi.localIP().toString() : "");
     Serial.println("[4v3b] published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
@@ -3034,6 +3037,7 @@ void loop()
   subscribeToProjectTopics();
   firmwareUpdater.service();
   deviceRequests.service();
+  testInterfaceSwitch.service();
   if (pendingDeploy)
   {
     pendingDeploy = false;

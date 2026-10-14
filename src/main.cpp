@@ -40,6 +40,7 @@
 #include "NvsConfigStorage.h"
 #include "TestInterfaceServer.h"
 #include "DeviceRequests.h"
+#include "TestInterfaceSwitch.h"
 #include "FirmwareUpdater.h"
 #include "BootReport.h"
 #include "WiFiSetupServer.h"
@@ -110,6 +111,8 @@ static ColorScreenRenderer *screenRenderer = nullptr;
 static MqttClient mqttClient;
 // ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
 static DeviceRequests deviceRequests(mqttClient);
+// hil-on <password> / hil-off over USB (TestInterfaceSwitch.h).
+static TestInterfaceSwitch testInterfaceSwitch;
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
 
@@ -2559,7 +2562,8 @@ static void publishHello() {
   Serial.println("[mqtt] published hello");
   // Where the test interface answers, for HIL only (DeviceProtocol.h's
   // publishTestInterface, contract §6).
-  mqttClient.publish(deviceTopic("test-interface"), "{\"url\":\"http://" + WiFi.localIP().toString() + "\"}", true);
+  mqttClient.publish(deviceTopic("test-interface"),
+                     testInterface.isRunning() ? "{\"url\":\"http://" + WiFi.localIP().toString() + "\"}" : String(), true);
 }
 
 static void publishDeployStatus(const String &deployId, const String &state, const String &error, int percent) {
@@ -3137,6 +3141,9 @@ static void setupWiFi() {
 #endif
       if (testInterface.begin(canvasPresenter.canvas())) {
         Serial.printf("[test] http://%s/\n", creds.lastIP.c_str());
+        // Said again now that it answers: MQTT may have connected before
+        // it started, and the hello then emptied test-interface.
+        if (mqttClient.isConnected()) publishHello();
       }
 
       // Nothing installed yet: say so on screen rather than leaving a blank
@@ -3685,6 +3692,7 @@ void loop() {
   }
   firmwareUpdater.service();
   deviceRequests.service();
+  testInterfaceSwitch.service();
   PHASE("energy", energyStep());
 
   delay(5);

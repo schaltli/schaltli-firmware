@@ -92,6 +92,16 @@ input:focus,select:focus{outline:none;border-color:#667eea}
 </div>
 <div id="device-tab" class="tab-content">
 {{DEVICE_SETTINGS_TAB}}
+<div id="test-message" class="message"></div>
+<div class="form-group" style="margin-top:28px">
+<label><input type="checkbox" id="tiOn" style="width:auto;margin-right:8px">Test interface</label>
+<div class="hint">For automated tests on a bench only. While it is on, anyone who knows
+the password can install projects and firmware over the network, change WiFi and broker
+and tap the screen. Leave it off in the van.</div>
+</div>
+<div class="form-group"><label for="tiPw">Password for the test interface</label>
+<input type="password" id="tiPw" placeholder="at least 4 characters"></div>
+<button class="btn" onclick="testInterfaceSave()">Save Test Interface</button>
 </div>
 <div style="padding:16px;text-align:center">
 <button onclick="exitSetup()" style="background:#555;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Finish and restart</button>
@@ -212,5 +222,22 @@ fetch('/api/exit-setup',{method:'POST'})
 .catch(function(){document.body.innerHTML='<div style="padding:40px;text-align:center;font-family:sans-serif"><h2>Restarting</h2><p>The device is leaving setup mode.</p></div>'});
 }
 {{DEVICE_SETTINGS_JS}}
+function testInterfaceMessage(type,text){
+var m=document.getElementById('test-message');
+m.className='message show '+type;
+m.textContent=text;
+setTimeout(function(){m.classList.remove('show')},5000);}
+function testInterfaceLoad(){
+fetch('/api/test-interface').then(function(r){return r.json()}).then(function(d){
+document.getElementById('tiOn').checked=!!d.on}).catch(function(){});}
+function testInterfaceSave(){
+var f=new FormData();
+f.append('on',document.getElementById('tiOn').checked?'1':'0');
+f.append('password',document.getElementById('tiPw').value);
+fetch('/api/test-interface',{method:'POST',body:f})
+.then(function(r){return r.json()})
+.then(function(d){testInterfaceMessage(d.success?'success':'error',d.message)})
+.catch(function(){testInterfaceMessage('error','Could not reach the device')});}
+window.addEventListener('load',testInterfaceLoad);
 </script></body></html>
 )=====";
