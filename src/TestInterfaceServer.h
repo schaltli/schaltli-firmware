@@ -81,6 +81,11 @@ public:
   // finger, or settles where it should. Posting a series of these drives the
   // real detector, the real transition and the real settle.
   using TouchHandler = std::function<void(int16_t x, int16_t y, bool down)>;
+  // The same with a second finger at (x2, y2), on a board whose panel reads
+  // two: a pinch (designer docs/2026-10-16-charts.md, decision 15) is not
+  // reachable from a test otherwise either. Unset, /api/touch refuses x2/y2
+  // rather than dropping the second finger without a word.
+  using TwoFingerTouchHandler = std::function<void(int16_t x, int16_t y, int16_t x2, int16_t y2, bool down)>;
 
   // A copy of every pixel that has actually been pushed to the panel, or
   // null if the firmware is not keeping one.
@@ -127,6 +132,7 @@ public:
   void setTopicValueHandler(TopicValueHandler handler) { topicValueHandler_ = handler; }
   void setInputHandler(InputHandler handler) { inputHandler_ = handler; }
   void setTouchHandler(TouchHandler handler) { touchHandler_ = handler; }
+  void setTwoFingerTouchHandler(TwoFingerTouchHandler handler) { twoFingerTouchHandler_ = handler; }
   void setPanelShadowHandler(PanelShadowHandler handler) { panelShadowHandler_ = handler; }
 
   // Called after a device setting is saved, so the change takes effect
@@ -207,6 +213,7 @@ private:
   TopicValueHandler topicValueHandler_;
   InputHandler inputHandler_;
   TouchHandler touchHandler_;
+  TwoFingerTouchHandler twoFingerTouchHandler_;
   PanelShadowHandler panelShadowHandler_;
   SettingsChangedHandler settingsChangedHandler_;
   ScreenListHandler screenListHandler_;

@@ -277,6 +277,17 @@ void TestInterfaceServer::handleTouch() {
   // Absent means down: a drag is mostly down-samples, and the lift is the
   // one call that has to say so.
   const bool down = webServer_->arg("down") != "0";
+  if (webServer_->hasArg("x2") || webServer_->hasArg("y2")) {
+    if (!twoFingerTouchHandler_) {
+      sendJSONResponse(false, "Two fingers are not available on this device");
+      return;
+    }
+    const int16_t x2 = (int16_t)webServer_->arg("x2").toInt();
+    const int16_t y2 = (int16_t)webServer_->arg("y2").toInt();
+    twoFingerTouchHandler_(x, y, x2, y2, down);
+    sendJSONResponse(true, String("Touch ") + (down ? "down" : "up") + " at " + x + "," + y + " and " + x2 + "," + y2);
+    return;
+  }
   touchHandler_(x, y, down);
   sendJSONResponse(true, String("Touch ") + (down ? "down" : "up") + " at " + x + "," + y);
 }

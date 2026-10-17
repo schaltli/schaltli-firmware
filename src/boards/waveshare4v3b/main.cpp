@@ -60,6 +60,7 @@
 // sources agree; nothing here is inferred from the 1.8" knob port, which is
 // the mistake that produced four hardware bugs on the last one.
 #include "project/NavigatorLayout.h"
+#include "project/PinchDetector.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -336,6 +337,20 @@ static uint32_t missedContacts = 0;
 static uint32_t missedMaxSamples = 0;
 static int missedMaxDx = 0;
 
+// The pinch proof of concept (designer docs/2026-10-16-charts.md, decision
+// 15): does a GT911 tell a pinch apart reliably? Every two-finger contact is
+// decided at the lift and written to /api/debug?set=pinches=1; after
+// ?set=pinches=show it is also shown on the panel for a moment, so it can be
+// judged in the hand. No action is dispatched yet. touchPointCount and touchX2/Y2 are the last report's
+// point count and second point; touchX/Y stay the first.
+static PinchDetector pinch;
+static uint8_t touchPointCount = 0;
+static int16_t touchX2 = 0, touchY2 = 0;
+static uint32_t pinchIns = 0, pinchOuts = 0, pinchNones = 0;
+static String pinchLog;
+static unsigned long pinchShownUntilMs = 0;
+static bool pinchShow = false;
+
 // --- networking -----------------------------------------------------------
 // All six of these compiled for this board without a single change. What was
 // missing was only the wiring, and that lived in the knob's main.cpp rather
@@ -511,6 +526,10 @@ static uint32_t renderGeneration = 0;
 // where every fault of the last two days actually lived.
 static int16_t injectX = 0, injectY = 0;
 static bool injectDown = false;
+// A second finger, posted with x2/y2 (TestInterfaceServer's
+// TwoFingerTouchHandler), for a pinch.
+static bool injectTwo = false;
+static int16_t injectX2 = 0, injectY2 = 0;
 static bool injectLiftOnce = false;
 static unsigned long injectUntilMs = 0;
 // The knob holds an injected sample for 400ms. This board needs longer, and
@@ -1005,11 +1024,23 @@ static void setupNetworking()
   testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
     injectX = x;
     injectY = y;
+    injectTwo = false;
     if (down && !injectDown) contactSampleUs = micros();
     injectDown = down;
     // A posted lift ends the window rather than extending it, so the
     // release runs against the real panel - which is also reading idle -
     // instead of against 400ms of frozen injected state.
+    injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
+    injectLiftOnce = !down;
+  });
+  testInterface.setTwoFingerTouchHandler([](int16_t x, int16_t y, int16_t x2, int16_t y2, bool down) {
+    injectX = x;
+    injectY = y;
+    injectX2 = x2;
+    injectY2 = y2;
+    injectTwo = down;
+    if (down && !injectDown) contactSampleUs = micros();
+    injectDown = down;
     injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
     injectLiftOnce = !down;
   });
@@ -1255,6 +1286,25 @@ static void setupNetworking()
         out += "\ngesture log\n" + swipe.log();
       }
     }
+    else if (setArg == "pinches=1" || setArg == "pinches=clear" || setArg == "pinches=show" || setArg == "pinches=hide")
+    {
+      if (setArg == "pinches=show" || setArg == "pinches=hide")
+      {
+        pinchShow = setArg == "pinches=show";
+        out += String("\npinches are ") + (pinchShow ? "now shown on the panel" : "no longer shown") + "\n";
+      }
+      else if (setArg == "pinches=clear")
+      {
+        pinchLog = "";
+        pinchIns = pinchOuts = pinchNones = 0;
+        out += "\npinch log cleared\n";
+      }
+      else
+      {
+        out += "\npinches: " + String(pinchIns) + " in, " + String(pinchOuts) + " out, " + String(pinchNones) + " neither\n";
+        out += "pinch log\n" + pinchLog;
+      }
+    }
     else if (setArg == "topicrender=off" || setArg == "topicrender=on")
     {
       topicRenderEnabled = setArg == "topicrender=on";
@@ -1381,6 +1431,7 @@ static void setupNetworking()
       out += "\nadd ?set=bench=1 for panel bandwidth, ?set=render=1 for the render breakdown, ";
       out += "?set=arcselftest=1 to prove the arc short cut, ";
       out += "?set=swipes=1 for the gesture log (?set=swipes=clear to reset it), ";
+      out += "?set=pinches=1 for the pinch log (?set=pinches=clear to reset it, ?set=pinches=show|hide to see each on the panel), ";
       out += "?set=topicrender=off to judge a gesture with nothing else drawing, ";
       out += "?set=aspect=1 for a 400x400 measuring square, ?set=circle=1 for a closed 400px ring, ";
       out += "?set=setupscreen=<seconds> for the AP setup screen ";
@@ -2365,12 +2416,16 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
   if (injectLiftOnce)
   {
     injectLiftOnce = false;
+    touchPointCount = 0;
     return Gt911::Lifted;
   }
   if (injectUntilMs != 0 && (long)(millis() - injectUntilMs) < 0)
   {
     x = injectX;
     y = injectY;
+    touchX2 = injectX2;
+    touchY2 = injectY2;
+    touchPointCount = !injectDown ? 0 : injectTwo ? 2 : 1;
     return injectDown ? Gt911::Touched : Gt911::Lifted;
   }
 
@@ -2381,8 +2436,47 @@ static Gt911::Status readTouch(int16_t &x, int16_t &y)
   {
     x = (int16_t)points[0].x;
     y = (int16_t)points[0].y;
+    touchPointCount = n;
+    if (n >= 2)
+    {
+      touchX2 = (int16_t)points[1].x;
+      touchY2 = (int16_t)points[1].y;
+    }
+  }
+  else if (status == Gt911::Lifted)
+  {
+    touchPointCount = 0;
   }
   return status;
+}
+
+// A two-finger contact is over: what it was, logged and shown.
+static void finishPinch()
+{
+  const PinchDetector::Result r = pinch.finish();
+  if (r == PinchDetector::PinchIn) pinchIns++;
+  else if (r == PinchDetector::PinchOut) pinchOuts++;
+  else pinchNones++;
+
+  char line[140];
+  snprintf(line, sizeof line, "%lu  %-9s  %d -> %d px, %d two-finger samples, second finger after %lu ms, up to %u points\n",
+           millis(), PinchDetector::name(r), pinch.startDistance(), pinch.endDistance(), pinch.twoFingerSamples(),
+           (unsigned long)pinch.secondFingerAfterMs(), (unsigned)pinch.maxPoints());
+  Serial.printf("[pinch] %s", line);
+  pinchLog += line;
+  // The last few dozen, not all of them since boot.
+  if (pinchLog.length() > 4000)
+  {
+    const int cut = pinchLog.indexOf('\n', pinchLog.length() - 4000);
+    pinchLog = pinchLog.substring(cut + 1);
+  }
+
+  if (pinchShow && displayAdapter)
+  {
+    displayAdapter->showLines({r == PinchDetector::PinchIn ? "Pinch in" : r == PinchDetector::PinchOut ? "Pinch out" : "kein Pinch",
+                               String(pinch.startDistance()) + " -> " + String(pinch.endDistance()) + " px"});
+    pinchShownUntilMs = millis() + 1200;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2786,6 +2880,7 @@ void loop()
       holdConsumed = false;
       contactCount++;
       contactSamples = 0;
+      pinch.begin(millis());
       contactDrift = 0;
       contactOnlyWoke = displayIsOff;
       wakeDisplay();
@@ -2859,6 +2954,26 @@ void loop()
     if (!levelDragObjId.isEmpty())
     {
       updateLevelDrag(touchX, touchY);
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
+    // Two fingers make the contact a pinch, and nothing else may have it:
+    // not a tap, a swipe or the setup hold, even once one finger has lifted
+    // and the other wanders on. Only fresh reports are fed in, so the count
+    // of two-finger samples means what the panel actually said.
+    if (touchStatus == Gt911::Touched) pinch.sample(touchPointCount, touchX, touchY, touchX2, touchY2, millis());
+    if (pinch.multi())
+    {
+      if (!pressedButtonId.isEmpty() || !pressedSwitchId.isEmpty())
+      {
+        pressedButtonId = "";
+        pressedSwitchId = "";
+        pressedSwitchIndex = -1;
+        renderFeedbackRegion("pinch took over", false);
+        if (pendingSwitchId.isEmpty()) feedbackActive = false;
+      }
       testInterface.handleClient();
       delay(5);
       return;
@@ -2965,6 +3080,15 @@ void loop()
       return;
     }
 
+    if (pinch.multi())
+    {
+      finishPinch();
+      contactOnlyWoke = false;
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
     // A contact that came and went without ever being read as a swipe.
     // How many samples it got, and how far it was seen to travel, say
     // which of the two explanations is the right one.
@@ -3026,6 +3150,12 @@ void loop()
       holdConsumed = false;
       renderAndPresent("hold cancelled");
     }
+  }
+
+  if (pinchShownUntilMs != 0 && (long)(millis() - pinchShownUntilMs) >= 0)
+  {
+    pinchShownUntilMs = 0;
+    renderAndPresent("pinch shown");
   }
 
   const uint32_t webT0 = micros();
