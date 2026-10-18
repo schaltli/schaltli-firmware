@@ -16,6 +16,7 @@
 // for when to draw.
 
 #include "project/NavigatorLayout.h"
+#include "project/ScreenGraphProject.h"
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <WiFi.h>
@@ -303,11 +304,24 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
-    // Past hidden screens (contract 2.7).
-    currentScreen = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
+    // Over the main row (contract 2.10): from a screen off it, from its page.
+    currentScreen = screengraphproject::rowStepIndex(project, currentScreen, delta);
     openPopup = -1;
     panel.forceFullNext();
     renderAndPresent("button: screen change");
+  }
+  else if (action.type == "goto-neighbour")
+  {
+    // The screen lying on that side (2.10); none there: nothing. E-paper
+    // jumps - no slide.
+    screengraph::Edge side;
+    if (!screengraph::edgeFrom(action.side.c_str(), side)) return;
+    const int target = screengraphproject::neighbourIndex(project, currentScreen, side);
+    if (target < 0) return;
+    currentScreen = target;
+    openPopup = -1;
+    panel.forceFullNext();
+    renderAndPresent("button: neighbour");
   }
   else if (action.type == "goto-screen")
   {
@@ -395,11 +409,13 @@ static bool handleTap(int16_t x, int16_t y)
       const navigatorlayout::Rect &s = layout.bar;
       if (entry >= 0)
       {
-        if (nav->entries[entry].screenId != projectLoader.getProject().screens[currentScreen].id)
+        // The entry's screen, or off the main row the way back (2.10).
+        const String target = renderer->navigatorEntryScreenId(currentScreen, entry);
+        if (!target.isEmpty() && target != projectLoader.getProject().screens[currentScreen].id)
         {
           ButtonAction go;
           go.type = "goto-screen";
-          go.targetScreenId = nav->entries[entry].screenId;
+          go.targetScreenId = target;
           dispatchButtonAction(go);
         }
         return true;
@@ -775,8 +791,9 @@ static bool setupPanelAndProject()
     return true;
   }
 
-  // The first screen that is not hidden (contract 2.7).
-  currentScreen = navigatorlayout::firstShown(hiddenFlags());
+  // The first screen of the main row (contract 2.10; before it, the first
+  // screen that is not hidden, which is what an older export's row is).
+  currentScreen = screengraphproject::startIndex(projectLoader.getProject());
   Serial.printf("[papers3] project \"%s\" %dx%d, %u screen(s)\n",
                 projectLoader.getProject().name.c_str(), projectLoader.getProject().screenWidth,
                 projectLoader.getProject().screenHeight,
