@@ -178,6 +178,15 @@ public:
   int navigatorScroll() const { return navigatorScroll_; }
   // The scroll the navigator is drawn at on that screen.
   int effectiveNavigatorScroll(int screenIndex) const;
+  // The navigator's marker gliding with a swipe (designer #59, contract
+  // 2.7): its bar drawn into the canvas alone, as the screen shows it, with
+  // every entry normal, or with every entry active on the marker's colour -
+  // a board composes a frame of the two. False when the screen shows none.
+  enum class StripLook { AsShown, AllNormal, AllActive };
+  bool renderNavigatorStrip(int screenIndex, StripLook look);
+  // The marker: the box an entry's active look begins with, within an
+  // entry, and its corners. False when there is none.
+  bool navigatorMarkerBox(int screenIndex, navigatorlayout::Rect& box, int& radius) const;
   // The screen a tap on entry `entry` of that screen's navigator opens: the
   // entry's, or on a screen off the main row the way back (contract 2.10).
   // Empty for none.
@@ -424,6 +433,7 @@ private:
   // The background renderScreen() filled before drawing any object.
   uint16_t currentScreenBg_ = 0xFFFF;
   int navigatorScroll_ = -1;
+  StripLook stripLook_ = StripLook::AsShown;
   // The screen's navigator over what is drawn, clipped to the region in
   // force if there is one (renderScreen, renderScreenRegion call it last).
   void renderNavigatorOver(int screenIndex);

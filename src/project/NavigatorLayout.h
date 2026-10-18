@@ -81,6 +81,22 @@ Layout barLayout(Edge edge, const Rect& bar, int count, int entryLength, const s
 constexpr int kDivider = 2;
 Rect dividerRect(Edge edge, const Rect& strip);
 
+// The marker gliding with a swipe (designer #59; the designer's
+// lib/navigator.ts): while a swipe leads from one entry's screen to
+// another's, the box an entry's active look begins with moves along the strip
+// with the finger and settles a little past the entry arrived at and back.
+constexpr int kMarkerSettleMs = 320;
+// Two different entries, the strip at the same scroll on both screens.
+bool markerGlides(int from, int to, int scrollFrom, int scrollTo);
+// px along the strip from entry `from`'s place, a swipe `travel` of `span` on.
+int markerOffset(const Layout& layout, int from, int to, int travel, int span);
+// `elapsedMs` after the finger lifted at `start`, on the way to `end`.
+int markerSettle(int start, int end, long elapsedMs);
+// The box (`box`, within an entry) `offset` px on from entry `from` at `scroll`.
+Rect markerRect(const Layout& layout, int from, int offset, int scroll, const Rect& box);
+// How far row `row` of a box with corners of `radius` is cut in at each end.
+int cornerInset(int radius, int width, int height, int row);
+
 // Paging past hidden screens (contract 2.7): from `current`, `delta` steps
 // (+1 next, -1 previous) over the screens that are not hidden, wrapping.
 // `current` itself may be hidden (reached by a goto). With none shown,

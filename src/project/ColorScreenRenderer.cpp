@@ -2953,6 +2953,28 @@ int ColorScreenRenderer::effectiveNavigatorScroll(int screenIndex) const {
   return navigatorlayout::scrollToShow(layout, active < 0 ? 0 : active, 0);
 }
 
+bool ColorScreenRenderer::renderNavigatorStrip(int screenIndex, StripLook look) {
+  navigatorlayout::Layout layout;
+  if (!navigatorLayout(screenIndex, layout)) return false;
+  stripLook_ = look;
+  renderNavigatorOver(screenIndex);
+  stripLook_ = StripLook::AsShown;
+  return true;
+}
+
+bool ColorScreenRenderer::navigatorMarkerBox(int screenIndex, navigatorlayout::Rect& box, int& radius) const {
+  navigatorlayout::Layout layout;
+  const Navigator* nav = nullptr;
+  if (!navigatorLayout(screenIndex, layout, &nav) || nav->entries.empty()) return false;
+  for (const ScreenObject& o : nav->entries[0].active) {
+    if (o.type != "box") continue;
+    box = {o.x, o.y, o.width, o.height};
+    radius = o.properties.cornerRadius < 0 ? 0 : o.properties.cornerRadius;
+    return true;
+  }
+  return false;
+}
+
 void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   navigatorlayout::Layout layout;
   const Navigator* nav = nullptr;
@@ -2998,10 +3020,28 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   // Off the main row the way back alone (2.10).
   const int arrow = backArrow(*nav, projectLoader_.getProject().screens[screenIndex]);
   const int shownEntries = arrow >= 0 ? 1 : (int)nav->entries.size();
+  // For the marker gliding (renderNavigatorStrip): none active, or every one
+  // on the marker's colour - the box an entry's active look begins with,
+  // stretched over the entries' part.
+  const bool allActive = stripLook_ == StripLook::AllActive && arrow < 0;
+  if (stripLook_ != StripLook::AsShown) active = -1;
+  if (allActive && entriesShown && !nav->entries.empty()) {
+    for (const ScreenObject& o : nav->entries[0].active) {
+      if (o.type != "box") continue;
+      ScreenObject ground = o;
+      ground.x = layout.strip.x;
+      ground.y = layout.strip.y;
+      ground.width = layout.strip.width;
+      ground.height = layout.strip.height;
+      ground.properties.cornerRadius = 0;
+      renderObject(ground, "", "", -1, "", -1);
+      break;
+    }
+  }
   for (int i = 0; entriesShown && i < shownEntries; i++) {
     const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, i, scroll);
     if (r.x >= ex1 || r.y >= ey1 || r.x + r.width <= ex0 || r.y + r.height <= ey0) continue;
-    const SpiramObjects& source = arrow >= 0 ? nav->back[arrow] : i == active ? nav->entries[i].active : nav->entries[i].normal;
+    const SpiramObjects& source = arrow >= 0 ? nav->back[arrow] : (allActive || i == active) ? nav->entries[i].active : nav->entries[i].normal;
     std::vector<ScreenObject> objects(source.begin(), source.end());
     std::sort(objects.begin(), objects.end(), zOrderLess);
     for (ScreenObject obj : objects) {

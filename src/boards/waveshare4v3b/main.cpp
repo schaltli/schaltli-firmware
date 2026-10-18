@@ -198,6 +198,10 @@ static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreen; }
 // FollowSwipe.h for why a full-screen follow exists on a board that
 // measures 15fps for one.
 static ClippedCanvas16 *spareCanvas = nullptr;
+// The navigator's strip with every entry active on the marker's colour, for
+// the marker gliding with a swipe (FollowSwipe.h, designer #59). Without it
+// the marker jumps at the end, as before.
+static ClippedCanvas16 *markerCanvas = nullptr;
 static FollowSwipe swipe;
 // A value that arrived while a transition was running. The value itself is
 // stored the moment it lands; only the drawing waits.
@@ -762,10 +766,12 @@ static void setupRenderStack()
   // at the first gesture: there are 6.5MB of PSRAM free and an allocation
   // that failed mid-swipe would have nowhere to go.
   spareCanvas = new ClippedCanvas16(PANEL_W, PANEL_H);
+  markerCanvas = new ClippedCanvas16(PANEL_W, PANEL_H);
   if (spareCanvas && spareCanvas->getBuffer())
   {
     swipe.attach(&panel, &canvas, spareCanvas, renderer, &currentScreen,
-                 (int)projectLoader.getProject().screens.size(), PANEL_W, PANEL_H);
+                 (int)projectLoader.getProject().screens.size(), PANEL_W, PANEL_H,
+                 markerCanvas && markerCanvas->getBuffer() ? markerCanvas : nullptr);
     Serial.printf("[4v3b] swipe %s: %u screens, spare canvas at %p, psram free %u\n",
                   swipe.ready() ? "ready" : "idle (needs two screens)",
                   (unsigned)projectLoader.getProject().screens.size(), spareCanvas->getBuffer(),
@@ -1059,7 +1065,17 @@ static void setupNetworking()
       wantedThemeDark = themevariant::isDarkPayload(setArg.substring(6));
       applyWantedTheme();
     }
-    String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
+    // ?set=marker=<screen index>,<px>: the frame a swipe towards that screen
+    // shows with the navigator's marker that far on, on the glass alone -
+    // for hil/navigator.js to hold against the designer's (#59).
+    String markerShown;
+    if (setArg.startsWith("marker="))
+    {
+      const int comma = setArg.indexOf(',');
+      const bool shown = comma > 0 && swipe.showMarker(setArg.substring(7, comma).toInt(), setArg.substring(comma + 1).toInt());
+      markerShown = String("marker ") + (shown ? "shown" : "not shown: it would not glide there") + "\n";
+    }
+    String out = markerShown + "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += String("theme ") + (wantedThemeDark ? "dark" : "light") + ", shown " +
            (projectLoader.isLoaded() && projectLoader.getProject().themeDark ? "dark" : "light") +
            " (?set=theme=dark|light)\n";

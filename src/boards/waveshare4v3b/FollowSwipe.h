@@ -1,6 +1,7 @@
 #pragma once
 #include "project/NavigatorLayout.h"
 #include <Arduino.h>
+#include <algorithm>
 #include "../../ClippedCanvas16.h"
 #include "RgbPanel.h"
 #include "../../project/ColorScreenRenderer.h"
@@ -38,6 +39,15 @@
 //     a screen takes (113ms here), the panel cannot be sampled meanwhile, and
 //     a fast flick can be over before the follow ever starts. The knob has
 //     the same hole and the same note.
+//
+// The navigator's marker glides with it (designer #59, 2026-10-18): where
+// the swipe leads from one entry's screen to another's, the strip is drawn
+// twice at the start - every entry normal into the outgoing canvas, every
+// entry active on the marker's colour into a third one - and each frame
+// copies the marker's box, row by row inside its corners, from the second
+// over the first. No strip is drawn per frame. Once the finger lifts the
+// marker settles on its own clock (navigatorlayout::markerSettle), a little
+// past the entry and back, with the screen standing; then the true strip.
 class FollowSwipe {
 public:
   // What the last gesture cost, so the feel can be argued about with numbers
@@ -53,12 +63,16 @@ public:
     bool committed = false;
     bool flicked = false;
     bool valid = false;
+    // The marker's frames after the lift, with the screen standing (#59).
+    uint32_t markerFrames = 0;
+    uint32_t markerUs = 0;
   };
 
   void attach(RgbPanel *panel, ClippedCanvas16 **current, ClippedCanvas16 *spare,
               ColorScreenRenderer *renderer, int *currentScreen, int screenCount,
-              int16_t w, int16_t h)
+              int16_t w, int16_t h, ClippedCanvas16 *accent = nullptr)
   {
+    accent_ = accent;
     panel_ = panel;
     current_ = current;
     spare_ = spare;
@@ -107,6 +121,7 @@ public:
     renderer_->setCanvas(spare_);
     renderer_->renderScreen(target_);
     renderer_->setCanvas(*current_);
+    marker_ = prepareMarker(target_);
     stats_.startRenderUs = micros() - t0;
 
     startPos_ = from;
@@ -124,7 +139,24 @@ public:
   void follow(int16_t x, int16_t y)
   {
     if (!active_) return;
-    compose(clamp((int)(vertical_ ? y : x) - (int)startPos_));
+    const int offset = clamp((int)(vertical_ ? y : x) - (int)startPos_);
+    if (marker_) markerAt_ = navigatorlayout::markerOffset(markerLayout_, markerFrom_, markerTo_, offset, span_);
+    compose(offset);
+  }
+
+  // A frame with the marker `offset` px on from this screen's entry towards
+  // `target`'s, on the glass only - the canvas keeps the screen as it is.
+  // For the HIL (/api/navigator-marker): the frame a swipe would show there,
+  // to hold against the designer's. False where the marker would not glide.
+  bool showMarker(int target, int offset)
+  {
+    if (!ready() || active_ || target < 0 || target >= screenCount_) return false;
+    if (!prepareMarker(target)) return false;
+    markerAt_ = offset;
+    composeStill(*current_, *current_);
+    renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AsShown);
+    marker_ = false;
+    return true;
   }
 
   // An empty touch read that turned out to be a dropout rather than a
@@ -184,6 +216,11 @@ public:
     const bool flick = speed >= FLICK_PX_PER_SECOND && abs(travelled) >= FLICK_MIN_PX;
     const bool commit = abs(travelled) >= span_ / 3 || flick;
     const int finalOffset = commit ? direction_ * -span_ : 0;
+    // The marker from where the finger left it to the entry arrived at, or
+    // back to its own, on its own clock from now.
+    const uint32_t releaseMs = millis();
+    const int markerStart = markerAt_;
+    const int markerEnd = commit ? (markerTo_ - markerFrom_) * markerLayout_.entryLength : 0;
 
     // Glide the rest of the way rather than jumping it. At 15fps this is a
     // handful of frames, and leaving it out would hide exactly the part of
@@ -193,6 +230,7 @@ public:
       int step = finalOffset - offset_;
       if (step > GLIDE_STEP_PX) step = GLIDE_STEP_PX;
       if (step < -GLIDE_STEP_PX) step = -GLIDE_STEP_PX;
+      if (marker_) markerAt_ = navigatorlayout::markerSettle(markerStart, markerEnd, (long)(millis() - releaseMs));
       compose(offset_ + step);
     }
 
@@ -206,6 +244,26 @@ public:
       spare_ = previous;
       renderer_->setCanvas(*current_);
       *currentScreen_ = target_;
+    }
+
+    if (marker_)
+    {
+      // The screen stands; the marker settles over the strip with every
+      // entry normal - the outgoing canvas's, which after a page is the
+      // spare one.
+      ClippedCanvas16 *normal = commit ? spare_ : *current_;
+      while (millis() - releaseMs < (uint32_t)navigatorlayout::kMarkerSettleMs)
+      {
+        markerAt_ = navigatorlayout::markerSettle(markerStart, markerEnd, (long)(millis() - releaseMs));
+        composeStill(*current_, normal);
+      }
+      // At rest: the strip as the screen shows it.
+      if (!commit) renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AsShown);
+      markerAt_ = markerEnd;
+      uint16_t *fb = panel_->back();
+      memcpy(fb, (*current_)->getBuffer(), (size_t)w_ * h_ * 2);
+      panel_->flip();
+      marker_ = false;
     }
 
     stats_.travel = travelled;
@@ -240,6 +298,9 @@ public:
                  " fps\n";
     out += "  worst frame " + String(stats_.worstUs / 1000.0f, 1) + " ms, incoming render " +
            String(stats_.startRenderUs / 1000.0f, 1) + " ms\n";
+    if (stats_.markerFrames > 0)
+      out += "  the navigator's marker settled in " + String(stats_.markerFrames) + " frames, " +
+             String(stats_.markerUs / stats_.markerFrames / 1000.0f, 1) + " ms/frame\n";
     out += "  travelled " + String(stats_.travel) + " px in " + String(stats_.durationMs) + " ms, " +
            String(stats_.pxPerSecond) + " px/s, " + (stats_.committed ? "committed" : "sprang back") +
            (stats_.flicked ? " (flick)" : "") + "\n";
@@ -329,6 +390,7 @@ private:
     if (vertical_)
     {
       composeVertical(fb_, out, in, stride, span, offset);
+      if (marker_) overlayMarker(fb_);
       panel_->flip();
       offset_ = offset;
       const uint32_t d = micros() - t0;
@@ -369,6 +431,7 @@ private:
       }
     }
 
+    if (marker_) overlayMarker(fb_);
     panel_->flip();
 
     offset_ = offset;
@@ -411,7 +474,77 @@ private:
     }
   }
 
+  // Whether the marker glides with this swipe, and from which entry to
+  // which: the navigator laid out, its box, the scroll; both strips drawn.
+  bool prepareMarker(int target)
+  {
+    navigatorlayout::Layout here, there;
+    const Navigator *navHere = nullptr, *navThere = nullptr;
+    int from = -1, to = -1;
+    if (!accent_ || !accent_->getBuffer()) return false;
+    if (!renderer_->navigatorLayout(*currentScreen_, here, &navHere, &from) || !renderer_->navigatorLayout(target, there, &navThere, &to) ||
+        navHere != navThere)
+      return false;
+    const int scroll = renderer_->effectiveNavigatorScroll(*currentScreen_);
+    if (!navigatorlayout::markerGlides(from, to, scroll, renderer_->effectiveNavigatorScroll(target))) return false;
+    if (!renderer_->navigatorMarkerBox(*currentScreen_, markerBox_, markerRadius_)) return false;
+    renderer_->setCanvas(accent_);
+    renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllActive);
+    renderer_->setCanvas(*current_);
+    renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllNormal);
+    markerLayout_ = here;
+    markerFrom_ = from;
+    markerTo_ = to;
+    markerScroll_ = scroll;
+    markerAt_ = 0;
+    return true;
+  }
+
+  // The marker's box at markerAt_, from the accent canvas over `fb`: row by
+  // row inside its corners (navigatorlayout::cornerInset), within the
+  // entries' part of the strip.
+  void overlayMarker(uint16_t *fb)
+  {
+    const navigatorlayout::Rect m = navigatorlayout::markerRect(markerLayout_, markerFrom_, markerAt_, markerScroll_, markerBox_);
+    const navigatorlayout::Rect &e = markerLayout_.strip;
+    const uint16_t *accent = accent_->getBuffer();
+    const size_t stride = (size_t)w_;
+    for (int row = 0; row < m.height; row++)
+    {
+      const int y = m.y + row;
+      if (y < e.y || y >= e.y + e.height || y < 0 || y >= h_) continue;
+      const int inset = navigatorlayout::cornerInset(markerRadius_, m.width, m.height, row);
+      const int x0 = std::max(std::max(m.x + inset, e.x), 0);
+      const int x1 = std::min(std::min(m.x + m.width - inset, e.x + e.width), (int)w_);
+      if (x1 > x0) memcpy(fb + (size_t)y * stride + x0, accent + (size_t)y * stride + x0, (size_t)(x1 - x0) * 2);
+    }
+  }
+
+  // A frame with the screen standing: `screen` whole, the entries' part of
+  // the strip from `normal`, the marker over it.
+  void composeStill(ClippedCanvas16 *screen, ClippedCanvas16 *normal)
+  {
+    const uint32_t t0 = micros();
+    uint16_t *fb = panel_->back();
+    const size_t stride = (size_t)w_;
+    memcpy(fb, screen->getBuffer(), stride * h_ * 2);
+    const navigatorlayout::Rect &e = markerLayout_.strip;
+    if (normal != screen)
+      for (int y = std::max(0, e.y); y < std::min((int)h_, e.y + e.height); y++)
+        memcpy(fb + (size_t)y * stride + e.x, normal->getBuffer() + (size_t)y * stride + e.x, (size_t)e.width * 2);
+    overlayMarker(fb);
+    panel_->flip();
+    stats_.markerFrames++;
+    stats_.markerUs += micros() - t0;
+  }
+
   RgbPanel *panel_ = nullptr;
+  ClippedCanvas16 *accent_ = nullptr;
+  bool marker_ = false;
+  navigatorlayout::Layout markerLayout_;
+  navigatorlayout::Rect markerBox_;
+  int markerRadius_ = 0;
+  int markerFrom_ = 0, markerTo_ = 0, markerScroll_ = 0, markerAt_ = 0;
   ClippedCanvas16 **current_ = nullptr;
   ClippedCanvas16 *spare_ = nullptr;
   ColorScreenRenderer *renderer_ = nullptr;
@@ -434,4 +567,8 @@ private:
 
 public:
   static int startThresholdPx() { return START_PX; }
+  // Where the marker was in the last frame, px from its entry's place, and
+  // how many frames it settled in after the last lift (0: it did not glide).
+  int markerOffset() const { return markerAt_; }
+  uint32_t markerFrames() const { return stats_.markerFrames; }
 };

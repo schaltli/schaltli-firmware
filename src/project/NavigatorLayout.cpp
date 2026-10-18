@@ -1,6 +1,8 @@
 #include "project/NavigatorLayout.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 
 // The designer's lib/navigator.ts, line by line.
 
@@ -60,6 +62,36 @@ Rect entryRect(const Layout& l, int index, int scroll) {
     const int along = index * l.entryLength - scroll;
     if (l.horizontal) return {l.strip.x + along, l.strip.y, l.entryLength, l.strip.height};
     return {l.strip.x, l.strip.y + along, l.strip.width, l.entryLength};
+}
+
+bool markerGlides(int from, int to, int scrollFrom, int scrollTo) {
+    return from >= 0 && to >= 0 && from != to && scrollFrom == scrollTo;
+}
+
+int markerOffset(const Layout& l, int from, int to, int travel, int span) {
+    if (span <= 0) return 0;
+    const int t = std::min(std::abs(travel), span);
+    return static_cast<int>(static_cast<int64_t>(to - from) * l.entryLength * t / span);
+}
+
+int markerSettle(int start, int end, long elapsedMs) {
+    const int64_t t = std::max<int64_t>(0, std::min<int64_t>(1000, static_cast<int64_t>(elapsedMs) * 1000 / kMarkerSettleMs));
+    const int64_t u = t - 1000;
+    const int64_t f = 1000 + 27 * u * u * u / 10000000 + 17 * u * u / 10000;
+    return start + static_cast<int>(static_cast<int64_t>(end - start) * f / 1000);
+}
+
+Rect markerRect(const Layout& l, int from, int offset, int scroll, const Rect& box) {
+    const Rect entry = entryRect(l, from, scroll - offset);
+    return {entry.x + box.x, entry.y + box.y, box.width, box.height};
+}
+
+int cornerInset(int radius, int width, int height, int row) {
+    const int r = std::max(0, std::min(radius, std::min(width / 2, height / 2)));
+    const int d = std::min(row, height - 1 - row);
+    if (d < 0 || d >= r) return 0;
+    const int k = 2 * r - 2 * d - 1;
+    return r - (static_cast<int>(std::sqrt(static_cast<double>(4 * r * r - k * k))) + 1) / 2;
 }
 
 int scrollToShow(const Layout& l, int index, int scroll) {

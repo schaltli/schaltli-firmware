@@ -120,6 +120,54 @@ static void geometry_every_vector() {
     TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "geometry vectors failed, see above");
 }
 
+static Rect rectOf(JsonObjectConst e) { return {e["x"] | 0, e["y"] | 0, e["width"] | 0, e["height"] | 0}; }
+
+// The marker gliding with a swipe (#59).
+static void marker_every_vector() {
+    int failures = 0;
+    int count = 0;
+    for (JsonObjectConst c : doc["markerGlides"].as<JsonArrayConst>()) {
+        count++;
+        if (markerGlides(c["from"] | 0, c["to"] | 0, c["scrollFrom"] | 0, c["scrollTo"] | 0) != (c["expected"] | false)) {
+            failures++;
+            std::printf("FAIL markerGlides %s\n", c["name"].as<const char*>());
+        }
+    }
+    for (JsonObjectConst c : doc["markerOffset"].as<JsonArrayConst>()) {
+        count++;
+        const int actual = markerOffset(layoutOf(c["layout"]), c["from"] | 0, c["to"] | 0, c["travel"] | 0, c["span"] | 0);
+        if (actual != (c["expected"] | -999)) {
+            failures++;
+            std::printf("FAIL markerOffset %s: %d\n", c["name"].as<const char*>(), actual);
+        }
+    }
+    for (JsonObjectConst c : doc["markerSettle"].as<JsonArrayConst>()) {
+        count++;
+        const int actual = markerSettle(c["start"] | 0, c["end"] | 0, c["elapsed"] | 0);
+        if (actual != (c["expected"] | -999)) {
+            failures++;
+            std::printf("FAIL markerSettle %s: %d\n", c["name"].as<const char*>(), actual);
+        }
+    }
+    for (JsonObjectConst c : doc["markerRect"].as<JsonArrayConst>()) {
+        count++;
+        if (!sameRect(markerRect(layoutOf(c["layout"]), c["from"] | 0, c["offset"] | 0, c["scroll"] | 0, rectOf(c["box"])), c["expected"])) {
+            failures++;
+            std::printf("FAIL markerRect %s\n", c["name"].as<const char*>());
+        }
+    }
+    for (JsonObjectConst c : doc["cornerInset"].as<JsonArrayConst>()) {
+        count++;
+        const int actual = cornerInset(c["radius"] | 0, c["width"] | 0, c["height"] | 0, c["row"] | 0);
+        if (actual != (c["expected"] | -999)) {
+            failures++;
+            std::printf("FAIL cornerInset %s: %d\n", c["name"].as<const char*>(), actual);
+        }
+    }
+    TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(30, count, "fewer marker vectors than the designer has");
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "marker vectors failed, see above");
+}
+
 // Paging past hidden screens and the start screen (contract 2.7) - the
 // firmware's own, not among the shared vectors.
 static void paging_skips_hidden_screens_and_wraps() {
@@ -165,6 +213,7 @@ int main(int, char**) {
     RUN_TEST(screens_every_vector);
     RUN_TEST(layout_every_vector);
     RUN_TEST(geometry_every_vector);
+    RUN_TEST(marker_every_vector);
     RUN_TEST(paging_skips_hidden_screens_and_wraps);
     RUN_TEST(a_device_starts_on_the_first_shown_screen);
     RUN_TEST(the_copy_is_the_designers_byte_for_byte);
