@@ -19,3 +19,7 @@ src/boards/*/ddf_zip.h text eol=lf
 # compared byte for byte by test/test_placeholders - both are kept LF, or
 # core.autocrlf would make the copy differ on one checkout and not the other.
 test/test_placeholders/placeholder-vectors.json text eol=lf
+
+# The same for the screen graph's vectors (schaltli-designer
+# lib/screen-graph/vectors.json), compared byte for byte by test/test_screen_graph.
+test/test_screen_graph/screen-graph-vectors.json text eol=lf
