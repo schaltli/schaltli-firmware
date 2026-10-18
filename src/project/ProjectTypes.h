@@ -481,8 +481,10 @@ struct Screen {
   // Present only when the designer's device.json declared
   // needsPageIconsInSize AND this screen has an icon assigned - a plain
   // square 8-bit grayscale PGM mask (see
-  // ColorAssetLoader::drawGrayscaleMaskToCanvas), for ScreenNavigatorOverlay's
-  // screen-switch navigator. Empty for every screen otherwise (most
+  // ColorAssetLoader::drawGrayscaleMaskToCanvas). The knob's screen menu
+  // drew it until the screen graph (contract 2.10) replaced the menu; kept
+  // for the knob's hints and map (designer docs/2026-10-17-screen-graph.md,
+  // decisions 6 and 15). Empty for every screen otherwise (most
   // projects, and any project built before this field existed) - callers
   // must treat empty as "no icon", not an error.
   String pageIconPath;

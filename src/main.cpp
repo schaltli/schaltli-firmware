@@ -56,7 +56,7 @@
 #include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
 #include "project/ColorAssetLoader.h"
-#include "ScreenNavigatorOverlay.h"
+#include "project/ScreenGraphProject.h"
 #include "RotaryEncoderReader.h"
 
 // Instrumentation for the physical input path, served at GET /api/debug.
@@ -116,19 +116,12 @@ static TestInterfaceSwitch testInterfaceSwitch;
 static DeployManager deployManager;
 static FirmwareUpdater firmwareUpdater;
 
-// Constructed in setup(), not here: it needs the canvas, which does not
-// exist until CanvasPresenter::begin() has allocated it.
-static ScreenNavigatorOverlay *screenMenu = nullptr;
-
 static int currentScreenIndex = 0;
 // The popup open over currentScreenIndex, as an index after the screens
 // (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
 // 2.5). The knob's own state, never on MQTT. While one is open, taps, drags,
 // the ring and every full render are the popup's.
 static int openPopup = -1;
-// Whether the screen menu's backdrop slot (MENU_BACKDROP_SLOT, further down)
-// still shows the screen as it is.
-static bool menuBackdropReady = false;
 static bool popupOriginKnown = false;
 static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOriginH = 0;
 static String lastPopup = "none since boot";
@@ -591,7 +584,6 @@ static void openPopupAt(int index) {
   const bool replacing = openPopup >= 0;
   const uint32_t t0 = millis();
   canvasPresenter.invalidateSlots();
-  menuBackdropReady = false;
 
   if (!replacing && popupOriginKnown) {
     ClippedCanvas16 *canvas = &canvasPresenter.canvas();
@@ -635,7 +627,6 @@ static void closePopup(const char *reason) {
   if (openPopup < 0) return;
   openPopup = -1;
   canvasPresenter.invalidateSlots();
-  menuBackdropReady = false;
   renderScreenIndex(currentScreenIndex);
   lastPopup = String("closed by ") + reason;
   Serial.printf("[popup] %s\n", lastPopup.c_str());
@@ -662,7 +653,15 @@ static void dispatchButtonAction(const ButtonAction &action) {
   if (action.type == "next-screen" || action.type == "previous-screen") {
     if (count == 0) return;
     int delta = (action.type == "next-screen") ? 1 : -1;
-    navigateToScreen(((currentScreenIndex + delta) % count + count) % count);
+    // Over the main row (designer device contract 2.10), past hidden and
+    // docked screens; from a screen off it, from its page.
+    navigateToScreen(screengraphproject::rowStepIndex(project, currentScreenIndex, delta));
+  } else if (action.type == "goto-neighbour") {
+    // The screen lying on that side (2.10); none there: nothing.
+    screengraph::Edge side;
+    if (!screengraph::edgeFrom(action.side.c_str(), side)) return;
+    const int target = screengraphproject::neighbourIndex(project, currentScreenIndex, side);
+    if (target >= 0) renderScreenIndex(target);
   } else if (action.type == "goto-screen") {
     for (int i = 0; i < count; i++) {
       if (project.screens[i].id == action.targetScreenId) {
@@ -681,11 +680,10 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // this board's DDF as deviceActions. Unknown ids are skipped and logged,
     // never an error: a project may legitimately have been built against a
     // newer device that offers more of them.
-    if (action.deviceActionId == "showScreenMenu") {
-      if (screenMenu) screenMenu->trigger(currentScreenIndex);
-    } else {
-      Serial.printf("[action] unknown device action \"%s\" - skipping\n", action.deviceActionId.c_str());
-    }
+    // The screen menu ("showScreenMenu") went with the screen graph
+    // (designer device contract 2.10): swiping to the neighbours took its
+    // place, and an older project's binding is skipped here like any other.
+    Serial.printf("[action] unknown device action \"%s\" - skipping\n", action.deviceActionId.c_str());
   } else if (action.type == "goto-setup-mode") {
     enterSetupMode();
   } else if (action.type == "adjust-level") {
@@ -971,21 +969,6 @@ static bool renderIntoSlot(int slot, int screenIndex) {
 // matters most - a user paging repeatedly leaves roughly a second between
 // gestures, comfortably more than one render, and this must land inside
 // that gap rather than under their next swipe.
-// Slot 0 is borrowed as the menu's backdrop while it is open. Safe because a
-// drag cannot start with the menu up, and prerenderNeighbours() stands down
-// for the same reason - nothing else touches the spares in that window.
-static const int MENU_BACKDROP_SLOT = 0;
-// menuBackdropReady is declared with the popup state near the top: opening or
-// closing a popup changes the screen the menu would show behind it.
-#if INPUT_DEBUG
-// What one frame of the menu's fly-in costs, and how many it got. The
-// animation runs on wall-clock time, so an expensive frame does not slow it
-// down - it just means fewer frames, and at one or two the menu does not
-// animate at all, it appears late and all at once.
-static uint32_t menuFrameMs = 0;
-static uint32_t menuFrames = 0;
-#endif
-
 #if INPUT_DEBUG
 // ------------------------------------------------- Phasen-Uhr
 //
@@ -1224,9 +1207,6 @@ static void blankDisplay() {
   // left it.
   const int idle = resolveIdleScreenIndex();
   if (idle < 0) return;
-  // A navigator left open would otherwise still be up under the dark panel
-  // and be the first thing shown on wake, on top of the idle screen.
-  if (screenMenu && screenMenu->isActive()) screenMenu->dismiss();
   if (idle != currentScreenIndex) renderScreenIndex(idle);
 }
 
@@ -1261,18 +1241,23 @@ static uint32_t lastTouchActivityMs = 0;
 
 static void prerenderNeighbours() {
   if (dragActive || dragAnimating || touchDown || openPopup >= 0) return;
-  if (screenMenu && screenMenu->isActive()) return;
   if (!projectLoader.isLoaded() || screenRenderer == nullptr) return;
   if (!canvasPresenter.canTransition()) return;
   if (millis() - lastTouchActivityMs < PRERENDER_IDLE_MS) return;
 
-  const int count = (int)projectLoader.getProject().screens.size();
-  if (count < 2) return;
-  const int wanted[2] = {
-      ((currentScreenIndex + 1) % count + count) % count,
-      ((currentScreenIndex - 1) % count + count) % count,
-  };
-  for (int i = 0; i < 2; i++) {
+  // The screens a swipe here leads to (designer device contract 2.10), the
+  // row's before the one below and above: two spares, so a third is drawn
+  // when its swipe starts.
+  const ProjectConfig &project = projectLoader.getProject();
+  int wanted[2] = {-1, -1};
+  int n = 0;
+  for (screengraph::Edge side : {screengraph::Edge::Right, screengraph::Edge::Left, screengraph::Edge::Down, screengraph::Edge::Up}) {
+    if (n == 2) break;
+    if (!screengraphproject::swipeLeadsToNeighbour(project, currentScreenIndex, screengraph::swipeFor(side))) continue;
+    const int target = screengraphproject::neighbourIndex(project, currentScreenIndex, side);
+    if (target >= 0 && target != currentScreenIndex) wanted[n++] = target;
+  }
+  for (int i = 0; i < n; i++) {
     if (canvasPresenter.slotHolding(wanted[i]) >= 0) continue;
     renderIntoSlot(canvasPresenter.slotToRenderInto(wanted[i]), wanted[i]);
     return;  // one per pass
@@ -1296,11 +1281,12 @@ static void tryStartDrag(int dx, int dy) {
   if (horizontal) id = dx > 0 ? "swipe-right" : "swipe-left";
   else id = dy > 0 ? "swipe-down" : "swipe-up";
 
-  const ButtonAction &action = projectLoader.getButtonAction(currentScreenIndex, String(id));
-  int delta;
-  if (action.type == "next-screen") delta = 1;
-  else if (action.type == "previous-screen") delta = -1;
-  else return;  // not a paging gesture here - the release classifier handles it
+  // Follows exactly where the swipe leads to the neighbour it pulls in -
+  // where the pull tab stands (designer device contract 2.10). Anything
+  // else, a wrap from the row's last page among it, is the release's.
+  if (!screengraphproject::swipeLeadsToNeighbour(project, currentScreenIndex, String(id))) return;
+  screengraph::Edge side;
+  screengraph::sideOfSwipe(id, side);
 
   // The incoming screen enters from the edge the finger is heading toward,
   // regardless of *which* screen it is. A project that binds swipe-left to
@@ -1309,7 +1295,8 @@ static void tryStartDrag(int dx, int dy) {
   // index arithmetic.
   const int16_t base = (int16_t)((horizontal ? (dx > 0 ? -1 : 1) : (dy > 0 ? -1 : 1)) * SCREEN_SIZE);
 
-  const int target = ((currentScreenIndex + delta) % count + count) % count;
+  const int target = screengraphproject::neighbourIndex(project, currentScreenIndex, side);
+  if (target < 0 || target == currentScreenIndex) return;
 
   // Usually already there, rendered while the device was idle - which is the
   // whole point. Rendering here blocks the loop for as long as a screen
@@ -1565,7 +1552,6 @@ static void applyLevelDragValue(const String &payload, bool force) {
       // Andere Bildschirme zeigen dasselbe Objekt - ihre vorgerenderten
       // Nachbarn sind damit veraltet.
       canvasPresenter.invalidateSlots();
-      menuBackdropReady = false;
       renderScreenIndex(currentScreenIndex);
     }
   }
@@ -1644,7 +1630,6 @@ static void endLevelDrag() {
     screenRenderer->clearAskedValue();
     levelAskedTopic = "";
     canvasPresenter.invalidateSlots();
-    menuBackdropReady = false;
     renderScreenIndex(currentScreenIndex);
   }
 }
@@ -1685,7 +1670,6 @@ static void adjustLevel(const ButtonAction &action, int32_t steps) {
   levelAskedTopic = markerTopic;
   screenRenderer->setAskedValue(levelAskedTopic, payload);
   canvasPresenter.invalidateSlots();
-  menuBackdropReady = false;
   renderScreenIndex(currentScreenIndex);
   writeProjectTopic(level->properties.writeTopic, payload);
   Serial.printf("[level] %d Raste(n) %s -> %s = %s\n", (int)steps, action.direction.c_str(),
@@ -1795,7 +1779,7 @@ static void pollTouchGesturesInner() {
     // Once refused - unbound direction, single-screen project, no second
     // canvas - it is not reconsidered, so the decision cannot flip halfway
     // through and start a transition from a stale origin.
-    if (!dragDecided && !dragAnimating && !(screenMenu && screenMenu->isActive()) &&
+    if (!dragDecided && !dragAnimating &&
         (abs(dx) >= DRAG_START_PX || abs(dy) >= DRAG_START_PX)) {
       tryStartDrag(dx, dy);
     }
@@ -1920,19 +1904,6 @@ static void pollTouchGesturesInner() {
                  (abs(dx) >= SWIPE_MIN_DISTANCE || abs(dy) >= SWIPE_MIN_DISTANCE);
 
   if (!isSwipe) {
-    // A tap. While the menu is open it selects a tablet; a miss just keeps
-    // the menu up rather than dismissing it, since a near-miss on a round
-    // screen is far more likely to be bad aim than a change of mind.
-    if (screenMenu && screenMenu->isActive()) {
-      int picked = screenMenu->screenAtPoint(touchLastX, touchLastY);
-      if (picked >= 0) {
-        screenMenu->dismiss();
-        renderScreenIndex(picked);
-      } else {
-        screenMenu->keepOpen();
-      }
-      return;
-    }
     // A tap on an open popup's close button, or beside the popup, closes it
     // and does nothing else.
     if (openPopup >= 0 && screenRenderer && screenRenderer->popupCloseBadge().contains(touchLastX, touchLastY)) {
@@ -1969,15 +1940,7 @@ static void pollTouchGesturesInner() {
 #endif
   if (!buttonId) return;
 
-  // A swipe while the menu is open keeps it open rather than re-triggering
-  // through the action - repeatedly swiping up is a natural "I'm still here"
-  // and should not restart the fly-in.
-  if (screenMenu && screenMenu->isActive()) {
-    screenMenu->keepOpen();
-    return;
-  }
-  // Any swipe closes an open popup and does nothing else - swipe-up included,
-  // which would otherwise open the screen menu (designer
+  // Any swipe closes an open popup and does nothing else (designer
   // docs/device-contract.md 2.5).
   if (openPopup >= 0) {
     closePopup("swipe");
@@ -1996,7 +1959,7 @@ static void pollTouchGesturesRecorded() {
 #if INPUT_DEBUG
   const uint32_t releasesBefore = touchReleaseCount;
   const uint32_t abandonedBefore = dragAxisAbandoned;
-  const bool menuWasOpen = screenMenu && screenMenu->isActive();
+  const bool menuWasOpen = false;  // the screen menu is gone (contract 2.10)
   const uint16_t samples = gestureSamples;
   const bool dragStarted = gestureDragStarted;
   const uint8_t maxFingers = gestureMaxFingers;
@@ -2195,9 +2158,6 @@ static String buildDebugJson() {
     out += ",\"canvasHash\":" + String(hash);
     out += ",\"scrollX\":" + String(lv_obj_get_scroll_x(lv_scr_act()));
     out += ",\"scrollY\":" + String(lv_obj_get_scroll_y(lv_scr_act()));
-    out += ",\"menuFrameMs\":" + String(menuFrameMs);
-    out += ",\"menuFrames\":" + String(menuFrames);
-      out += ",\"screenMenuActive\":" + String(screenMenu && screenMenu->isActive() ? "true" : "false");
     out += ",\"flushes\":[";
     {
       uint32_t total = flushLogIndex;
@@ -2443,8 +2403,9 @@ static void loadAndRenderProject() {
   // happens to be first in the project. Falls back to screen 0 when nothing
   // is configured or the saved id is not in this project - which is exactly
   // what this did before the setting existed.
+  // Without one, the main row's first (designer device contract 2.10).
   const int startIndex = resolveIdleScreenIndex();
-  const int firstScreen = startIndex < 0 ? 0 : startIndex;
+  const int firstScreen = startIndex < 0 ? screengraphproject::startIndex(projectLoader.getProject()) : startIndex;
   if (!renderScreenIndex(firstScreen)) {
     Serial.printf("[project] renderScreen(%d) failed\n", firstScreen);
     return;
@@ -2699,7 +2660,6 @@ static void applyWantedTheme() {
   if (projectLoader.getProject().themeDark == wantedThemeDark) return;
   projectLoader.applyThemeVariant(wantedThemeDark);
   canvasPresenter.invalidateSlots();
-  menuBackdropReady = false;
   if (signalModeActive) return;
   if (currentScreenIndex < 0 || currentScreenIndex >= (int)projectLoader.getProject().screens.size()) return;
   renderScreenIndex(currentScreenIndex);
@@ -2798,7 +2758,6 @@ static void applyTopicValue(const String &topic, const String &payload) {
   // a picture of how that screen used to look - including the menu's
   // backdrop, which is one of those slots.
   canvasPresenter.invalidateSlots();
-  menuBackdropReady = false;
 
   // Im Signalmodus gehoert die Anzeige dem Pegel. Der Wert wird oben
   // trotzdem uebernommen, damit nach dem Ausschalten sofort der richtige
@@ -3292,7 +3251,6 @@ void setup() {
     Serial.println("FATAL: no canvas - nothing can be rendered");
     return;
   }
-  screenMenu = new ScreenNavigatorOverlay(&canvasPresenter.canvas(), projectLoader);
 
 #if INPUT_DEBUG
   // Coexists with the decoder: the recorder is edge interrupts, the
@@ -3385,10 +3343,36 @@ static void energyLiftDots() {
   canvasPresenter.presentRegion(dirty.x0, dirty.y0, dirty.x1, dirty.y1);
 }
 
+// The pull tabs' nudge (designer device contract 2.10): towards the middle
+// and back once every 5 s, the tabs' rectangles redrawn while it moves. Not
+// while a finger, a slide or a popup is up, the display is off, or the test
+// interface runs - there the tabs stand still at rest, so a snapshot never
+// catches one half way.
+static int pullTabShownNudge = 0;
+static int pullTabShownScreen = -1;
+
+static void pullTabStep() {
+  if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || touchIsDown || dragActive || dragAnimating ||
+      signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive() || openPopup >= 0)
+    return;
+  const int nudge = testInterface.isRunning() ? 0 : screengraph::nudgeAt((long)millis());
+  if (currentScreenIndex != pullTabShownScreen) {
+    // A screen drawn anew drew its tabs at the nudge in force.
+    pullTabShownScreen = currentScreenIndex;
+    pullTabShownNudge = screenRenderer->pullTabNudge();
+  }
+  if (nudge == pullTabShownNudge) return;
+  screenRenderer->setPullTabNudge(nudge);
+  pullTabShownNudge = nudge;
+  for (const screengraph::Rect &r : screenRenderer->pullTabRegions(currentScreenIndex)) {
+    if (!screenRenderer->renderScreenRegion(currentScreenIndex, r.x, r.y, r.width, r.height)) continue;
+    canvasPresenter.presentRegion(r.x, r.y, r.x + r.width - 1, r.y + r.height - 1);
+  }
+}
+
 static void energyStep() {
   if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || touchIsDown || dragActive ||
-      dragAnimating || signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive() ||
-      (screenMenu && screenMenu->isActive()))
+      dragAnimating || signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive())
     return;
   const unsigned long now = millis();
   if (now - energyLastStepMs < ENERGY_STEP_MS) return;
@@ -3553,7 +3537,6 @@ void loop() {
       screenRenderer->clearAskedValue();
       levelAskedTopic = "";
       canvasPresenter.invalidateSlots();
-      menuBackdropReady = false;
       renderScreenIndex(currentScreenIndex);
     }
   }
@@ -3664,45 +3647,6 @@ void loop() {
   // GET /api/debug, so nothing needs a COM port open (see the recorder's
   // own comment for why that matters on this board).
 
-  // The overlay owns the frame while it is up: it re-renders the current
-  // screen and composites the tablets on top in one pass, so nothing else
-  // may render underneath it. Doing both would show a bare frame between
-  // them - the M5 Dial hit exactly that as a visible flicker on every jump.
-  // The overlay redraws from scratch each frame and needs the screen
-  // underneath put back first. It used to re-render it - 165ms a frame on a
-  // real project, so a 250ms fly-in got two frames and the menu took most of
-  // a second to appear. The screen underneath does not change while the menu
-  // is up, so it is copied aside once and restored per frame instead.
-  if (screenMenu && screenMenu->isActive()) {
-    if (!menuBackdropReady) {
-      energyLiftDots();
-      menuBackdropReady = canvasPresenter.copyCanvasToSlot(MENU_BACKDROP_SLOT);
-      // Borrowed, so the neighbour cache must not think a screen is still in
-      // there. prerenderNeighbours() refills it once the menu is gone.
-      if (menuBackdropReady) canvasPresenter.setSlotScreen(MENU_BACKDROP_SLOT, -1);
-    }
-    const uint32_t menuFrameStart = millis();
-    const bool drew = screenMenu->update([]() {
-      if (!menuBackdropReady || !canvasPresenter.copySlotToCanvas(MENU_BACKDROP_SLOT)) {
-        // No spare to borrow: fall back to the old way rather than leaving
-        // the previous frame's tablets smeared across the screen.
-        if (screenRenderer) screenRenderer->renderScreen(currentScreenIndex);
-      }
-    });
-    if (drew) {
-      canvasPresenter.present();
-#if INPUT_DEBUG
-      menuFrameMs = millis() - menuFrameStart;
-      menuFrames++;
-#endif
-    }
-  } else {
-    menuBackdropReady = false;
-#if INPUT_DEBUG
-    menuFrames = 0;
-#endif
-  }
-
   // Run here, after mqttClient.loop() has returned and PubSubClient's own
   // call stack has unwound - see onMqttMessage() for why this cannot happen
   // inside the callback.
@@ -3716,6 +3660,7 @@ void loop() {
   deviceRequests.service();
   testInterfaceSwitch.service();
   PHASE("energy", energyStep());
+  PHASE("pull tabs", pullTabStep());
 
   delay(5);
 #if INPUT_DEBUG

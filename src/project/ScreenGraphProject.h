@@ -8,7 +8,10 @@
 //
 // An export from before the screen graph has no `mainRow` and no
 // neighbours: its main row is the screens that are not hidden, as it paged
-// before, and nothing has a tab.
+// before, and each of them has the row's screens beside it as neighbours -
+// what the designer would export for it today - so a board that got the new
+// firmware but still holds an old project swipes as it did. It has no tab:
+// the export carries no colour for one.
 
 #include <string>
 #include <vector>
@@ -38,12 +41,28 @@ inline std::vector<std::string> mainRowIds(const ProjectConfig& project) {
   return row;
 }
 
+// The id of the screen on an edge: as exported, or for an export from before
+// the screen graph the row's screen beside it.
+inline std::string neighbourId(const ProjectConfig& project, int index, screengraph::Edge side) {
+  if (index < 0 || index >= (int)project.screens.size()) return "";
+  if (!project.mainRow.empty()) return project.screens[index].neighbours[(int)side].c_str();
+  if (side != screengraph::Edge::Left && side != screengraph::Edge::Right) return "";
+  const std::vector<std::string> row = mainRowIds(project);
+  const std::string id = project.screens[index].id.c_str();
+  for (size_t i = 0; i < row.size(); i++) {
+    if (row[i] != id) continue;
+    if (side == screengraph::Edge::Left) return i > 0 ? row[i - 1] : "";
+    return i + 1 < row.size() ? row[i + 1] : "";
+  }
+  return "";
+}
+
 inline screengraph::GraphScreen graphScreenOf(const ProjectConfig& project, int index) {
   screengraph::GraphScreen g;
   if (index < 0 || index >= (int)project.screens.size()) return g;
   const Screen& s = project.screens[index];
   g.id = s.id.c_str();
-  for (int e = 0; e < screengraph::EDGE_COUNT; e++) g.neighbours[e] = s.neighbours[e].c_str();
+  for (int e = 0; e < screengraph::EDGE_COUNT; e++) g.neighbours[e] = neighbourId(project, index, (screengraph::Edge)e);
   g.hasBack = screengraph::edgeFrom(s.back.c_str(), g.back);
   for (const ScreenButtonAction& b : s.buttonActions) {
     screengraph::Edge side;
@@ -55,8 +74,7 @@ inline screengraph::GraphScreen graphScreenOf(const ProjectConfig& project, int 
 
 // The screen on an edge of screen `index`, or -1.
 inline int neighbourIndex(const ProjectConfig& project, int index, screengraph::Edge side) {
-  if (index < 0 || index >= (int)project.screens.size()) return -1;
-  return screenIndexById(project, project.screens[index].neighbours[(int)side]);
+  return screenIndexById(project, String(neighbourId(project, index, side).c_str()));
 }
 
 // Next (delta 1) or previous (-1) over the main row from screen `index`; a
