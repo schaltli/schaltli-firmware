@@ -57,6 +57,7 @@
 #include "project/SwitchShape.h"
 #include "project/ColorAssetLoader.h"
 #include "project/ScreenGraphProject.h"
+#include "GraphOverlays.h"
 #include "RotaryEncoderReader.h"
 
 // Instrumentation for the physical input path, served at GET /api/debug.
@@ -1678,6 +1679,21 @@ static void adjustLevel(const ButtonAction &action, int32_t steps) {
   levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
 }
 
+// The way through the screen graph without a navigator (designer
+// docs/2026-10-17-screen-graph.md, decisions 6 and 15; GraphOverlays.h): the
+// hints while a swipe is made, and the map on a swipe that ends in a pause.
+// A swipe is SWIPE_MIN_DISTANCE at least, so the setup hold - which lets a
+// finger drift 40px - is never taken for one; while the map is open that hold
+// does not count.
+static GraphHints graphHints;
+static GraphMapView graphMap;
+static const unsigned long MAP_PAUSE_MS = 400;
+static const int MAP_STILL_PX = 6;
+static int16_t mapStillX = 0, mapStillY = 0;
+static unsigned long mapStillMs = 0;
+static bool overlaysTriedThisContact = false;
+static bool mapTriedThisContact = false;
+
 static void pollTouchGesturesInner() {
   if (touchIsDown) {
 #if INPUT_DEBUG
@@ -1700,6 +1716,11 @@ static void pollTouchGesturesInner() {
       setupHoldCountdownShown = false;
       setupHoldLastSecond = -1;
       setupHoldConsumed = false;
+      mapStillX = touchX;
+      mapStillY = touchY;
+      mapStillMs = touchStartMs;
+      overlaysTriedThisContact = false;
+      mapTriedThisContact = false;
 #if INPUT_DEBUG
       gestureSamples = 0;
       gestureDragStarted = false;
@@ -1736,6 +1757,33 @@ static void pollTouchGesturesInner() {
 
     const int dx = touchX - touchStartX;
     const int dy = touchY - touchStartY;
+
+    // The map, while it is open, is the finger's: a pointer over its tiles.
+    if (graphMap.isOpen()) {
+      graphMap.pointer(touchX, touchY, millis());
+      return;
+    }
+    // A swipe that ends in a pause opens it.
+    if (abs(touchX - mapStillX) > MAP_STILL_PX || abs(touchY - mapStillY) > MAP_STILL_PX) {
+      mapStillX = touchX;
+      mapStillY = touchY;
+      mapStillMs = millis();
+    }
+    if (!mapTriedThisContact && !wokeOnThisContact && levelDragObjId.isEmpty() && openPopup < 0 && !dragAnimating &&
+        (abs(dx) >= SWIPE_MIN_DISTANCE || abs(dy) >= SWIPE_MIN_DISTANCE) && millis() - mapStillMs >= MAP_PAUSE_MS &&
+        projectLoader.isLoaded()) {
+      mapTriedThisContact = true;
+      if (dragActive) {
+        // The screen goes back where it was, under the map.
+        canvasPresenter.endTransition();
+        dragActive = false;
+      }
+      graphHints.hide();
+      if (graphMap.open(projectLoader.getProject(), currentScreenIndex, SCREEN_SIZE)) {
+        graphMap.pointer(touchX, touchY, millis());
+        return;
+      }
+    }
 
     // The reserved setup gesture, checked before anything else can claim
     // this contact.
@@ -1779,6 +1827,14 @@ static void pollTouchGesturesInner() {
     // Once refused - unbound direction, single-screen project, no second
     // canvas - it is not reconsidered, so the decision cannot flip halfway
     // through and start a transition from a stale origin.
+    // The hints, once the touch moves as far as a drag starts: never on a
+    // tap, never on a popup.
+    if (!overlaysTriedThisContact && !wokeOnThisContact && openPopup < 0 && projectLoader.isLoaded() &&
+        (abs(dx) >= DRAG_START_PX || abs(dy) >= DRAG_START_PX)) {
+      overlaysTriedThisContact = true;
+      graphHints.show(projectLoader.getProject(), currentScreenIndex);
+    }
+    if (graphHints.shown()) graphHints.setTravel(max(abs(dx), abs(dy)));
     if (!dragDecided && !dragAnimating &&
         (abs(dx) >= DRAG_START_PX || abs(dy) >= DRAG_START_PX)) {
       tryStartDrag(dx, dy);
@@ -1796,6 +1852,19 @@ static void pollTouchGesturesInner() {
   // is a real release (see RELEASE_DEBOUNCE_MS).
   if (millis() - touchLastDownMs < RELEASE_DEBOUNCE_MS) return;
   touchDown = false;
+  graphHints.hide();
+
+  // Lifted over the map: to the lit tile's screen, or - over the current
+  // one, or off every tile - nowhere.
+  if (graphMap.isOpen()) {
+    const int chosen = graphMap.close();
+#if INPUT_DEBUG
+    touchReleaseCount++;
+    lastReleaseVerdict = chosen >= 0 ? "map-jump" : "map-cancel";
+#endif
+    if (chosen >= 0) renderScreenIndex(chosen);
+    return;
+  }
 
   // Ein Zug am Balken ist weder Tipp noch Wisch - er endet hier.
   if (!levelDragObjId.isEmpty()) {
@@ -2119,6 +2188,9 @@ static String buildDebugJson() {
   out += ",\"drawBufInternal\":" + String(drawBufInternal ? "true" : "false");
   out += ",\"navFrameMs\":" + String(navFrameMs);
   out += ",\"dragActive\":" + String(dragActive ? "true" : "false");
+  // The screen graph's hints and map (GraphOverlays.h), for a test to drive.
+  out += ",\"graphHints\":\"" + graphHints.sides() + "\"";
+  out += ",\"graphMap\":" + graphMap.debugJson();
   out += ",\"dragAnimating\":" + String(dragAnimating ? "true" : "false");
   out += ",\"dragOffset\":" + String(dragOffset);
   out += ",\"dragTargetIndex\":" + String(dragTargetIndex);
