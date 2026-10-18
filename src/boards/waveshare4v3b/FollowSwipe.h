@@ -74,20 +74,26 @@ public:
   const Stats &stats() const { return stats_; }
 
   // `target` is the screen to arrive at; `motion` says which way the picture
-  // travels: +1 when the incoming screen enters from the right, which is what
-  // a finger moving left produces.
+  // travels: +1 when the incoming screen enters from the right - or, with
+  // `vertical`, from below - which is what a finger moving left (up)
+  // produces. `from` is where the finger was along that axis.
+  //
+  // Up and down since the screen graph (designer device contract 2.10): a
+  // history below its page comes up from below, beside a navigator that
+  // stands still, as sideways.
   //
   // The two are given separately on purpose. Which screen comes next is the
   // project's business - it may bind a leftward swipe to the PREVIOUS screen
   // - while which way the picture slides is the hand's, and it always
   // follows the hand. Tying the two together would mean a project with
   // reversed bindings sliding its screens backwards under the finger.
-  bool start(int target, int motion, int16_t fromX)
+  bool start(int target, int motion, int16_t from, bool vertical = false)
   {
     if (!ready() || active_) return false;
     if (target < 0 || target >= screenCount_ || target == *currentScreen_) return false;
 
     direction_ = motion >= 0 ? 1 : -1;
+    vertical_ = vertical;
     target_ = target;
     setWindow(target);
 
@@ -103,7 +109,7 @@ public:
     renderer_->setCanvas(*current_);
     stats_.startRenderUs = micros() - t0;
 
-    startX_ = fromX;
+    startPos_ = from;
     offset_ = 0;
     // Started after the render, not before it: the finger travels during
     // those milliseconds and the panel cannot be read, so counting them
@@ -114,10 +120,11 @@ public:
     return true;
   }
 
-  void follow(int16_t x)
+  // Where the finger is now; the axis the gesture started on counts.
+  void follow(int16_t x, int16_t y)
   {
     if (!active_) return;
-    compose(clamp((int)x - (int)startX_));
+    compose(clamp((int)(vertical_ ? y : x) - (int)startPos_));
   }
 
   // An empty touch read that turned out to be a dropout rather than a
@@ -301,7 +308,7 @@ private:
         case navigatorlayout::Edge::Bottom: winY1_ = st.y; break;
       }
     }
-    span_ = winX1_ - winX0_;
+    span_ = vertical_ ? winY1_ - winY0_ : winX1_ - winX0_;
   }
 
   // One frame, straight into the panel's framebuffer. Per row: the strip's
@@ -318,6 +325,18 @@ private:
     const uint16_t *in = spare_->getBuffer();
     const size_t stride = (size_t)w_;
     const int span = span_;
+
+    if (vertical_)
+    {
+      composeVertical(fb_, out, in, stride, span, offset);
+      panel_->flip();
+      offset_ = offset;
+      const uint32_t d = micros() - t0;
+      stats_.frames++;
+      stats_.totalUs += d;
+      if (d > stats_.worstUs) stats_.worstUs = d;
+      return;
+    }
 
     for (int16_t y = 0; y < h_; y++)
     {
@@ -359,6 +378,39 @@ private:
     if (d > stats_.worstUs) stats_.worstUs = d;
   }
 
+  // The same up and down: each row of the window shows a row of the
+  // outgoing or the incoming screen further along, the strip's columns and
+  // rows stay as they are. offset < 0 moves the picture up (the incoming
+  // screen from below).
+  void composeVertical(uint16_t *fb, const uint16_t *out, const uint16_t *in, size_t stride, int span, int offset)
+  {
+    const int cols = winX1_ - winX0_;
+    for (int16_t y = 0; y < h_; y++)
+    {
+      uint16_t *dst = fb + (size_t)y * stride;
+      const uint16_t *outRow = out + (size_t)y * stride;
+      if (y < winY0_ || y >= winY1_)
+      {
+        memcpy(dst, outRow, stride * 2);
+        continue;
+      }
+      if (winX0_ > 0) memcpy(dst, outRow, (size_t)winX0_ * 2);
+      if (winX1_ < w_) memcpy(dst + winX1_, outRow + winX1_, (size_t)(w_ - winX1_) * 2);
+      const int rel = y - winY0_;
+      const uint16_t *src;
+      if (offset <= 0)
+      {
+        const int at = rel - offset;
+        src = at < span ? out + (size_t)(winY0_ + at) * stride : in + (size_t)(winY0_ + at - span) * stride;
+      }
+      else
+      {
+        src = rel < offset ? in + (size_t)(winY0_ + span - offset + rel) * stride : out + (size_t)(winY0_ + rel - offset) * stride;
+      }
+      memcpy(dst + winX0_, src + winX0_, (size_t)cols * 2);
+    }
+  }
+
   RgbPanel *panel_ = nullptr;
   ClippedCanvas16 **current_ = nullptr;
   ClippedCanvas16 *spare_ = nullptr;
@@ -371,7 +423,8 @@ private:
   bool active_ = false;
   int direction_ = 1;
   int target_ = 0;
-  int16_t startX_ = 0;
+  bool vertical_ = false;
+  int16_t startPos_ = 0;
   uint32_t startMs_ = 0;
   int offset_ = 0;
   uint16_t recoveries_ = 0;

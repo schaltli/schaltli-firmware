@@ -10,6 +10,7 @@
 #include "ArcSinTable.h"  // ARC_SIN_SCALE - Skala von ArcRaster::direction()
 #include "Placeholders.h"
 #include "DeviceInfo.h"  // DEVICE_MODEL, this board's own
+#include "ScreenGraphProject.h"
 #include <algorithm>
 
 // Matches JavaScript's Math.round() exactly, including its tie-breaking
@@ -2846,8 +2847,54 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   }
   // Over everything, as it covers what lies under it (contract 2.7).
   renderNavigatorOver(screenIndex);
+  // The pull tabs beside it (2.10), in the picture, so they slide with it.
+  renderPullTabs(screenIndex);
 
   return true;
+}
+
+void ColorScreenRenderer::renderPullTabs(int screenIndex) {
+  if (!projectLoader_.isLoaded()) return;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return;
+  const Screen& screen = project.screens[screenIndex];
+  if (screen.pullTabColor.isEmpty()) return;
+  const std::vector<screengraph::Edge> sides = screengraphproject::tabSidesAt(project, screenIndex);
+  if (sides.empty()) return;
+  const screengraph::Rect area = screengraphproject::contentAreaAt(project, screenIndex, canvas_->width(), canvas_->height());
+  // A box as the designer draws one (contract 2.1): its round ends are a
+  // corner radius every renderer already rasterises alike.
+  for (screengraph::Edge side : sides) {
+    const screengraph::Rect r = screengraph::tabRect(side, area, pullTabNudge_);
+    ScreenObject tab;
+    tab.type = "box";
+    tab.id = "pull-tab";
+    tab.x = r.x;
+    tab.y = r.y;
+    tab.width = r.width;
+    tab.height = r.height;
+    tab.zIndex = 0;
+    tab.properties.fillColor = screen.pullTabColor;
+    tab.properties.strokeColor = screen.pullTabColor;
+    tab.properties.strokeWidth = 0;
+    tab.properties.cornerRadius = screengraph::TAB_RADIUS;
+    renderBox(tab);
+  }
+}
+
+std::vector<screengraph::Rect> ColorScreenRenderer::pullTabRegions(int screenIndex) const {
+  std::vector<screengraph::Rect> regions;
+  if (!projectLoader_.isLoaded()) return regions;
+  const ProjectConfig& project = projectLoader_.getProject();
+  if (screenIndex < 0 || screenIndex >= (int)project.screens.size() || project.screens[screenIndex].pullTabColor.isEmpty()) return regions;
+  const screengraph::Rect area = screengraphproject::contentAreaAt(project, screenIndex, canvas_->width(), canvas_->height());
+  for (screengraph::Edge side : screengraphproject::tabSidesAt(project, screenIndex)) {
+    const screengraph::Rect a = screengraph::tabRect(side, area, 0);
+    const screengraph::Rect b = screengraph::tabRect(side, area, screengraph::TAB_NUDGE);
+    const int x0 = std::min(a.x, b.x), y0 = std::min(a.y, b.y);
+    regions.push_back({x0, y0, std::max(a.x + a.width, b.x + b.width) - x0, std::max(a.y + a.height, b.y + b.height) - y0});
+  }
+  return regions;
 }
 
 bool ColorScreenRenderer::navigatorLayout(int screenIndex, navigatorlayout::Layout& layout, const Navigator** navOut, int* activeOut) const {
@@ -2860,17 +2907,42 @@ bool ColorScreenRenderer::navigatorLayout(int screenIndex, navigatorlayout::Layo
   for (const Navigator& nav : project.navigators) {
     if (nav.id != screen.navigatorId) continue;
     const navigatorlayout::Edge edge = navigatorlayout::edgeFrom(nav.edge.c_str());
+    // Off the main row the way back is its one entry (2.10).
+    const bool back = backArrow(nav, screen) >= 0;
     layout = navigatorlayout::barLayout(edge, navigatorlayout::stripOf(edge, nav.thickness, canvas_->width(), canvas_->height()),
-                                        (int)nav.entries.size(), nav.entryLength, nav.themeSwitchAt.c_str(), nav.themeSwitchLength);
+                                        back ? 1 : (int)nav.entries.size(), nav.entryLength, nav.themeSwitchAt.c_str(),
+                                        nav.themeSwitchLength);
+    // The way back is as long as the entries' part of the strip (2.10).
+    if (back) layout.entryLength = layout.length;
     if (navOut) *navOut = &nav;
     if (activeOut) {
       *activeOut = -1;
-      for (size_t i = 0; i < nav.entries.size(); i++)
+      for (size_t i = 0; !back && i < nav.entries.size(); i++)
         if (nav.entries[i].screenId == screen.id) *activeOut = (int)i;
     }
     return true;
   }
   return false;
+}
+
+int ColorScreenRenderer::backArrow(const Navigator& nav, const Screen& screen) {
+  screengraph::Edge back;
+  if (!screengraph::edgeFrom(screen.back.c_str(), back)) return -1;
+  const int arrow = (int)screengraph::opposite(back);
+  return nav.back[arrow].empty() ? -1 : arrow;
+}
+
+String ColorScreenRenderer::navigatorEntryScreenId(int screenIndex, int entry) const {
+  navigatorlayout::Layout layout;
+  const Navigator* nav = nullptr;
+  if (!navigatorLayout(screenIndex, layout, &nav, nullptr) || entry < 0) return "";
+  const Screen& screen = projectLoader_.getProject().screens[screenIndex];
+  if (backArrow(*nav, screen) >= 0) {
+    screengraph::Edge back;
+    screengraph::edgeFrom(screen.back.c_str(), back);
+    return entry == 0 ? screen.neighbours[(int)back] : String("");
+  }
+  return entry < (int)nav->entries.size() ? nav->entries[entry].screenId : String("");
 }
 
 int ColorScreenRenderer::effectiveNavigatorScroll(int screenIndex) const {
@@ -2923,10 +2995,13 @@ void ColorScreenRenderer::renderNavigatorOver(int screenIndex) {
   int ex0, ey0, ex1, ey1;
   const bool entriesShown = clipTo(layout.strip, ex0, ey0, ex1, ey1);
   if (entriesShown) canvas_->setRegion(ex0, ey0, ex1 - ex0, ey1 - ey0);
-  for (int i = 0; entriesShown && i < (int)nav->entries.size(); i++) {
+  // Off the main row the way back alone (2.10).
+  const int arrow = backArrow(*nav, projectLoader_.getProject().screens[screenIndex]);
+  const int shownEntries = arrow >= 0 ? 1 : (int)nav->entries.size();
+  for (int i = 0; entriesShown && i < shownEntries; i++) {
     const navigatorlayout::Rect r = navigatorlayout::entryRect(layout, i, scroll);
     if (r.x >= ex1 || r.y >= ey1 || r.x + r.width <= ex0 || r.y + r.height <= ey0) continue;
-    const SpiramObjects& source = i == active ? nav->entries[i].active : nav->entries[i].normal;
+    const SpiramObjects& source = arrow >= 0 ? nav->back[arrow] : i == active ? nav->entries[i].active : nav->entries[i].normal;
     std::vector<ScreenObject> objects(source.begin(), source.end());
     std::sort(objects.begin(), objects.end(), zOrderLess);
     for (ScreenObject obj : objects) {
@@ -3144,8 +3219,10 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
     }
   }
 
-  // The navigator over the screen here too, cut to the region (2.7).
+  // The navigator over the screen here too, cut to the region (2.7), and
+  // the pull tabs beside it (2.10).
   renderNavigatorOver(screenIndex);
+  renderPullTabs(screenIndex);
   canvas_->clearRegion();
   return true;
 }

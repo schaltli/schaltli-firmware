@@ -212,9 +212,18 @@ bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
         for (JsonObject o : entryJson["active"].as<JsonArray>()) entry.active.push_back(parseScreenObject(o));
         nav.entries.push_back(entry);
       }
+      // The way back (2.10), by the way its arrow points.
+      static const char* const ARROWS[4] = {"up", "down", "left", "right"};
+      for (int e = 0; e < 4; e++) {
+        for (JsonObject o : navJson["back"][ARROWS[e]].as<JsonArray>()) nav.back[e].push_back(parseScreenObject(o));
+      }
       project_.navigators.push_back(nav);
     }
   }
+
+  // The main row (contract 2.10).
+  project_.mainRow.clear();
+  for (JsonVariant id : doc["mainRow"].as<JsonArray>()) project_.mainRow.push_back(id.as<String>());
 
   // Parse hardware button defaults (project-wide, per physical button id)
   if (doc["hardwareButtons"].is<JsonArray>()) {
@@ -370,6 +379,12 @@ void ProjectLoader::parseScreenInto(JsonObject screenJson, Screen& screen) {
     screen.pageIconPath = resolveAssetPath(screenJson["pageIconPath"] | "");
     screen.navigatorId = screenJson["navigatorId"] | "";
     screen.hidden = screenJson["hidden"] | false;
+    // The screen graph (contract 2.10).
+    static const char* const EDGES[4] = {"up", "down", "left", "right"};
+    for (int e = 0; e < 4; e++) screen.neighbours[e] = screenJson["neighbours"][EDGES[e]] | "";
+    screen.back = screenJson["back"] | "";
+    screen.pullTabColor = screenJson["pullTabColor"] | "";
+    screen.pullTabColorDark = screenJson["pullTabColorDark"] | "";
 
     if (screenJson["objects"].is<JsonArray>()) {
       JsonArray objectsArray = screenJson["objects"];
@@ -959,6 +974,7 @@ ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {
   action.deviceActionId = actionJson["deviceActionId"] | "";
   action.targetObjectId = actionJson["targetObjectId"] | "";
   action.direction = actionJson["direction"] | "";
+  action.side = actionJson["side"] | "";
   return action;
 }
 

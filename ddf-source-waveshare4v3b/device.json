@@ -435,6 +435,6 @@
     "navigator",
     "energy-diagram"
   ],
-  "supportedFeatures": ["local-topics"],
+  "supportedFeatures": ["local-topics", "screen-graph"],
   "supportsSoftwareButtons": true
 }

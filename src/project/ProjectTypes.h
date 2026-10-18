@@ -106,6 +106,9 @@ struct ButtonAction {
   // moves one step, and which way ("up"/"down"). main.cpp's adjustLevel().
   String targetObjectId;
   String direction;
+  // for "goto-neighbour" (contract 2.10): "up", "down", "left" or "right" -
+  // the screen lying there, Screen::neighbours.
+  String side;
 };
 
 // The energy diagram (designer docs/device-contract.md 2.8, generation
@@ -444,6 +447,10 @@ struct Navigator {
   int themeSwitchLength = 0;
   SpiramObjects themeSwitchObjects;
   std::vector<NavigatorEntry> entries;
+  // The way back (2.10): on a screen off the main row the one entry, by the
+  // way its arrow points (screengraph::Edge order: up, down, left, right).
+  // Empty where no screen of this navigator needs that arrow.
+  SpiramObjects back[4];
 };
 
 // Screen definition
@@ -454,6 +461,13 @@ struct Screen {
   String navigatorId;
   // Out of next/previous paging, still a goto target; never the start (2.7).
   bool hidden = false;
+  // The screen graph (2.10): the id of the screen lying on each edge, in
+  // screengraph::Edge order (up, down, left, right), empty where none; the
+  // edge the way back lies at ("" on the main row); the pull tab's colour.
+  String neighbours[4];
+  String back;
+  String pullTabColor;
+  String pullTabColorDark;
   String path;                            // Background BMP path (optional)
   String backgroundColor;                 // Screen fill color, e.g. "#ffffff" (optional, defaults to white)
   String backgroundColorDark;             // The dark variant's (ThemeVariant.h); empty: same as light
@@ -554,6 +568,10 @@ struct ProjectConfig {
   std::vector<Screen> popups;
   PopupFence popupFence;
   std::vector<Navigator> navigators;
+  // The main row's screen ids in order (2.10): what next and previous walk.
+  // Empty in an export from before it - then the screens that are not
+  // hidden, which is what it is for such a project (ScreenGraphProject.h).
+  std::vector<String> mainRow;
   std::vector<HardwareButtonDef> hardwareButtons;
   // Combined topics (contract 2.6), in evaluation order - each after every
   // one it reads. The device's own: computed, never published.

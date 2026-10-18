@@ -61,6 +61,7 @@
 // the mistake that produced four hardware bugs on the last one.
 #include "project/NavigatorLayout.h"
 #include "project/PinchDetector.h"
+#include "project/ScreenGraphProject.h"
 #include <Arduino.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -702,8 +703,9 @@ static void setupRenderStack()
   if (loaded)
   {
     Serial.println("[4v3b] loaded deployed project from /PROJECT");
-    // The first screen that is not hidden (contract 2.7).
-    currentScreen = navigatorlayout::firstShown(hiddenFlags());
+    // The first screen of the main row (contract 2.10; before it, the first
+    // screen that is not hidden, which is what an older export's row is).
+    currentScreen = screengraphproject::startIndex(projectLoader.getProject());
   }
   else
   {
@@ -1971,10 +1973,23 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     if (count == 0) return;
     const int delta = (action.type == "next-screen") ? 1 : -1;
-    currentScreen = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
+    // Over the main row (contract 2.10): from a screen off it, from its page.
+    currentScreen = screengraphproject::rowStepIndex(project, currentScreen, delta);
     openPopup = -1;
     forgetTouchFeedback();
     renderAndPresent("button: screen change");
+  }
+  else if (action.type == "goto-neighbour")
+  {
+    // The screen lying on that side (2.10); none there: nothing.
+    screengraph::Edge side;
+    if (!screengraph::edgeFrom(action.side.c_str(), side)) return;
+    const int target = screengraphproject::neighbourIndex(project, currentScreen, side);
+    if (target < 0) return;
+    currentScreen = target;
+    openPopup = -1;
+    forgetTouchFeedback();
+    renderAndPresent("button: neighbour");
   }
   else if (action.type == "goto-screen")
   {
@@ -2055,21 +2070,23 @@ static void dispatchButtonAction(const ButtonAction &action)
 // which is exactly why it could look right while being wrong: a project
 // that binds a leftward swipe to something else - a command, a jump to a
 // named screen - would have had its screens turned instead.
-static int pagingTargetFor(int dx)
+//
+// Since the screen graph (designer device contract 2.10) the slide follows
+// exactly where a swipe leads to the neighbour it pulls in - where the pull
+// tab stands - up and down as well as sideways; `d` is the finger's travel
+// along the axis. Everything else, a wrap from the row's last page among
+// it, is the release's.
+static int pagingTargetFor(int d, bool vertical = false)
 {
   if (!projectLoader.isLoaded()) return -1;
   const ProjectConfig &project = projectLoader.getProject();
-  const int count = (int)project.screens.size();
-  if (count < 2 || openPopup >= 0) return -1;  // a swipe on a popup closes it, at release
+  if ((int)project.screens.size() < 2 || openPopup >= 0) return -1;  // a swipe on a popup closes it, at release
 
-  const ButtonAction action = projectLoader.getButtonAction(currentScreen, dx < 0 ? "swipe-left" : "swipe-right");
-  int delta = 0;
-  if (action.type == "next-screen") delta = 1;
-  else if (action.type == "previous-screen") delta = -1;
-  else return -1;  // bound to something else, or to nothing - the release decides
-
-  // Past hidden screens (contract 2.7); none shown but this one: no paging.
-  const int target = navigatorlayout::pagedIndex(hiddenFlags(), currentScreen, delta);
+  const char *swipeId = vertical ? (d < 0 ? "swipe-up" : "swipe-down") : (d < 0 ? "swipe-left" : "swipe-right");
+  if (!screengraphproject::swipeLeadsToNeighbour(project, currentScreen, swipeId)) return -1;
+  screengraph::Edge side;
+  screengraph::sideOfSwipe(swipeId, side);
+  const int target = screengraphproject::neighbourIndex(project, currentScreen, side);
   return target == currentScreen ? -1 : target;
 }
 
@@ -2314,10 +2331,11 @@ static bool dispatchTapAt(int16_t x, int16_t y)
       if (entry >= 0)
       {
         lastTap = "(" + String(x) + "," + String(y) + ") navigator entry " + String(entry);
+        // The entry's screen, or off the main row the way back (2.10).
         ButtonAction go;
         go.type = "goto-screen";
-        go.targetScreenId = nav->entries[entry].screenId;
-        if (nav->entries[entry].screenId != projectLoader.getProject().screens[currentScreen].id) dispatchButtonAction(go);
+        go.targetScreenId = renderer->navigatorEntryScreenId(activeScreen(), entry);
+        if (!go.targetScreenId.isEmpty() && go.targetScreenId != projectLoader.getProject().screens[currentScreen].id) dispatchButtonAction(go);
         return true;
       }
       // Its empty end is still the navigator's: nothing under it is reached.
@@ -2549,6 +2567,35 @@ static void energyRestoreDots(int16_t &rowLo, int16_t &rowHi)
   energyDotBoxes.clear();
 }
 
+// The pull tabs' nudge (designer device contract 2.10): towards the middle
+// and back once every 5 s, the tabs' rectangles redrawn while it moves. Not
+// while a finger, a slide or a popup is up, the display is off, or the test
+// interface is on - there the tabs stand still at rest, so a snapshot never
+// catches one half way.
+static int pullTabShownNudge = 0;
+static int pullTabShownScreen = -1;
+
+static void pullTabStep()
+{
+  if (!canvas || !renderer || displayIsOff || holdActive || swipe.active() || setupModeActive || openPopup >= 0) return;
+  const int nudge = testInterface.isRunning() ? 0 : screengraph::nudgeAt((long)millis());
+  if (currentScreen != pullTabShownScreen)
+  {
+    // A screen drawn anew drew its tabs at the nudge in force.
+    pullTabShownScreen = currentScreen;
+    pullTabShownNudge = renderer->pullTabNudge();
+  }
+  if (nudge == pullTabShownNudge) return;
+  renderer->setPullTabNudge(nudge);
+  pullTabShownNudge = nudge;
+  for (const screengraph::Rect &r : renderer->pullTabRegions(currentScreen))
+  {
+    renderer->renderScreenRegion(currentScreen, r.x, r.y, r.width, r.height, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                                 pressedSwitchId, pressedSwitchIndex);
+    panel.blitRegion(canvas->getBuffer(), r.x, r.y, r.width, r.height);
+  }
+}
+
 static void energyStep()
 {
   if (!canvas || !renderer || displayIsOff || holdActive || swipe.active() || setupModeActive) return;
@@ -2757,7 +2804,7 @@ void loop()
     if (dragStatus == Gt911::Touched)
     {
       lastTouchReportMs = millis();
-      swipe.follow(dragX);
+      swipe.follow(dragX, dragY);
       // The web client gets its turn here too, as while holding: a test
       // driving a swipe through /api/touch moves the finger with requests,
       // and without this none of them was served until the swipe gave up -
@@ -2979,8 +3026,9 @@ void loop()
       return;
     }
 
-    if (!holdConsumed && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) &&
-        pagingTargetFor(dx) >= 0)
+    const bool sideways = abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) && pagingTargetFor(dx) >= 0;
+    const bool upDown = abs(dy) >= FollowSwipe::startThresholdPx() && abs(dy) > 2 * abs(dx) && pagingTargetFor(dy, true) >= 0;
+    if (!holdConsumed && (sideways || upDown))
     {
       // The finger is leaving, so nothing it touched on the way is pressed.
       // Corrected in the canvas only: the transition reads from there, and
@@ -2995,8 +3043,10 @@ void loop()
       }
       // The incoming screen enters from the edge the finger is heading
       // toward, whichever screen the project says that is.
-      navigatorFollow(pagingTargetFor(dx));
-      if (swipe.start(pagingTargetFor(dx), dx < 0 ? 1 : -1, holdStartX))
+      const int target = sideways ? pagingTargetFor(dx) : pagingTargetFor(dy, true);
+      const int travel = sideways ? dx : dy;
+      navigatorFollow(target);
+      if (swipe.start(target, travel < 0 ? 1 : -1, sideways ? holdStartX : holdStartY, !sideways))
       {
         holdActive = false;
         return;
@@ -3255,6 +3305,7 @@ void loop()
 
   // The energy diagram's motion, after the touch and the values (see there).
   energyStep();
+  pullTabStep();
 
   {
     const uint32_t turn = micros() - turnStart;

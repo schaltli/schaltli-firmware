@@ -77,6 +77,7 @@ template <typename F>
 void forEachPair(ProjectConfig& project, F& f) {
   for (Screen& screen : project.screens) {
     f(screen.backgroundColor, screen.backgroundColorDark);
+    f(screen.pullTabColor, screen.pullTabColorDark);
     for (ScreenObject& obj : screen.objects) forEachObjectPair(obj, f);
   }
   // Navigators after the screens (contract 2.7): their ground and every
@@ -88,6 +89,9 @@ void forEachPair(ProjectConfig& project, F& f) {
     for (NavigatorEntry& entry : nav.entries) {
       for (ScreenObject& obj : entry.normal) forEachObjectPair(obj, f);
       for (ScreenObject& obj : entry.active) forEachObjectPair(obj, f);
+    }
+    for (SpiramObjects& arrow : nav.back) {
+      for (ScreenObject& obj : arrow) forEachObjectPair(obj, f);
     }
   }
   // Popups after the screens, always in the same order, so that the swaps

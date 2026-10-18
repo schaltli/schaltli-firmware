@@ -5,6 +5,7 @@
 #include "DdfFontStore.h"
 #include "../interfaces/IProjectLoader.h"
 #include "ProjectTypes.h"
+#include "ScreenGraph.h"
 #include "../ClippedCanvas16.h"
 #include "ColorAssetLoader.h"
 #include "LevelShape.h"
@@ -177,6 +178,17 @@ public:
   int navigatorScroll() const { return navigatorScroll_; }
   // The scroll the navigator is drawn at on that screen.
   int effectiveNavigatorScroll(int screenIndex) const;
+  // The screen a tap on entry `entry` of that screen's navigator opens: the
+  // entry's, or on a screen off the main row the way back (contract 2.10).
+  // Empty for none.
+  String navigatorEntryScreenId(int screenIndex, int entry) const;
+
+  // The pull tabs (contract 2.10): how far they stand nudged towards the
+  // middle, and for each of a screen's tabs the rectangle it covers at any
+  // nudge - what a nudge has to redraw. None on a screen without tabs.
+  void setPullTabNudge(int nudge) { pullTabNudge_ = nudge; }
+  int pullTabNudge() const { return pullTabNudge_; }
+  std::vector<screengraph::Rect> pullTabRegions(int screenIndex) const;
 
   // Every topic (bare) an object's live values read, combined topics
   // followed to the topics under them - what a device subscribes to.
@@ -415,6 +427,13 @@ private:
   // The screen's navigator over what is drawn, clipped to the region in
   // force if there is one (renderScreen, renderScreenRegion call it last).
   void renderNavigatorOver(int screenIndex);
+  // The pull tabs over the screen, at pullTabNudge_ (renderScreen,
+  // renderScreenRegion; clipped to the region in force).
+  void renderPullTabs(int screenIndex);
+  int pullTabNudge_ = 0;
+  // The arrow (screengraph::Edge) of the way back a navigator draws on this
+  // screen, or -1 on the main row or without one.
+  static int backArrow(const Navigator& nav, const Screen& screen);
   // The same colour as the author wrote it, which is what a derived colour has
   // to be mixed from: going through 565 first and back would land a step away
   // from the designer's own mix (src/project/MaterialColors.h).
