@@ -554,7 +554,10 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // projects in the van are full of them and nothing here rewrites a file
   // someone else owns. Same two-name reading as arcThickness below.
   props.barDirection = propsJson["direction"] | (propsJson["barDirection"] | "left-to-right");
-  props.displayValue = propsJson["displayValue"] | "none";
+  // Without one, the value, as the designer and the app show it
+  // (lib/level-shape.ts's levelShowsNumber); "none" here left the number off
+  // a bar the designer drew with one (designer #72).
+  props.displayValue = propsJson["displayValue"] | "value";
   props.fillColor = propsJson["fillColor"] | "#4CAF50";
   props.fillEndColor = propsJson["fillEndColor"] | "";
   props.trackColor = propsJson["trackColor"] | "";
