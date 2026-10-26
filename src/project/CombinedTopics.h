@@ -2,7 +2,8 @@
 
 // Combined topics: a yes/no the device works out itself from other values -
 // all, or any, of its conditions apply (schaltli-designer
-// docs/2026-10-07-live-values.md decisions 10-15, device contract §2.6).
+// docs/2026-10-07-live-values.md decisions 10-15, device contract §2.6) - or
+// a number scaled from one source (a scaled topic, contract §2.11).
 // A port of the designer's lib/combined-topics.ts; the cases are the
 // «combined» section of test/test_live_value/live-value-vectors.json.
 //
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "LiveValue.h"
+#include "ScaledValue.h"
 
 namespace combined {
 
@@ -31,9 +33,16 @@ struct CombinedTopic {
     std::string name;
     bool any = false;  // "any"; otherwise "all"
     std::vector<Condition> conditions;
+    // "scale": `scaleSource` scaled; no conditions then.
+    bool isScale = false;
+    livevalue::Source scaleSource;
+    scaled::Scale scale;
 };
 
-// "true", "false", or nullopt for no value yet.
+// Everything a combined topic reads: its conditions' sources, or its scale's.
+std::vector<livevalue::Source> sources(const CombinedTopic& topic);
+
+// "true", "false", a plain decimal for a scaled topic, or nullopt for no value yet.
 using Value = std::optional<std::string>;
 using TopicLookup = std::function<std::optional<std::string>(const std::string& path)>;
 

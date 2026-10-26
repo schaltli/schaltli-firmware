@@ -1,11 +1,13 @@
 #pragma once
 #include <Arduino.h>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "PopupFence.h"
 #include "CombinedTopics.h"
 #include "LiveValue.h"
+#include "ScaledValue.h"
 #include "SpiramAllocator.h"
 
 /**
@@ -343,6 +345,10 @@ struct ObjectProperties {
   // a finger snaps to - so a drag reports 35 and 40 rather than 37 and then
   // 38. Default 1; anything <= 0 means no snapping.
   float step;
+  // What a set value is published as (designer docs/device-contract.md
+  // 2.11, feature "scaled-values"): a text around the value, scaled first.
+  // Absent: the number alone. Through levelWritePayload() below, always.
+  std::optional<scaled::WriteFormat> writeFormat;
 
   // Live values (designer docs/device-contract.md 2.6, generation 1.4): a
   // text's `liveText` with `{live:<id>}` where a value stands, read in
@@ -614,7 +620,14 @@ inline int popupIndexById(const ProjectConfig& project, const String& id) {
   return -1;
 }
 
-
-
-
-
+// What a set level publishes for `value` - a finger, a knob's turn, a
+// button's adjust-level alike: its write format's text around the value,
+// scaled first (designer docs/device-contract.md 2.11). False where the value
+// cannot be scaled: nothing is sent then. What is drawn and asked stays
+// `value`.
+inline bool levelWritePayload(const std::optional<scaled::WriteFormat>& format, const String& value, String& out) {
+  const auto sent = scaled::formatWrite(value.c_str(), format ? &*format : nullptr);
+  if (!sent) return false;
+  out = String(sent->c_str());
+  return true;
+}

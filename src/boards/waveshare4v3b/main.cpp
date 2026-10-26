@@ -472,6 +472,7 @@ static String tapLatencyReport()
 static String levelDragObjId;
 static String levelDragTopic;
 static String levelDragWriteTopic;
+static std::optional<scaled::WriteFormat> levelDragWriteFormat;
 static String levelDragPayload;
 // After a release: the value whose answer ends the request, and until when
 // to wait for it (endLevelDrag, the MQTT callback, loop()).
@@ -2234,7 +2235,8 @@ static void applyLevelDragValue(const String &payload, bool force)
   if (!force && (now - levelDragLastPublishMs < LEVEL_PUBLISH_MIN_MS || !changed)) return;
   levelDragLastPublishMs = now;
   // Not retained: a command, not a state - exactly as a Switch publishes.
-  writeProjectTopic(levelDragWriteTopic, payload);
+  String sent;
+  if (levelWritePayload(levelDragWriteFormat, payload, sent)) writeProjectTopic(levelDragWriteTopic, sent);
 }
 
 static bool beginLevelDrag(int16_t x, int16_t y)
@@ -2254,6 +2256,7 @@ static bool beginLevelDrag(int16_t x, int16_t y)
   levelDragObjId = hit->id;
   levelDragTopic = hit->properties.topic;
   levelDragWriteTopic = hit->properties.writeTopic;
+  levelDragWriteFormat = hit->properties.writeFormat;
   levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic
                                                             : hit->properties.setpointTopic;
   levelDragX = objX;
@@ -2294,7 +2297,8 @@ static void endLevelDrag()
   if (levelDragObjId.isEmpty()) return;
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty())
   {
-    writeProjectTopic(levelDragWriteTopic, levelDragPayload);
+    String sent;
+    if (levelWritePayload(levelDragWriteFormat, levelDragPayload, sent)) writeProjectTopic(levelDragWriteTopic, sent);
     // What the answer has to say before the fill moves (see the MQTT
     // callback). Long enough for a van's bridge and its Pekaway to answer,
     // short enough that a value it would not take is shown soon.

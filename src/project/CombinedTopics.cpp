@@ -7,10 +7,17 @@
 
 namespace combined {
 
+std::vector<livevalue::Source> sources(const CombinedTopic& topic) {
+    if (topic.isScale) return {topic.scaleSource};
+    std::vector<livevalue::Source> out;
+    for (const Condition& c : topic.conditions) out.push_back(c.source);
+    return out;
+}
+
 static std::vector<std::string> combinedUses(const CombinedTopic& topic) {
     std::vector<std::string> names;
-    for (const Condition& c : topic.conditions)
-        if (c.source.ns == "combined" && std::find(names.begin(), names.end(), c.source.path) == names.end()) names.push_back(c.source.path);
+    for (const livevalue::Source& s : sources(topic))
+        if (s.ns == "combined" && std::find(names.begin(), names.end(), s.path) == names.end()) names.push_back(s.path);
     return names;
 }
 
@@ -55,6 +62,11 @@ std::vector<CombinedTopic> evaluationOrder(const std::vector<CombinedTopic>& top
 }
 
 Value evaluate(const CombinedTopic& topic, const std::function<std::optional<std::string>(const livevalue::Source&)>& read) {
+    if (topic.isScale) {
+        const auto value = read(topic.scaleSource);
+        if (!value) return std::nullopt;
+        return scaled::scaleValue(*value, topic.scale);
+    }
     if (topic.conditions.empty()) return std::nullopt;
     bool unknown = false;
     for (const Condition& condition : topic.conditions) {
@@ -87,8 +99,8 @@ std::map<std::string, Value> compute(const std::vector<CombinedTopic>& ordered, 
 
 bool readsTopic(const std::vector<CombinedTopic>& topics, const std::string& topicPath) {
     for (const CombinedTopic& t : topics)
-        for (const Condition& c : t.conditions)
-            if (c.source.ns == "topic" && c.source.path.substr(0, c.source.path.find('#')) == topicPath) return true;
+        for (const livevalue::Source& s : sources(t))
+            if (s.ns == "topic" && s.path.substr(0, s.path.find('#')) == topicPath) return true;
     return false;
 }
 
@@ -97,11 +109,11 @@ static void collectInputs(const std::vector<CombinedTopic>& topics, const std::s
     if (depth > 8) return;
     for (const CombinedTopic& t : topics) {
         if (t.name != name) continue;
-        for (const Condition& c : t.conditions) {
-            if (c.source.ns == "combined") {
-                collectInputs(topics, c.source.path, depth + 1, out);
-            } else if (c.source.ns == "topic") {
-                const std::string bare = c.source.path.substr(0, c.source.path.find('#'));
+        for (const livevalue::Source& s : sources(t)) {
+            if (s.ns == "combined") {
+                collectInputs(topics, s.path, depth + 1, out);
+            } else if (s.ns == "topic") {
+                const std::string bare = s.path.substr(0, s.path.find('#'));
                 if (std::find(out.begin(), out.end(), bare) == out.end()) out.push_back(bare);
             }
         }
@@ -120,7 +132,13 @@ std::vector<CombinedTopic> parse(JsonArrayConst json) {
         CombinedTopic topic;
         topic.id = t["id"] | "";
         topic.name = t["name"] | "";
-        topic.any = std::string(t["mode"] | "all") == "any";
+        const std::string mode = t["mode"] | "all";
+        topic.any = mode == "any";
+        if (mode == "scale" && t["scale"].is<JsonObjectConst>()) {
+            topic.isScale = true;
+            topic.scaleSource = livevalue::parseSource(t["scale"]["source"].as<JsonObjectConst>());
+            topic.scale = scaled::parseScale(t["scale"].as<JsonObjectConst>());
+        }
         for (JsonObjectConst c : t["conditions"].as<JsonArrayConst>()) {
             topic.conditions.push_back({livevalue::parseSource(c["source"].as<JsonObjectConst>()), c["op"] | "==", c["operand"] | ""});
         }

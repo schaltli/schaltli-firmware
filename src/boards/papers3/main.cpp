@@ -471,7 +471,8 @@ static bool handleTap(int16_t x, int16_t y)
     Serial.printf("[papers3] tap: level \"%s\" -> %s = %s\n", hit->id.c_str(),
                   hit->properties.writeTopic.c_str(), payload.c_str());
     // Not retained: a command, not a state.
-    writeProjectTopic(hit->properties.writeTopic, payload);
+    String sent;
+    if (levelWritePayload(hit->properties.writeFormat, payload, sent)) writeProjectTopic(hit->properties.writeTopic, sent);
     // One refresh for the marker, and the request ends when the installation
     // speaks about that same setpoint (onMqttMessage).
     levelAskedTopic = hit->properties.setpointTopic.isEmpty() ? hit->properties.topic

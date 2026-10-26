@@ -26,3 +26,11 @@ namespace combined {
 std::vector<CombinedTopic> parse(JsonArrayConst json);
 
 }  // namespace combined
+
+namespace scaled {
+
+// A scale or a write format as the export writes it (contract §2.11).
+Scale parseScale(JsonObjectConst json);
+WriteFormat parseWriteFormat(JsonObjectConst json);
+
+}  // namespace scaled

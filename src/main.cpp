@@ -1515,6 +1515,7 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
 static String levelDragObjId;
 static String levelDragTopic;
 static String levelDragWriteTopic;
+static std::optional<scaled::WriteFormat> levelDragWriteFormat;
 static String levelDragPayload;
 // Das Lese-Topic, dessen naechste Nachricht die Anforderung beendet. Getrennt
 // von levelDragTopic, weil die Anforderung den Finger ueberlebt.
@@ -1561,7 +1562,8 @@ static void applyLevelDragValue(const String &payload, bool force) {
   if (!force && !changed) return;
   levelDragLastPublishMs = now;
   // Nicht retained: ein Befehl, kein Zustand - genau wie beim Switch.
-  writeProjectTopic(levelDragWriteTopic, payload);
+  String gesendet;
+  if (levelWritePayload(levelDragWriteFormat, payload, gesendet)) writeProjectTopic(levelDragWriteTopic, gesendet);
 }
 
 // Faengt dieser Druck einen bedienbaren Balken? Dann gehoert ihm die Geste,
@@ -1583,6 +1585,7 @@ static bool beginLevelDrag(int16_t x, int16_t y) {
   levelDragObjId = treffer->id;
   levelDragTopic = treffer->properties.topic;
   levelDragWriteTopic = treffer->properties.writeTopic;
+  levelDragWriteFormat = treffer->properties.writeFormat;
   // Die Anforderung endet, wenn die Anlage ueber DIESEN Sollwert spricht - das
   // Sollwert-Topic, wo es eines gibt, sonst das Lese-Topic.
   levelAskedTopic = treffer->properties.setpointTopic.isEmpty() ? treffer->properties.topic
@@ -1615,7 +1618,8 @@ static void updateLevelDrag(int16_t x, int16_t y) {
 static void endLevelDrag() {
   if (levelDragObjId.isEmpty()) return;
   if (!levelDragPayload.isEmpty() && !levelDragWriteTopic.isEmpty()) {
-    writeProjectTopic(levelDragWriteTopic, levelDragPayload);
+    String gesendet;
+    if (levelWritePayload(levelDragWriteFormat, levelDragPayload, gesendet)) writeProjectTopic(levelDragWriteTopic, gesendet);
     Serial.printf("[level] losgelassen auf %s = %s\n", levelDragWriteTopic.c_str(), levelDragPayload.c_str());
     levelAwaitValue = levelDragPayload;
     levelAwaitUntilMs = millis() + LEVEL_AWAIT_MS;
@@ -1672,7 +1676,8 @@ static void adjustLevel(const ButtonAction &action, int32_t steps) {
   screenRenderer->setAskedValue(levelAskedTopic, payload);
   canvasPresenter.invalidateSlots();
   renderScreenIndex(currentScreenIndex);
-  writeProjectTopic(level->properties.writeTopic, payload);
+  String gesendet;
+  if (levelWritePayload(level->properties.writeFormat, payload, gesendet)) writeProjectTopic(level->properties.writeTopic, gesendet);
   Serial.printf("[level] %d Raste(n) %s -> %s = %s\n", (int)steps, action.direction.c_str(),
                 level->properties.writeTopic.c_str(), payload.c_str());
   levelAwaitValue = payload;

@@ -631,6 +631,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // Switch properties - see ProjectTypes.h's ObjectProperties comment.
   props.writeTopic = propsJson["writeTopic"] | "";
   props.step = propsJson["step"] | 1.0f;
+  if (propsJson["writeFormat"].is<JsonObject>()) props.writeFormat = scaled::parseWriteFormat(propsJson["writeFormat"].as<JsonObjectConst>());
   props.markerStyle = propsJson["markerStyle"] | "";
   // No `mode` here any more: since 2026-09-20 the form is the object's own
   // type, "switch" or "button-group". A project still carrying the old key
