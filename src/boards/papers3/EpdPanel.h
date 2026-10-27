@@ -75,6 +75,21 @@ public:
     paints_++;
   }
 
+  // Pushes one rectangle of the canvas, partial - the keyboard of a text
+  // field, whose keys must not wait for the whole glass. Counts as a partial
+  // like any other, so the clean-up rule below still applies.
+  void blitRegion(const uint16_t *rgb565, int16_t x, int16_t y, int16_t w, int16_t h)
+  {
+    M5.Display.setEpdMode(epd_mode_t::epd_fast);
+    M5.Display.setClipRect(x, y, w, h);
+    M5.Display.pushImage(0, 0, width_, height_, rgb565, width_);
+    M5.Display.clearClipRect();
+    M5.Display.display();
+    partialsSinceFull_++;
+    lastWasFull_ = false;
+    paints_++;
+  }
+
   // Counts every blit. Lets a caller that wants to update "its" screen in
   // place check that nobody else has painted over it in the meantime.
   uint32_t paints() const { return paints_; }

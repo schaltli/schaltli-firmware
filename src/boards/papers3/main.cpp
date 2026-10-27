@@ -40,6 +40,8 @@
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
+#include "../../project/Keyboard.h"
+#include "../../DeviceSettings.h"
 #include "../../project/ProjectLoader.h"
 #include "../../project/ThemeVariant.h"
 #include "project/ObjectTypes.h"
@@ -140,6 +142,18 @@ static bool holdCountdownShown = false;
 // Das Topic, dessen naechste Nachricht eine Anforderung beendet - das
 // Sollwert-Topic, wo es eines gibt, sonst das Lese-Topic (Entscheidung 6c).
 static String levelAskedTopic;
+
+// The keyboard a tapped text field opened (Keyboard.h, designer
+// tasks/ha-text-plan.md): the keys over the lower part, a key acted on at
+// its press and only the keyboard's rectangle refreshed, fast. While it is
+// open every contact is its own and arriving values wait for it to close.
+static bool keyboardOpen = false;
+static keyboard::State keyboardState;
+static keyboard::Frame keyboardFrame;
+static ScreenObject keyboardField;
+// From a key's press to its letter pushed to the glass, the last one - what
+// a typist waits for on e-ink (the plan promises it measured).
+static uint32_t keyboardLastKeyMs = 0;
 static int16_t contactStartX = 0, contactStartY = 0;
 static int16_t contactLastX = 0, contactLastY = 0;
 static bool contactMoved = false;
@@ -226,6 +240,7 @@ static void renderAndPresent(const char *reason)
     const Screen *popup = screenOrPopupAt(projectLoader.getProject(), openPopup);
     if (popup != nullptr) renderer->drawPopupCloseBadge(*popup);
   }
+  if (keyboardOpen) renderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
   const uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
   const uint32_t t2 = micros();
@@ -384,6 +399,64 @@ static void closePopup(const char *reason)
 // mean the finger and the picture disagreeing about geometry, which is how
 // the knob ended up with a working top-level switch and four dead ones
 // inside panels.
+static void presentKeyboard()
+{
+  renderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
+  panel.blitRegion(canvas->getBuffer(), keyboardFrame.x, keyboardFrame.y, keyboardFrame.w, keyboardFrame.h);
+}
+
+static void openKeyboard(const ScreenObject &field)
+{
+  keyboard::Layout layout = keyboard::Layout::EnUS;
+  keyboard::parseLayout(DeviceSettings::keyboardLayoutOrDefault().c_str(), layout);
+  keyboardField = field;
+  keyboardState = keyboard::State();
+  keyboardState.layout = layout;
+  keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
+  String shown = renderer->askedValueFor(field.properties.topic);
+  if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);
+  keyboardState.text = textfield::clampText(shown.c_str(), keyboardState.bounds.maxLength);
+  keyboardFrame = keyboard::frameFor(panel.width(), panel.height(), false);
+  keyboardOpen = true;
+  presentKeyboard();
+}
+
+// OK sends the text as it is, not retained, and the field shows it until
+// its topic answers (the asked value, levelAskedTopic) - as on the 4.3B.
+static void closeKeyboard(bool send)
+{
+  keyboardOpen = false;
+  if (send)
+  {
+    const String text(keyboardState.text.c_str());
+    writeProjectTopic(keyboardField.properties.writeTopic, text);
+    levelAskedTopic = keyboardField.properties.topic;
+    renderer->setAskedValue(levelAskedTopic, text);
+    Serial.printf("[papers3] text field \"%s\" -> %s = %s\n", keyboardField.id.c_str(),
+                  keyboardField.properties.writeTopic.c_str(), text.c_str());
+  }
+  // The keyboard leaves more of a trace than one partial's worth.
+  renderAndPresent(send ? "keyboard sent" : "keyboard cancelled");
+  panel.noteHeavyGhosting();
+}
+
+static void keyboardTouch(int16_t x, int16_t y)
+{
+  const uint32_t t0 = millis();
+  const std::vector<keyboard::KeyRect> keys = keyboard::layoutKeys(
+      keyboardState, keyboardFrame.keysX, keyboardFrame.keysY, keyboardFrame.keysW, keyboardFrame.keysH, keyboardFrame.gap);
+  const keyboard::Key *key = keyboard::keyAt(keys, x, y);
+  if (key == nullptr) return;
+  const keyboard::Outcome outcome = keyboard::press(keyboardState, *key);
+  if (outcome == keyboard::Outcome::Send) closeKeyboard(true);
+  else if (outcome == keyboard::Outcome::Cancel) closeKeyboard(false);
+  else
+  {
+    presentKeyboard();
+    keyboardLastKeyMs = millis() - t0;
+  }
+}
+
 static bool handleTap(int16_t x, int16_t y)
 {
   if (!renderer || !projectLoader.isLoaded()) return false;
@@ -437,6 +510,13 @@ static bool handleTap(int16_t x, int16_t y)
     Serial.printf("[papers3] tap: energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());
     const ButtonAction copy = *action;
     dispatchButtonAction(copy);
+    return true;
+  }
+
+  if (hit->type == "text-field")
+  {
+    Serial.printf("[papers3] tap: text field \"%s\" - keyboard\n", hit->id.c_str());
+    openKeyboard(*hit);
     return true;
   }
 
@@ -586,6 +666,22 @@ static void serviceTouch()
   int16_t x = 0, y = 0;
   const bool down = readTouch(x, y);
   if (down) panel.noteTouch();
+
+  // The keyboard takes every contact while it is open, a key on its press:
+  // no swipe, no setup hold.
+  if (keyboardOpen)
+  {
+    if (down && !holdActive)
+    {
+      holdActive = true;
+      keyboardTouch(x, y);
+    }
+    else if (!down)
+    {
+      holdActive = false;
+    }
+    return;
+  }
 
   if (down && !holdActive)
   {
@@ -920,6 +1016,13 @@ static void setupNetworking()
     injectLiftOnce = !down;
   });
 
+  testInterface.setKeyboardHandler([]() -> String {
+    if (!keyboardOpen) return String("{\"open\":false}");
+    // With the last key's time from press to glass beside what every board says.
+    String json(keyboard::describe(keyboardState, keyboardFrame).c_str());
+    json.replace("{\"open\":true,", "{\"open\":true,\"lastKeyMs\":" + String(keyboardLastKeyMs) + ",");
+    return json;
+  });
   testInterface.setDebugHandler([](const String &setting) -> String {
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " +
@@ -1136,7 +1239,7 @@ void loop()
   // over the box, and the next second's tick would paint the box back - two
   // partials a second on e-ink, for a box nobody should lose sight of. The
   // value is stored already and is drawn when the finger lets go.
-  if (renderPending && !holdCountdownShown) renderAndPresent("topic value");
+  if (renderPending && !holdCountdownShown && !keyboardOpen) renderAndPresent("topic value");
 
   // The quiet-moment clean-up (decision 6). The canvas still holds the screen
   // the last paint showed, so this is the same picture, painted clean.
