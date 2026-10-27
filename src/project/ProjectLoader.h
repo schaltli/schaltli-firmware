@@ -27,6 +27,9 @@ public:
   ButtonAction getButtonAction(int screenIndex, const String& buttonId) const override;
   void applyThemeVariant(bool dark) override;
   std::optional<std::string> getCombinedValue(const String& name) const override;
+  // A send-mqtt action's message as a press sends it now - `{topic:…}`
+  // filled in - or nothing where its «Only when» is not yes (ButtonValues.h).
+  std::optional<String> pressedMessage(const ButtonAction& action) const;
 
 private:
   ProjectConfig project_;

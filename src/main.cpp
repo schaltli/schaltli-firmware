@@ -700,8 +700,13 @@ static void dispatchButtonAction(const ButtonAction &action) {
     // What the knob is actually for on this board: turning adjusts a value
     // (temperature, fan, brightness), bound per screen, rather than paging
     // through screens the way the M5 Dial's encoder does.
-    latMark("pub", action.mqttMessage.c_str());
-    writeProjectTopic(action.mqttTopic, action.mqttMessage);
+    // «Only when» not yes: nothing goes out. «Then clear»: a local topic only.
+    const auto message = projectLoader.pressedMessage(action);
+    if (message) {
+      latMark("pub", message->c_str());
+      writeProjectTopic(action.mqttTopic, *message);
+      if (!action.clears.isEmpty() && projectLoader.isLocalTopic(action.clears)) writeProjectTopic(action.clears, "");
+    }
   } else if (action.type == "device-action") {
     // Actions the *device* offers and the designer only names - declared in
     // this board's DDF as deviceActions. Unknown ids are skipped and logged,
@@ -1456,6 +1461,7 @@ static void openKeyboard(const ScreenObject &field) {
   keyboardField = field;
   keyboardState = keyboard::State();
   keyboardState.layout = layout;
+  if (field.properties.keyboard == "digits") keyboardState.layer = keyboard::Layer::Symbols;
   keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
   String shown = screenRenderer->askedValueFor(field.properties.topic);
   if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);

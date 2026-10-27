@@ -111,6 +111,11 @@ struct ButtonAction {
   // for "goto-neighbour" (contract 2.10): "up", "down", "left" or "right" -
   // the screen lying there, Screen::neighbours.
   String side;
+  // for "send-mqtt", the DDF feature "button-values" (ButtonValues.h): a
+  // combined topic that must be yes for the press to send, and a local
+  // topic set empty after it did.
+  String onlyWhen;
+  String clears;
 };
 
 // The energy diagram (designer docs/device-contract.md 2.8, generation
@@ -212,6 +217,8 @@ struct ObjectProperties {
   int minLength = 0;
   int maxLength = 255;
   bool hideText = false;
+  // "digits": the keyboard opens on its digits (button-values).
+  String keyboard;
   // A time field's minute step (timefield::step reads it leniently).
   int minuteStep = 5;
   String textAlign;                       // "left", "center", "right"

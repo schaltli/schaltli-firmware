@@ -2,6 +2,7 @@
 #include "LiveValueJson.h"
 #include "ThemeVariant.h"
 #include "TextField.h"
+#include "ButtonValues.h"
 #include <exception>
 #include <math.h>
 
@@ -519,6 +520,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.minLength = propsJson["minLength"] | 0;
   props.maxLength = propsJson["maxLength"] | textfield::MAX_LENGTH;
   props.hideText = propsJson["hidden"] | false;
+  props.keyboard = propsJson["keyboard"] | "";
   props.minuteStep = propsJson["minuteStep"] | 5;
   props.textAlign = propsJson["textAlign"] | "left";
   props.fontId = propsJson["fontId"] | "";
@@ -752,6 +754,17 @@ void ProjectLoader::setTopicValue(const String& topic, const String& value) {
       return;
     }
   }
+}
+
+std::optional<String> ProjectLoader::pressedMessage(const ButtonAction& action) const {
+  const auto message = buttonvalues::pressedMessage(
+      action.mqttMessage.c_str(), action.onlyWhen.c_str(), [this](const std::string& name) { return getCombinedValue(name.c_str()); },
+      [this](const std::string& path) -> std::optional<std::string> {
+        if (!hasTopicValue(path.c_str())) return std::nullopt;
+        return std::string(getTopicValue(path.c_str()).c_str());
+      });
+  if (!message) return std::nullopt;
+  return String(message->c_str());
 }
 
 std::optional<std::string> ProjectLoader::getCombinedValue(const String& name) const {
@@ -992,6 +1005,8 @@ ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {
   action.targetObjectId = actionJson["targetObjectId"] | "";
   action.direction = actionJson["direction"] | "";
   action.side = actionJson["side"] | "";
+  action.onlyWhen = actionJson["onlyWhen"] | "";
+  action.clears = actionJson["clears"] | "";
   return action;
 }
 

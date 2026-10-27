@@ -433,7 +433,7 @@
     "panel",
     "energy-diagram"
   ],
-  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values"],
+  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values"],
   "supportsSoftwareButtons": true,
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",

@@ -366,7 +366,13 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     // Not retained: a command, not a state. What comes back on the read
     // topic is what the panel then shows.
-    writeProjectTopic(action.mqttTopic, action.mqttMessage);
+    // «Only when» not yes: nothing goes out. «Then clear»: a local topic only.
+    const auto message = projectLoader.pressedMessage(action);
+    if (message)
+    {
+      writeProjectTopic(action.mqttTopic, *message);
+      if (!action.clears.isEmpty() && projectLoader.isLocalTopic(action.clears)) writeProjectTopic(action.clears, "");
+    }
   }
   else if (action.type == "open-popup")
   {
@@ -422,6 +428,7 @@ static void openKeyboard(const ScreenObject &field)
   keyboardField = field;
   keyboardState = keyboard::State();
   keyboardState.layout = layout;
+  if (field.properties.keyboard == "digits") keyboardState.layer = keyboard::Layer::Symbols;
   keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
   String shown = renderer->askedValueFor(field.properties.topic);
   if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);

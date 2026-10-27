@@ -2065,8 +2065,14 @@ static void dispatchButtonAction(const ButtonAction &action)
   {
     // Not retained: this is a command, not a state. What comes back on the
     // read topic is what the panel then shows.
-    writeProjectTopic(action.mqttTopic, action.mqttMessage);
-    Serial.printf("[tap] send-mqtt %s = %s\n", action.mqttTopic.c_str(), action.mqttMessage.c_str());
+    // «Only when» not yes: nothing goes out. «Then clear»: a local topic only.
+    const auto message = projectLoader.pressedMessage(action);
+    if (message)
+    {
+      writeProjectTopic(action.mqttTopic, *message);
+      if (!action.clears.isEmpty() && projectLoader.isLocalTopic(action.clears)) writeProjectTopic(action.clears, "");
+    }
+    Serial.printf("[tap] send-mqtt %s = %s%s\n", action.mqttTopic.c_str(), message ? message->c_str() : "", message ? "" : " (held: Only when is not yes)");
   }
   else if (action.type == "device-action")
   {
@@ -2378,6 +2384,7 @@ static void openKeyboard(const ScreenObject &field)
   keyboardField = field;
   keyboardState = keyboard::State();
   keyboardState.layout = layout;
+  if (field.properties.keyboard == "digits") keyboardState.layer = keyboard::Layer::Symbols;
   keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
   // Typing goes on from what the field shows.
   String shown = renderer->askedValueFor(field.properties.topic);
