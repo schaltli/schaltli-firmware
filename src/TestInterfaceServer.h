@@ -149,6 +149,11 @@ public:
   using ScreenListHandler = std::function<String()>;
   void setScreenListHandler(ScreenListHandler handler) { screenListHandler_ = handler; }
   void setDebugHandler(DebugHandler handler) { debugHandler_ = handler; }
+  // GET /api/keyboard: the open keyboard of a text field as JSON - its text,
+  // layout and layer, each key's label, kind and rectangle - or
+  // {"open":false}. What a HIL run taps keys by (designer hil/text-field.js).
+  using KeyboardHandler = std::function<String()>;
+  void setKeyboardHandler(KeyboardHandler handler) { keyboardHandler_ = handler; }
 
   // Signalmodus: das Panel zeigt seinen eigenen Empfangspegel gross auf dem
   // Display, statt ihn nur ueber /api/debug zu melden.
@@ -217,6 +222,7 @@ private:
   PanelShadowHandler panelShadowHandler_;
   SettingsChangedHandler settingsChangedHandler_;
   ScreenListHandler screenListHandler_;
+  KeyboardHandler keyboardHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
   // Empty while a firmware upload is going well. Held rather than answered

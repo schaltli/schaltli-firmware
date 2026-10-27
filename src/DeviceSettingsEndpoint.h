@@ -24,6 +24,8 @@ inline String currentJson(const String& screensJson) {
   JsonDocument doc;
   doc["displayOffAfterSeconds"] = DeviceSettings::displayOffAfterSeconds();
   doc["idleScreenId"] = DeviceSettings::idleScreenId();
+  // Empty when none is stored: the page then sends the browser's languages.
+  doc["keyboardLayout"] = DeviceSettings::keyboardLayout();
   doc["screens"] = serialized(screensJson.isEmpty() ? String("[]") : screensJson);
   String output;
   serializeJson(doc, output);
@@ -68,11 +70,31 @@ inline bool save(WebServer& server, String& messageOut) {
     if (messageOut.isEmpty()) messageOut = "Saved";
   }
 
+  // The browser's languages, sent by the page when no layout is stored:
+  // the first that maps becomes the layout. Never over a stored one.
+  if (server.hasArg("browserLanguages")) {
+    if (!DeviceSettings::adoptBrowserLanguages(server.arg("browserLanguages"))) {
+      messageOut = "Could not save the keyboard";
+      return false;
+    }
+    touchedAnything = true;
+    if (messageOut.isEmpty()) messageOut = "Saved";
+  }
+
+  if (server.hasArg("keyboardLayout")) {
+    if (!DeviceSettings::setKeyboardLayout(server.arg("keyboardLayout"))) {
+      messageOut = "Unknown keyboard - expected de-CH, de-DE or en-US";
+      return false;
+    }
+    touchedAnything = true;
+    if (messageOut.isEmpty()) messageOut = "Saved";
+  }
+
   if (!touchedAnything) {
     // Not a silent success: a request naming no known field is a caller
     // bug, and answering "Saved" to it would hide the typo it almost
     // certainly is.
-    messageOut = "Nothing to save - expected displayOffAfterSeconds and/or idleScreenId";
+    messageOut = "Nothing to save - expected displayOffAfterSeconds, idleScreenId or keyboardLayout";
     return false;
   }
   return true;

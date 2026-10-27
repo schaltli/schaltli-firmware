@@ -95,6 +95,8 @@
 #include "../../project/ThemeVariant.h"
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
+#include "../../project/Keyboard.h"
+#include "../../DeviceSettings.h"
 #include "project/ObjectTypes.h"
 
 // --- panel geometry -------------------------------------------------------
@@ -483,6 +485,16 @@ static const unsigned long LEVEL_AWAIT_MS = 2500;
 // there is one, else the read topic. Separate from levelDragTopic because the
 // request outlives the finger.
 static String levelAskedTopic;
+
+// The keyboard a tapped text field opened (Keyboard.h, designer
+// tasks/ha-text-plan.md). While it is open every contact is its own - no
+// swipe, no setup hold, nothing under it - and nothing else draws: the
+// values that arrive meanwhile are drawn when it closes, with the screen.
+static bool keyboardOpen = false;
+static bool keyboardContact = false;
+static keyboard::State keyboardState;
+static keyboard::Frame keyboardFrame;
+static ScreenObject keyboardField;
 static int16_t levelDragX = 0, levelDragY = 0, levelDragW = 0, levelDragH = 0;
 static unsigned long levelDragLastPublishMs = 0;
 // A drag must not put thirty messages on the broker - the same coalescing the
@@ -635,6 +647,7 @@ static void renderAndPresent(const char *reason)
     ok = renderer->renderScreen(currentScreen, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
                                 pressedSwitchId, pressedSwitchIndex);
   }
+  if (keyboardOpen) renderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
   renderGeneration++;
   pendingTopicCount = 0;
   pendingTopicOverflow = false;
@@ -1058,6 +1071,10 @@ static void setupNetworking()
   // parameter rather than run at boot because it writes rubbish into the
   // framebuffer for a few hundred milliseconds before re-rendering, and
   // nobody wants that on a panel that is showing a project.
+  testInterface.setKeyboardHandler([]() -> String {
+    if (!keyboardOpen) return String("{\"open\":false}");
+    return String(keyboard::describe(keyboardState, keyboardFrame).c_str());
+  });
   testInterface.setDebugHandler([](const String &setArg) -> String {
     // ?set=theme=dark|light: what schaltli/state/theme would do, without a
     // broker - for the HIL dark pass and for looking at it by hand.
@@ -2323,6 +2340,76 @@ static void endLevelDrag()
   levelDragObjId = "";
 }
 
+// The keyboard alone, drawn and shown: a key's press redraws only it.
+static void presentKeyboard()
+{
+  const uint32_t t0 = micros();
+  renderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
+  panel.blitRegion(canvas->getBuffer(), keyboardFrame.x, keyboardFrame.y, keyboardFrame.w, keyboardFrame.h);
+  lastFeedback = "keyboard: " + String((micros() - t0) / 1000.0f, 1) + " ms";
+}
+
+static void openKeyboard(const ScreenObject &field)
+{
+  keyboard::Layout layout = keyboard::Layout::EnUS;
+  keyboard::parseLayout(DeviceSettings::keyboardLayoutOrDefault().c_str(), layout);
+  keyboardField = field;
+  keyboardState = keyboard::State();
+  keyboardState.layout = layout;
+  keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
+  // Typing goes on from what the field shows.
+  String shown = renderer->askedValueFor(field.properties.topic);
+  if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);
+  keyboardState.text = textfield::clampText(shown.c_str(), keyboardState.bounds.maxLength);
+  keyboardFrame = keyboard::frameFor(canvas->width(), canvas->height(), false);
+  keyboardOpen = true;
+  keyboardContact = false;
+  presentKeyboard();
+}
+
+// OK sends the text as it is, not retained - a command, as a switch's - and
+// the field shows it until its topic answers, as a slider shows its
+// handle (the same asked value, levelAskedTopic).
+static void closeKeyboard(bool send)
+{
+  keyboardOpen = false;
+  keyboardContact = false;
+  if (send)
+  {
+    const String text(keyboardState.text.c_str());
+    const bool sent = writeProjectTopic(keyboardField.properties.writeTopic, text);
+    levelAskedTopic = keyboardField.properties.topic;
+    renderer->setAskedValue(levelAskedTopic, text);
+    lastTap = "text field \"" + keyboardField.id + "\" -> " + keyboardField.properties.writeTopic + " = " + text +
+              (sent ? "" : "  (NOT published - broker away)");
+    Serial.printf("[tap] text field \"%s\" -> %s = %s\n", keyboardField.id.c_str(),
+                  keyboardField.properties.writeTopic.c_str(), text.c_str());
+  }
+  else
+  {
+    lastTap = "text field \"" + keyboardField.id + "\" cancelled";
+  }
+  renderAndPresent(send ? "keyboard sent" : "keyboard cancelled");
+}
+
+// A finger landing while the keyboard is open: the key under it, at once.
+static void keyboardTouch(int16_t x, int16_t y)
+{
+  const std::vector<keyboard::KeyRect> keys = keyboard::layoutKeys(
+      keyboardState, keyboardFrame.keysX, keyboardFrame.keysY, keyboardFrame.keysW, keyboardFrame.keysH, keyboardFrame.gap);
+  const keyboard::Key *key = keyboard::keyAt(keys, x, y);
+  if (key == nullptr)
+  {
+    lastTap = "(" + String(x) + "," + String(y) + ") keyboard, no key";
+    return;
+  }
+  const keyboard::Outcome outcome = keyboard::press(keyboardState, *key);
+  lastTap = "(" + String(x) + "," + String(y) + ") keyboard key \"" + String(keyboard::label(*key).c_str()) + "\"";
+  if (outcome == keyboard::Outcome::Send) closeKeyboard(true);
+  else if (outcome == keyboard::Outcome::Cancel) closeKeyboard(false);
+  else presentKeyboard();
+}
+
 static bool dispatchTapAt(int16_t x, int16_t y)
 {
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
@@ -2409,6 +2496,14 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     const ButtonAction copy = *action;
     dispatchButtonAction(copy);
     popupOriginKnown = false;
+    return true;
+  }
+
+  if (hit->type == "text-field")
+  {
+    Serial.printf("[tap] text field \"%s\" - keyboard\n", hit->id.c_str());
+    lastTap = "(" + String(x) + "," + String(y) + ") text field \"" + hit->id + "\" - keyboard open";
+    openKeyboard(*hit);
     return true;
   }
 
@@ -2927,6 +3022,27 @@ void loop()
     fingerDown = false;
   }
 
+  // The keyboard takes every contact while it is open, a key on its press.
+  if (keyboardOpen)
+  {
+    if (fingerDown && !keyboardContact)
+    {
+      keyboardContact = true;
+      const bool woke = displayIsOff;
+      wakeDisplay();
+      if (!woke) keyboardTouch(touchX, touchY);
+    }
+    else if (!fingerDown)
+    {
+      keyboardContact = false;
+    }
+    if (fingerDown) lastHumanInputMs = millis();
+    holdActive = false;
+    testInterface.handleClient();
+    delay(5);
+    return;
+  }
+
   // The reserved setup hold, checked before anything else can claim this
   // contact.
   if (fingerDown)
@@ -3304,6 +3420,14 @@ void loop()
     blankDisplay("inactivity");
   }
 
+  // While the keyboard is open the values wait: closing draws the screen.
+  if (keyboardOpen && renderPending)
+  {
+    renderPending = false;
+    pendingTopicCount = 0;
+    pendingTopicOverflow = false;
+  }
+
   if (renderPending && topicRenderEnabled && (millis() - lastTopicRenderMs) >= TOPIC_RENDER_MIN_MS)
   {
     renderPending = false;
@@ -3324,8 +3448,11 @@ void loop()
   }
 
   // The energy diagram's motion, after the touch and the values (see there).
-  energyStep();
-  pullTabStep();
+  if (!keyboardOpen)
+  {
+    energyStep();
+    pullTabStep();
+  }
 
   {
     const uint32_t turn = micros() - turnStart;

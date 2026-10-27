@@ -77,4 +77,21 @@ bool setTestInterface(bool on, const String& password);
 static const size_t MIN_TEST_PASSWORD_LENGTH = 4;
 static const size_t MAX_TEST_PASSWORD_LENGTH = 64;
 
+// The layout of the keyboard a text field opens (designer
+// tasks/ha-text-plan.md, decision 3): "de-CH", "de-DE" or "en-US". A
+// device's, not the project's, for the reason at the top of this file - a
+// project made in Zurich deployed to a board in Hamburg must not change the
+// keys under a German finger.
+//
+// Empty until set. Its default is the browser's language: the setup portal
+// and the settings page send navigator.languages, and a device with
+// nothing stored keeps the first that maps (adoptBrowserLanguages). A board
+// that has not seen a browser since types en-US (keyboardLayoutOrDefault).
+String keyboardLayout();
+String keyboardLayoutOrDefault();
+// One of the three names, or false.
+bool setKeyboardLayout(const String& name);
+// Stores the layout `languages` maps to - only when none is stored yet.
+bool adoptBrowserLanguages(const String& languages);
+
 }  // namespace DeviceSettings

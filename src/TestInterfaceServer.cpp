@@ -36,6 +36,9 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   guarded("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   guarded("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   guarded("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
+  guarded("/api/keyboard", HTTP_GET, [this]() {
+    webServer_->send(200, "application/json", keyboardHandler_ ? keyboardHandler_() : String("{\"open\":false}"));
+  });
   // What the filesystem is holding, and why the last install refused. A
   // project install writes the upload to LittleFS before unpacking it, so a
   // filesystem with no room refuses installs while the device otherwise

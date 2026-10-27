@@ -14,6 +14,7 @@
 #include "NavigatorLayout.h"
 #include "EnergyDiagram.h"
 #include "PolygonRaster.h"
+#include "Keyboard.h"
 #include <array>
 #include <functional>
 
@@ -454,6 +455,20 @@ private:
   bool renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex);
   // A text field (TextField.h): container, line, the text or its dots.
   bool renderTextField(const ScreenObject& obj);
+
+ public:
+  // The keyboard a tapped text field opens (Keyboard.h), drawn over the
+  // screen into `frame`: the field's colours - its container behind the
+  // keys, the screen's background on them, its text on their faces, its
+  // line on OK - the text so far ending at the line's right edge, a dot per
+  // character where the field hides its text, and the count. The board
+  // presents the frame's rectangle afterwards.
+  void renderKeyboard(const keyboard::State& state, const ScreenObject& field, const keyboard::Frame& frame);
+
+ private:
+  // The project's largest font whose line fits `height` with room around it;
+  // the smallest where none does.
+  const BdfFont* keyboardFont(int height, int& ascent, int& descent, const String& needs = String());
   // Switch marker bar - solid for a confirmed marked state, hollow while a
   // write is unconfirmed. Geometry constants live next to the definition in
   // ColorScreenRenderer.cpp, mirroring render-switch.ts.

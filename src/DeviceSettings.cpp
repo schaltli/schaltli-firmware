@@ -2,12 +2,15 @@
 
 #include <Preferences.h>
 
+#include "project/Keyboard.h"
+
 namespace {
 const char* NS_DEVICE = "device";
 const char* KEY_DISPLAY_OFF = "dispOffS";  // NVS keys are capped at 15 chars
 const char* KEY_IDLE_SCREEN = "idleScrId";
 const char* KEY_TEST_ON = "testOn";
 const char* KEY_TEST_PASSWORD = "testPw";
+const char* KEY_KEYBOARD = "keyboard";
 }  // namespace
 
 namespace DeviceSettings {
@@ -81,6 +84,35 @@ bool setTestInterface(bool on, const String& password) {
   }
   prefs.end();
   return ok;
+}
+
+String keyboardLayout() {
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, true)) return String();
+  const String value = prefs.getString(KEY_KEYBOARD, String());
+  prefs.end();
+  keyboard::Layout layout;
+  return keyboard::parseLayout(value.c_str(), layout) ? value : String();
+}
+
+String keyboardLayoutOrDefault() {
+  const String stored = keyboardLayout();
+  return stored.isEmpty() ? String(keyboard::layoutName(keyboard::Layout::EnUS)) : stored;
+}
+
+bool setKeyboardLayout(const String& name) {
+  keyboard::Layout layout;
+  if (!keyboard::parseLayout(name.c_str(), layout)) return false;
+  Preferences prefs;
+  if (!prefs.begin(NS_DEVICE, false)) return false;
+  const bool ok = prefs.putString(KEY_KEYBOARD, name) > 0;
+  prefs.end();
+  return ok;
+}
+
+bool adoptBrowserLanguages(const String& languages) {
+  if (!keyboardLayout().isEmpty()) return true;
+  return setKeyboardLayout(keyboard::layoutName(keyboard::fromBrowserLanguages(languages.c_str())));
 }
 
 }  // namespace DeviceSettings

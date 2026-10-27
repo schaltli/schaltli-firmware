@@ -4,6 +4,7 @@
 
 #include "SwitchShape.h"
 #include "TextField.h"
+#include "Keyboard.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
 #include "ArcRaster.h"
@@ -640,6 +641,113 @@ bool ColorScreenRenderer::renderTextField(const ScreenObject& obj) {
   font->drawText(*canvas_, String(shown.c_str()), obj.x + g.pad, baselineY, ink);
   canvas_->clearClip();
   return true;
+}
+
+const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& descent, const String& needs) {
+  // `needs`: a key's label, which every glyph of the font must have - the
+  // Lucida fonts have no euro sign, and a key showing nothing was found on
+  // the 4.3B (2026-10-27).
+  auto hasAll = [&needs](const BdfFont* font) {
+    size_t i = 0;
+    while (i < needs.length()) {
+      if (!font->hasGlyph(BdfFont::nextCodepoint(needs, i))) return false;
+    }
+    return true;
+  };
+  const Font* best = nullptr;
+  const Font* smallest = nullptr;
+  for (const Font& f : projectLoader_.getProject().fonts) {
+    const BdfFont* candidate = fontFor(f.id);
+    if (candidate == nullptr || !hasAll(candidate)) continue;
+    const int line = f.ascent + f.descent;
+    if (smallest == nullptr || line < smallest->ascent + smallest->descent) smallest = &f;
+    if (line * 10 <= height * 6 && (best == nullptr || line > best->ascent + best->descent)) best = &f;
+  }
+  const Font* chosen = best != nullptr ? best : smallest;
+  if (chosen == nullptr) return nullptr;
+  ascent = chosen->ascent;
+  descent = chosen->descent;
+  return fontFor(chosen->id);
+}
+
+void ColorScreenRenderer::renderKeyboard(const keyboard::State& state, const ScreenObject& field,
+                                         const keyboard::Frame& frame) {
+  auto colour = [this](const String& value, const char* fallback) {
+    return parseHexColor(value.isEmpty() ? String(fallback) : value);
+  };
+  const uint16_t panel = colour(field.properties.fieldColor, "#e7e0ec");
+  const uint16_t accent = colour(field.properties.lineColor, "#6750a4");
+  const uint16_t ink = colour(field.properties.textColor, "#1d1b20");
+  const uint16_t keyFace = currentScreenBg_;
+
+  canvas_->fillRect(frame.x, frame.y, frame.w, frame.h, panel);
+
+  // The line: the text so far, its end at the right edge once it is longer
+  // than the line, and the count after it.
+  const std::vector<keyboard::KeyRect> keys =
+      keyboard::layoutKeys(state, frame.keysX, frame.keysY, frame.keysW, frame.keysH, frame.gap);
+  const int keyH = keys.empty() ? frame.lineH : keys.front().h;
+  int ascent = 0, descent = 0;
+  const BdfFont* font = keyboardFont(keyH, ascent, descent);
+  const int lineRadius = textfield::geometry(frame.lineW, frame.lineH).radius;
+  canvas_->fillRoundRect(frame.lineX, frame.lineY, frame.lineW, frame.lineH, lineRadius, keyFace);
+  canvas_->fillRect(frame.lineX + lineRadius, frame.lineY + frame.lineH - textfield::LINE, frame.lineW - 2 * lineRadius,
+                    textfield::LINE, accent);
+  if (font != nullptr) {
+    const int pad = textfield::geometry(frame.lineW, frame.lineH).pad;
+    const String count = String(textfield::textLength(state.text)) + "/" + String(state.bounds.maxLength);
+    const int16_t countW = font->textWidth(count);
+    const int16_t base = frame.lineY + textfield::baseline(frame.lineH, ascent, descent);
+    font->drawText(*canvas_, count, frame.lineX + frame.lineW - pad - countW, base, ink);
+    const std::string shown = textfield::shownText(state.text, field.properties.hideText, font->hasGlyph(textfield::HIDDEN_CHAR));
+    const String text(shown.c_str());
+    const int16_t room = frame.lineW - 3 * pad - countW;
+    const int16_t width = font->textWidth(text);
+    if (room > 0) {
+      canvas_->setClip(frame.lineX + pad, frame.lineY, room, frame.lineH);
+      font->drawText(*canvas_, text, frame.lineX + pad + (width > room ? room - width : 0), base, ink);
+      canvas_->clearClip();
+    }
+  }
+
+  const bool sendable = keyboard::canSend(state);
+  for (const keyboard::KeyRect& k : keys) {
+    const bool ok = k.key->kind == keyboard::KeyKind::Ok;
+    const bool held = (k.key->kind == keyboard::KeyKind::Shift && state.layer == keyboard::Layer::Upper);
+    const uint16_t face = (ok && sendable) || held ? accent : keyFace;
+    const uint16_t label = (ok && sendable) || held ? keyFace : ink;
+    const int r = std::max(2, k.h / 6);
+    canvas_->fillRoundRect(k.x, k.y, k.w, k.h, r, face);
+    const int cx = k.x + k.w / 2;
+    const int cy = k.y + k.h / 2;
+    const int s = std::max(3, std::min(k.w, k.h) / 4);
+    if (k.key->kind == keyboard::KeyKind::Shift) {
+      // An arrow up: a triangle on a stem.
+      canvas_->fillTriangle(cx, cy - s, cx - s, cy, cx + s, cy, label);
+      canvas_->fillRect(cx - s / 3, cy, std::max(2, 2 * s / 3), s, label);
+      continue;
+    }
+    if (k.key->kind == keyboard::KeyKind::Backspace) {
+      // An arrow left: a triangle on a stem.
+      canvas_->fillTriangle(cx - s, cy, cx, cy - s, cx, cy + s, label);
+      canvas_->fillRect(cx, cy - s / 3, s, std::max(2, 2 * s / 3), label);
+      continue;
+    }
+    if (font == nullptr) continue;
+    const String text(keyboard::label(*k.key).c_str());
+    if (text.isEmpty()) continue;
+    int keyAscent = ascent, keyDescent = descent;
+    const BdfFont* keyFont = font;
+    size_t probe = 0;
+    bool missing = false;
+    while (probe < text.length()) missing = missing || !font->hasGlyph(BdfFont::nextCodepoint(text, probe));
+    if (missing) keyFont = keyboardFont(keyH, keyAscent, keyDescent, text);
+    if (keyFont == nullptr) continue;
+    const int16_t tw = keyFont->textWidth(text);
+    canvas_->setClip(k.x, k.y, k.w, k.h);
+    keyFont->drawText(*canvas_, text, k.x + (k.w - tw) / 2, k.y + textfield::baseline(k.h, keyAscent, keyDescent), label);
+    canvas_->clearClip();
+  }
 }
 
 bool ColorScreenRenderer::renderBox(const ScreenObject& obj) {
@@ -2736,7 +2844,9 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     // Ein Energiediagramm faengt nur auf einem Knoten mit Aktion (Vertrag
     // 2.8): anderswo soll der Finger blaettern koennen.
     const bool energy = o->type == "energy-diagram";
-    if (!energy && !objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
+    // Ein Textfeld mit Schreibtopic: der Finger oeffnet seine Tastatur.
+    const bool textField = o->type == "text-field" && !o->properties.writeTopic.isEmpty();
+    if (!energy && !textField && !objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
 
     const int16_t ox = dx + o->x;
     const int16_t oy = dy + o->y;

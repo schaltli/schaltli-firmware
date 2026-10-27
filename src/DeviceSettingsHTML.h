@@ -37,6 +37,16 @@ mistaken touch matters. The critical screens stay one swipe away.</div>
 <div id="dsNoProject" class="hint" style="display:none;color:#c62828">No project is
 loaded right now, so the screen list is empty. Any screen already chosen is kept.</div>
 </div>
+<div class="form-group">
+<label for="dsKeyboard">Keyboard</label>
+<select id="dsKeyboard">
+<option value="de-CH">German (Switzerland)</option>
+<option value="de-DE">German (Germany)</option>
+<option value="en-US">English (US)</option>
+</select>
+<div class="hint">The keys a text field opens: QWERTZ with &uuml; &ouml; &auml; (and &egrave; &eacute; &agrave;),
+QWERTZ with &szlig;, or QWERTY.</div>
+</div>
 <button class="btn" onclick="deviceSettingsSave()">Save Device Settings</button>
 )=====";
 
@@ -49,6 +59,14 @@ setTimeout(function(){m.classList.remove('show')},5000);}
 function deviceSettingsLoad(){
 fetch('/api/device-settings').then(function(r){return r.json()}).then(function(d){
 document.getElementById('dsOff').value=d.displayOffAfterSeconds;
+// No keyboard stored yet: this browser's languages decide it, and the
+// device keeps what they map to (DeviceSettings::adoptBrowserLanguages).
+if(d.keyboardLayout){document.getElementById('dsKeyboard').value=d.keyboardLayout}
+else{var lf=new FormData();
+lf.append('browserLanguages',(navigator.languages&&navigator.languages.length?navigator.languages:[navigator.language||'']).join(','));
+fetch('/api/device-settings',{method:'POST',body:lf}).then(function(){return fetch('/api/device-settings')})
+.then(function(r){return r.json()}).then(function(k){if(k.keyboardLayout)document.getElementById('dsKeyboard').value=k.keyboardLayout})
+.catch(function(){});}
 var sel=document.getElementById('dsIdle');
 sel.innerHTML='';
 var none=document.createElement('option');
@@ -79,6 +97,7 @@ function deviceSettingsSave(){
 var f=new FormData();
 f.append('displayOffAfterSeconds',document.getElementById('dsOff').value);
 f.append('idleScreenId',document.getElementById('dsIdle').value);
+f.append('keyboardLayout',document.getElementById('dsKeyboard').value);
 fetch('/api/device-settings',{method:'POST',body:f})
 .then(function(r){return r.json()})
 .then(function(d){deviceSettingsMessage(d.success?'success':'error',d.message)})
