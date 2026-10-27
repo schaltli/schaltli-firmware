@@ -455,6 +455,12 @@ private:
   bool renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex);
   // A text field (TextField.h): container, line, the text or its dots.
   bool renderTextField(const ScreenObject& obj);
+  // A time field (TimeField.h): the text field's drawing, its text the time.
+  bool renderTimeField(const ScreenObject& obj);
+  // The field and `value` in it, a text field's and a time field's alike.
+  void drawField(const ScreenObject& obj, const String& value, bool hidden);
+  // What a field shows: the asked value until its topic answers, then the topic's.
+  String fieldValue(const ScreenObject& obj) const;
 
  public:
   // The keyboard a tapped text field opens (Keyboard.h), drawn over the

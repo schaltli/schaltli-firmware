@@ -454,7 +454,7 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   // A text field without a read topic reads its write topic: it shows what
   // was last sent, as Home Assistant's optimistic text does (designer
   // render-text-field.ts textFieldValue).
-  if (obj.type == "text-field" && obj.properties.topic.isEmpty()) obj.properties.topic = obj.properties.writeTopic;
+  if ((obj.type == "text-field" || obj.type == "time-field") && obj.properties.topic.isEmpty()) obj.properties.topic = obj.properties.writeTopic;
 
   // Recursive: only "switcher" and "panel" objects carry children in
   // practice, but parsing is generic (matches the designer's ScreenObject
@@ -519,6 +519,7 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.minLength = propsJson["minLength"] | 0;
   props.maxLength = propsJson["maxLength"] | textfield::MAX_LENGTH;
   props.hideText = propsJson["hidden"] | false;
+  props.minuteStep = propsJson["minuteStep"] | 5;
   props.textAlign = propsJson["textAlign"] | "left";
   props.fontId = propsJson["fontId"] | "";
   props.fontWeight = propsJson["fontWeight"] | "normal";

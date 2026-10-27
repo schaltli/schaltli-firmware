@@ -212,6 +212,8 @@ struct ObjectProperties {
   int minLength = 0;
   int maxLength = 255;
   bool hideText = false;
+  // A time field's minute step (timefield::step reads it leniently).
+  int minuteStep = 5;
   String textAlign;                       // "left", "center", "right"
   String fontId;                          // Font identifier
   String fontWeight;                      // "normal", "bold" (for labels)

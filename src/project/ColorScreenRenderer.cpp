@@ -4,6 +4,7 @@
 
 #include "SwitchShape.h"
 #include "TextField.h"
+#include "TimeField.h"
 #include "Keyboard.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
@@ -614,6 +615,27 @@ bool ColorScreenRenderer::readsTopic(const ScreenObject& obj, const String& topi
 // as a slider's), then the topic's text; the loader has made the write
 // topic the read one where there was none.
 bool ColorScreenRenderer::renderTextField(const ScreenObject& obj) {
+  drawField(obj, fieldValue(obj), obj.properties.hideText);
+  return true;
+}
+
+// What a text or time field shows: what was sent until the topic answers,
+// then the topic's own value; empty while there is none.
+String ColorScreenRenderer::fieldValue(const ScreenObject& obj) const {
+  const String& topic = obj.properties.topic;
+  if (topic.isEmpty()) return String();
+  if (!askedValue_.isEmpty() && askedTopic_ == topic) return askedValue_;
+  if (projectLoader_.hasTopicValue(topic)) return projectLoader_.getTopicValue(topic);
+  return String();
+}
+
+// A time field (TimeField.h): drawn as a text field, its text the time.
+bool ColorScreenRenderer::renderTimeField(const ScreenObject& obj) {
+  drawField(obj, String(timefield::shown(fieldValue(obj).c_str()).c_str()), false);
+  return true;
+}
+
+void ColorScreenRenderer::drawField(const ScreenObject& obj, const String& value, bool hidden) {
   const textfield::Geometry g = textfield::geometry(obj.width, obj.height);
   const uint16_t field = parseHexColor(obj.properties.fieldColor.isEmpty() ? String("#e7e0ec") : obj.properties.fieldColor);
   const uint16_t line = parseHexColor(obj.properties.lineColor.isEmpty() ? String("#6750a4") : obj.properties.lineColor);
@@ -621,26 +643,19 @@ bool ColorScreenRenderer::renderTextField(const ScreenObject& obj) {
   canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, g.radius, field);
   if (obj.width > 2 * g.radius) canvas_->fillRoundRect(obj.x + g.radius, obj.y + g.lineY, obj.width - 2 * g.radius, g.lineHeight, 0, line);
 
-  const String& topic = obj.properties.topic;
-  if (topic.isEmpty()) return true;
-  String value;
-  if (!askedValue_.isEmpty() && askedTopic_ == topic) value = askedValue_;
-  else if (projectLoader_.hasTopicValue(topic)) value = projectLoader_.getTopicValue(topic);
-  if (value.isEmpty()) return true;
+  if (value.isEmpty()) return;
 
   const BdfFont* font = fontFor(obj.properties.fontId);
-  if (font == nullptr) return true;
-  const std::string shown =
-      textfield::shownText(value.c_str(), obj.properties.hideText, font->hasGlyph(textfield::HIDDEN_CHAR));
+  if (font == nullptr) return;
+  const std::string shown = textfield::shownText(value.c_str(), hidden, font->hasGlyph(textfield::HIDDEN_CHAR));
   const int ascent = getFontAscentById(obj.properties.fontId);
   const int descent = getFontDescentById(obj.properties.fontId);
   const int16_t baselineY = obj.y + textfield::baseline(obj.height, ascent, descent);
   const int16_t clipW = obj.width - 2 * g.pad;
-  if (clipW <= 0) return true;
+  if (clipW <= 0) return;
   canvas_->setClip(obj.x + g.pad, obj.y, clipW, obj.height);
   font->drawText(*canvas_, String(shown.c_str()), obj.x + g.pad, baselineY, ink);
   canvas_->clearClip();
-  return true;
 }
 
 const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& descent, const String& needs, int maxWidth) {
@@ -2804,6 +2819,7 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
   }
   if (obj.type == "energy-diagram") return renderEnergyDiagram(obj);
   if (obj.type == "text-field") return renderTextField(obj);
+  if (obj.type == "time-field") return renderTimeField(obj);
   if (obj.type == "panel") {
     // Only ever meaningful as a tab-control's own child, handled by
     // renderTabControl() above - a stray top-level "panel" (malformed

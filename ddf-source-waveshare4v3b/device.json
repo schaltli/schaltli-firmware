@@ -428,6 +428,7 @@
     "button-group",
     "button",
     "text-field",
+    "time-field",
     "line",
     "live-line",
     "box",
