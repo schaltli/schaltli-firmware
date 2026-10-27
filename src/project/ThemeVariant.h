@@ -45,6 +45,8 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
   f(p.trackEdgeColor, p.trackEdgeColorDark);
   f(p.strokeColor, p.strokeColorDark);
   f(p.switchColor, p.switchColorDark);
+  f(p.fieldColor, p.fieldColorDark);
+  f(p.lineColor, p.lineColorDark);
   f(obj.path, obj.pathDark);
   f(obj.pathNormal, obj.pathNormalDark);
   f(obj.pathActive, obj.pathActiveDark);

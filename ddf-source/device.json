@@ -424,6 +424,7 @@
     "switch",
     "button-group",
     "button",
+    "text-field",
     "line",
     "live-line",
     "box",

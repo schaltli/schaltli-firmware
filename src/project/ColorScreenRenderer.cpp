@@ -3,6 +3,7 @@
 #include "ObjectTypes.h"
 
 #include "SwitchShape.h"
+#include "TextField.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
 #include "ArcRaster.h"
@@ -604,6 +605,41 @@ bool ColorScreenRenderer::readsTopic(const ScreenObject& obj, const String& topi
   for (const std::string& read : liveTopics(obj, combinedTopics))
     if (topic == read.c_str()) return true;
   return false;
+}
+
+// The designer's render-text-field.ts, pixel for pixel: the container and
+// the line through the same integer rasteriser, the text cut at `pad`.
+// What it shows: what was sent until the topic answers (the asked value,
+// as a slider's), then the topic's text; the loader has made the write
+// topic the read one where there was none.
+bool ColorScreenRenderer::renderTextField(const ScreenObject& obj) {
+  const textfield::Geometry g = textfield::geometry(obj.width, obj.height);
+  const uint16_t field = parseHexColor(obj.properties.fieldColor.isEmpty() ? String("#e7e0ec") : obj.properties.fieldColor);
+  const uint16_t line = parseHexColor(obj.properties.lineColor.isEmpty() ? String("#6750a4") : obj.properties.lineColor);
+  const uint16_t ink = parseHexColor(obj.properties.textColor.isEmpty() ? String("#1d1b20") : obj.properties.textColor);
+  canvas_->fillRoundRect(obj.x, obj.y, obj.width, obj.height, g.radius, field);
+  if (obj.width > 2 * g.radius) canvas_->fillRoundRect(obj.x + g.radius, obj.y + g.lineY, obj.width - 2 * g.radius, g.lineHeight, 0, line);
+
+  const String& topic = obj.properties.topic;
+  if (topic.isEmpty()) return true;
+  String value;
+  if (!askedValue_.isEmpty() && askedTopic_ == topic) value = askedValue_;
+  else if (projectLoader_.hasTopicValue(topic)) value = projectLoader_.getTopicValue(topic);
+  if (value.isEmpty()) return true;
+
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  if (font == nullptr) return true;
+  const std::string shown =
+      textfield::shownText(value.c_str(), obj.properties.hideText, font->hasGlyph(textfield::HIDDEN_CHAR));
+  const int ascent = getFontAscentById(obj.properties.fontId);
+  const int descent = getFontDescentById(obj.properties.fontId);
+  const int16_t baselineY = obj.y + textfield::baseline(obj.height, ascent, descent);
+  const int16_t clipW = obj.width - 2 * g.pad;
+  if (clipW <= 0) return true;
+  canvas_->setClip(obj.x + g.pad, obj.y, clipW, obj.height);
+  font->drawText(*canvas_, String(shown.c_str()), obj.x + g.pad, baselineY, ink);
+  canvas_->clearClip();
+  return true;
 }
 
 bool ColorScreenRenderer::renderBox(const ScreenObject& obj) {
@@ -2655,6 +2691,7 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
   if (obj.type == "energy-diagram") return renderEnergyDiagram(obj);
+  if (obj.type == "text-field") return renderTextField(obj);
   if (obj.type == "panel") {
     // Only ever meaningful as a tab-control's own child, handled by
     // renderTabControl() above - a stray top-level "panel" (malformed

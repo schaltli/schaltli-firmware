@@ -1,6 +1,7 @@
 #include "ProjectLoader.h"
 #include "LiveValueJson.h"
 #include "ThemeVariant.h"
+#include "TextField.h"
 #include <exception>
 #include <math.h>
 
@@ -450,6 +451,10 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
     obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));
   }
+  // A text field without a read topic reads its write topic: it shows what
+  // was last sent, as Home Assistant's optimistic text does (designer
+  // render-text-field.ts textFieldValue).
+  if (obj.type == "text-field" && obj.properties.topic.isEmpty()) obj.properties.topic = obj.properties.writeTopic;
 
   // Recursive: only "switcher" and "panel" objects carry children in
   // practice, but parsing is generic (matches the designer's ScreenObject
@@ -507,6 +512,13 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   props.trackEdgeColorDark = propsJson["trackEdgeColorDark"] | "";
   props.strokeColorDark = propsJson["strokeColorDark"] | "";
   props.switchColorDark = propsJson["switchColorDark"] | "";
+  props.fieldColor = propsJson["fieldColor"] | "";
+  props.fieldColorDark = propsJson["fieldColorDark"] | "";
+  props.lineColor = propsJson["lineColor"] | "";
+  props.lineColorDark = propsJson["lineColorDark"] | "";
+  props.minLength = propsJson["minLength"] | 0;
+  props.maxLength = propsJson["maxLength"] | textfield::MAX_LENGTH;
+  props.hideText = propsJson["hidden"] | false;
   props.textAlign = propsJson["textAlign"] | "left";
   props.fontId = propsJson["fontId"] | "";
   props.fontWeight = propsJson["fontWeight"] | "normal";

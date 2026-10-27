@@ -201,6 +201,17 @@ struct ObjectProperties {
   String trackEdgeColorDark;
   String strokeColorDark;
   String switchColorDark;
+  // A text field's (designer tasks/ha-text-plan.md): its container, the line
+  // along its bottom, and their dark variants. Its text is textColor.
+  String fieldColor;
+  String fieldColorDark;
+  String lineColor;
+  String lineColorDark;
+  // Its bounds in characters (textfield::bounds) and whether it shows dots;
+  // `hidden` in the JSON, not that name here: Screen has one of its own.
+  int minLength = 0;
+  int maxLength = 255;
+  bool hideText = false;
   String textAlign;                       // "left", "center", "right"
   String fontId;                          // Font identifier
   String fontWeight;                      // "normal", "bold" (for labels)

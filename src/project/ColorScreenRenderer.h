@@ -452,6 +452,8 @@ private:
   bool renderIcon(const ScreenObject& obj);
   bool renderSoftwareButton(const ScreenObject& obj, bool isPressed);
   bool renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex);
+  // A text field (TextField.h): container, line, the text or its dots.
+  bool renderTextField(const ScreenObject& obj);
   // Switch marker bar - solid for a confirmed marked state, hollow while a
   // write is unconfirmed. Geometry constants live next to the definition in
   // ColorScreenRenderer.cpp, mirroring render-switch.ts.

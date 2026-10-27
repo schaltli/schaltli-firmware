@@ -70,6 +70,10 @@ public:
   // The highest any glyph of the font reaches above the baseline.
   int16_t maxInkAscent() const;
 
+  // Whether the font has a glyph of its own for `codepoint` - a hidden text
+  // field's bullet, which the number fonts lack.
+  bool hasGlyph(uint16_t codepoint) const { return find(codepoint) != nullptr; }
+
   // Cursor advance for one codepoint (BDF DWIDTH), 0 if absent.
   int16_t advance(uint16_t codepoint) const;
 
