@@ -6,6 +6,7 @@
 #include "TextField.h"
 #include "TimeField.h"
 #include "Keyboard.h"
+#include "TimePicker.h"
 #include "RenderProfile.h"
 #include <esp_cpu.h>
 #include "ArcRaster.h"
@@ -767,6 +768,90 @@ void ColorScreenRenderer::renderKeyboard(const keyboard::State& state, const Scr
     keyFont->drawText(*canvas_, text, k.x + (k.w - tw) / 2, k.y + textfield::baseline(k.h, keyAscent, keyDescent), label);
     canvas_->clearClip();
   }
+}
+
+void ColorScreenRenderer::renderTimePicker(const timepicker::State& state, const ScreenObject& field,
+                                           const timepicker::Frame& f) {
+  auto colour = [this](const String& value, const char* fallback) {
+    return parseHexColor(value.isEmpty() ? String(fallback) : value);
+  };
+  const uint16_t panel = colour(field.properties.fieldColor, "#e7e0ec");
+  const uint16_t accent = colour(field.properties.lineColor, "#6750a4");
+  const uint16_t ink = colour(field.properties.textColor, "#1d1b20");
+  const uint16_t face = currentScreenBg_;
+  const uint16_t faint = energydiagram::mix565(face, ink, 110);  // a neighbour: ink at 43 %
+
+  canvas_->fillRect(f.panel.x, f.panel.y, f.panel.w, f.panel.h, panel);
+
+  int bigAscent = 0, bigDescent = 0, smallAscent = 0, smallDescent = 0;
+  const BdfFont* big = keyboardFont(f.itemH, bigAscent, bigDescent, String("00"));
+  const BdfFont* small = keyboardFont(f.itemH * 6 / 10, smallAscent, smallDescent, String("00"));
+  if (small == nullptr) {
+    small = big;
+    smallAscent = bigAscent;
+    smallDescent = bigDescent;
+  }
+  const int radius = std::max(4, f.itemH / 5);
+  auto centred = [this](const BdfFont* font, const String& text, int cx, int top, int h, int ascent, int descent, uint16_t c) {
+    if (font == nullptr) return;
+    font->drawText(*canvas_, text, cx - font->textWidth(text) / 2, top + textfield::baseline(h, ascent, descent), c);
+  };
+  auto pad = [](int v) { return String(v < 10 ? "0" : "") + String(v); };
+
+  auto drawWheel = [&](const timepicker::Rect& r, const timepicker::Wheel& wheel, bool hours) {
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, radius, face);
+    if (f.style == timepicker::Style::Buttons) {
+      // A value between its buttons: its line in the accent, as a field's.
+      const int v = hours ? wheel.index : wheel.index * state.step;
+      canvas_->fillRect(r.x + radius, r.y + r.h - 3, r.w - 2 * radius, 3, accent);
+      centred(big, pad(v), r.x + r.w / 2, r.y, r.h, bigAscent, bigDescent, ink);
+      return;
+    }
+    // The middle band, where the chosen value rests.
+    const int bandY = r.y + (r.h - f.itemH) / 2;
+    canvas_->fillRoundRect(r.x + 4, bandY, r.w - 8, f.itemH, radius, energydiagram::mix565(face, accent, 28));
+    canvas_->fillRect(r.x + 4 + radius, bandY + f.itemH - 2, r.w - 8 - 2 * radius, 2, accent);
+    canvas_->setClip(r.x, r.y, r.w, r.h);
+    const int offset = static_cast<int>(std::lround(wheel.offset));
+    for (int k = -3; k <= 3; k++) {
+      const int top = bandY + k * f.itemH + offset;
+      if (top + f.itemH < r.y || top > r.y + r.h) continue;
+      const int idx = ((wheel.index + k) % wheel.count + wheel.count) % wheel.count;
+      const String text = pad(hours ? idx : idx * state.step);
+      const bool middle = std::abs(k * f.itemH + offset) < f.itemH / 2;
+      if (middle) centred(big, text, r.x + r.w / 2, top, f.itemH, bigAscent, bigDescent, ink);
+      else centred(small, text, r.x + r.w / 2, top, f.itemH, smallAscent, smallDescent, faint);
+    }
+    canvas_->clearClip();
+  };
+  drawWheel(f.hour, state.hour, true);
+  drawWheel(f.minute, state.minute, false);
+  centred(big, String(":"), f.colonX, f.colonY - f.itemH / 2, f.itemH, bigAscent, bigDescent, ink);
+
+  // A chevron, up or down, in a button.
+  auto chevron = [&](const timepicker::Rect& r, bool up) {
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, radius, face);
+    const int cx = r.x + r.w / 2, cy = r.y + r.h / 2, s = std::max(4, std::min(r.w, r.h) / 5);
+    if (up) canvas_->fillTriangle(cx - s, cy + s / 2, cx + s, cy + s / 2, cx, cy - s / 2 - 1, ink);
+    else canvas_->fillTriangle(cx - s, cy - s / 2, cx + s, cy - s / 2, cx, cy + s / 2 + 1, ink);
+  };
+  if (f.style == timepicker::Style::Buttons) {
+    chevron(f.hourUp, true);
+    chevron(f.hourDown, false);
+    chevron(f.minuteUp, true);
+    chevron(f.minuteDown, false);
+  }
+
+  // Cancel and OK, as the keyboard's.
+  int la = 0, ld = 0;
+  auto button = [&](const timepicker::Rect& r, const char* word, uint16_t fill, uint16_t text) {
+    canvas_->fillRoundRect(r.x, r.y, r.w, r.h, radius, fill);
+    const String label(word);
+    const BdfFont* font = keyboardFont(r.h, la, ld, label, r.w - 2 * radius);
+    centred(font, label, r.x + r.w / 2, r.y, r.h, la, ld, text);
+  };
+  button(f.cancel, "Cancel", face, ink);
+  button(f.ok, "OK", accent, face);
 }
 
 bool ColorScreenRenderer::renderBox(const ScreenObject& obj) {
@@ -2865,7 +2950,7 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     // 2.8): anderswo soll der Finger blaettern koennen.
     const bool energy = o->type == "energy-diagram";
     // Ein Textfeld mit Schreibtopic: der Finger oeffnet seine Tastatur.
-    const bool textField = o->type == "text-field" && !o->properties.writeTopic.isEmpty();
+    const bool textField = (o->type == "text-field" || o->type == "time-field") && !o->properties.writeTopic.isEmpty();
     if (!energy && !textField && !objecttypes::isSwitch(o->type) && o->type != "button" && !isSettableLevel(*o)) continue;
 
     const int16_t ox = dx + o->x;

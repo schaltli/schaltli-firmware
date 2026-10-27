@@ -15,6 +15,7 @@
 #include "EnergyDiagram.h"
 #include "PolygonRaster.h"
 #include "Keyboard.h"
+#include "TimePicker.h"
 #include <array>
 #include <functional>
 
@@ -470,6 +471,12 @@ private:
   // character where the field hides its text, and the count. The board
   // presents the frame's rectangle afterwards.
   void renderKeyboard(const keyboard::State& state, const ScreenObject& field, const keyboard::Frame& frame);
+
+  // The picker a tapped time field opens (TimePicker.h), drawn over the
+  // screen into `frame`, in the field's colours as the keyboard is: wheels
+  // with their values where the finger has them, or a button above and
+  // below each value; Cancel and OK. The board presents frame.panel after.
+  void renderTimePicker(const timepicker::State& state, const ScreenObject& field, const timepicker::Frame& frame);
 
  private:
   // The project's largest font whose line fits `height` with room around it;

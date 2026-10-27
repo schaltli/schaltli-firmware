@@ -96,6 +96,7 @@
 #include "../../project/ColorScreenRenderer.h"
 #include "../../project/SwitchShape.h"
 #include "../../project/Keyboard.h"
+#include "../../project/TimePicker.h"
 #include "../../DeviceSettings.h"
 #include "project/ObjectTypes.h"
 
@@ -495,6 +496,22 @@ static bool keyboardContact = false;
 static keyboard::State keyboardState;
 static keyboard::Frame keyboardFrame;
 static ScreenObject keyboardField;
+
+// The picker a tapped time field opened (TimePicker.h, designer
+// tasks/ha-time-plan.md): two wheels that follow the finger and snap on
+// release. While it is open every contact is its own, as the keyboard's.
+static bool pickerOpen = false;
+static bool pickerContact = false;
+static timepicker::State pickerState;
+static timepicker::Frame pickerFrame;
+static ScreenObject pickerField;
+// The wheel a finger is on, where it began and its last few samples.
+static timepicker::Wheel *pickerWheel = nullptr;
+static int16_t pickerStartY = 0, pickerLastY = 0;
+static bool pickerMoved = false;
+static int16_t pickerSampleY[6];
+static uint32_t pickerSampleMs[6];
+static int pickerSamples = 0;
 static int16_t levelDragX = 0, levelDragY = 0, levelDragW = 0, levelDragH = 0;
 static unsigned long levelDragLastPublishMs = 0;
 // A drag must not put thirty messages on the broker - the same coalescing the
@@ -648,6 +665,7 @@ static void renderAndPresent(const char *reason)
                                 pressedSwitchId, pressedSwitchIndex);
   }
   if (keyboardOpen) renderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
+  if (pickerOpen) renderer->renderTimePicker(pickerState, pickerField, pickerFrame);
   renderGeneration++;
   pendingTopicCount = 0;
   pendingTopicOverflow = false;
@@ -1071,6 +1089,10 @@ static void setupNetworking()
   // parameter rather than run at boot because it writes rubbish into the
   // framebuffer for a few hundred milliseconds before re-rendering, and
   // nobody wants that on a panel that is showing a project.
+  testInterface.setPickerHandler([]() -> String {
+    if (!pickerOpen) return String("{\"open\":false}");
+    return String(timepicker::describe(pickerState, pickerFrame).c_str());
+  });
   testInterface.setKeyboardHandler([]() -> String {
     if (!keyboardOpen) return String("{\"open\":false}");
     return String(keyboard::describe(keyboardState, keyboardFrame).c_str());
@@ -2410,6 +2432,108 @@ static void keyboardTouch(int16_t x, int16_t y)
   else presentKeyboard();
 }
 
+static void presentPicker()
+{
+  renderer->renderTimePicker(pickerState, pickerField, pickerFrame);
+  const timepicker::Rect &p = pickerFrame.panel;
+  panel.blitRegion(canvas->getBuffer(), p.x, p.y, p.w, p.h);
+}
+
+static void openPicker(const ScreenObject &field)
+{
+  pickerField = field;
+  String shown = renderer->askedValueFor(field.properties.topic);
+  if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);
+  timefield::TimeOfDay t;
+  const bool known = timefield::parse(shown.c_str(), t);
+  pickerState = timepicker::open(known ? &t : nullptr, field.properties.minuteStep);
+  pickerFrame = timepicker::frameFor(canvas->width(), canvas->height(), false, timepicker::Style::Wheels);
+  pickerOpen = true;
+  pickerContact = false;
+  pickerWheel = nullptr;
+  presentPicker();
+}
+
+// OK sends the time on the step as HH:MM:00, not retained, and the field
+// shows it until its topic answers (levelAskedTopic, as the keyboard).
+static void closePicker(bool send)
+{
+  pickerOpen = false;
+  pickerContact = false;
+  pickerWheel = nullptr;
+  if (send)
+  {
+    const String payload(timefield::payload(timepicker::value(pickerState)).c_str());
+    const bool sent = writeProjectTopic(pickerField.properties.writeTopic, payload);
+    levelAskedTopic = pickerField.properties.topic;
+    renderer->setAskedValue(levelAskedTopic, payload);
+    lastTap = "time field \"" + pickerField.id + "\" -> " + pickerField.properties.writeTopic + " = " + payload +
+              (sent ? "" : "  (NOT published - broker away)");
+    Serial.printf("[tap] time field \"%s\" -> %s = %s\n", pickerField.id.c_str(),
+                  pickerField.properties.writeTopic.c_str(), payload.c_str());
+  }
+  else
+  {
+    lastTap = "time field \"" + pickerField.id + "\" cancelled";
+  }
+  renderAndPresent(send ? "picker sent" : "picker cancelled");
+}
+
+// A finger on the open picker: a wheel follows it; OK and Cancel act on
+// the press, as the keyboard's keys do.
+static void pickerTouch(int16_t x, int16_t y, bool down, bool fresh)
+{
+  const uint32_t now = millis();
+  if (down && fresh)
+  {
+    const timepicker::Part part = timepicker::partAt(pickerFrame, x, y);
+    if (part == timepicker::Part::Ok) return closePicker(true);
+    if (part == timepicker::Part::Cancel) return closePicker(false);
+    pickerWheel = part == timepicker::Part::Hour ? &pickerState.hour : part == timepicker::Part::Minute ? &pickerState.minute : nullptr;
+    pickerStartY = pickerLastY = y;
+    pickerMoved = false;
+    pickerSamples = 0;
+  }
+  if (pickerWheel == nullptr) return;
+  if (down)
+  {
+    if (abs(y - pickerStartY) >= 4) pickerMoved = true;
+    const int16_t dy = y - pickerLastY;
+    pickerLastY = y;
+    const int slot = pickerSamples % 6;
+    pickerSampleY[slot] = y;
+    pickerSampleMs[slot] = now;
+    pickerSamples++;
+    if (dy != 0 && pickerMoved)
+    {
+      timepicker::drag(*pickerWheel, dy, pickerFrame.itemH);
+      presentPicker();
+    }
+    return;
+  }
+  // The lift: a still tap brings the neighbour under it, a drag settles -
+  // after a flick, further.
+  if (!pickerMoved)
+  {
+    const timepicker::Rect &r = pickerWheel == &pickerState.hour ? pickerFrame.hour : pickerFrame.minute;
+    const int k = timepicker::neighbourAt(r, pickerFrame.itemH, pickerStartY);
+    if (k != 0) timepicker::nudge(*pickerWheel, k, pickerFrame.itemH, now);
+  }
+  else
+  {
+    float velocity = 0;
+    if (pickerSamples >= 2)
+    {
+      const int newest = (pickerSamples - 1) % 6;
+      const int oldest = pickerSamples > 6 ? pickerSamples % 6 : 0;
+      const uint32_t dt = pickerSampleMs[newest] - pickerSampleMs[oldest];
+      if (dt > 0) velocity = (float)(pickerSampleY[newest] - pickerSampleY[oldest]) / (float)dt;
+    }
+    timepicker::release(*pickerWheel, velocity, pickerFrame.itemH, now);
+  }
+  pickerWheel = nullptr;
+}
+
 static bool dispatchTapAt(int16_t x, int16_t y)
 {
   if (!projectLoader.isLoaded() || renderer == nullptr) return false;
@@ -2496,6 +2620,14 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     const ButtonAction copy = *action;
     dispatchButtonAction(copy);
     popupOriginKnown = false;
+    return true;
+  }
+
+  if (hit->type == "time-field")
+  {
+    Serial.printf("[tap] time field \"%s\" - picker\n", hit->id.c_str());
+    lastTap = "(" + String(x) + "," + String(y) + ") time field \"" + hit->id + "\" - picker open";
+    openPicker(*hit);
     return true;
   }
 
@@ -3022,6 +3154,29 @@ void loop()
     fingerDown = false;
   }
 
+  // The picker takes every contact while it is open.
+  if (pickerOpen)
+  {
+    if (fingerDown)
+    {
+      const bool fresh = !pickerContact;
+      pickerContact = true;
+      const bool woke = fresh && displayIsOff;
+      if (fresh) wakeDisplay();
+      if (!woke) pickerTouch(touchX, touchY, true, fresh);
+      lastHumanInputMs = millis();
+    }
+    else if (pickerContact)
+    {
+      pickerContact = false;
+      pickerTouch(touchX, touchY, false, false);
+    }
+    holdActive = false;
+    testInterface.handleClient();
+    delay(5);
+    return;
+  }
+
   // The keyboard takes every contact while it is open, a key on its press.
   if (keyboardOpen)
   {
@@ -3420,8 +3575,8 @@ void loop()
     blankDisplay("inactivity");
   }
 
-  // While the keyboard is open the values wait: closing draws the screen.
-  if (keyboardOpen && renderPending)
+  // While the keyboard or the picker is open the values wait: closing draws the screen.
+  if ((keyboardOpen || pickerOpen) && renderPending)
   {
     renderPending = false;
     pendingTopicCount = 0;
@@ -3448,10 +3603,17 @@ void loop()
   }
 
   // The energy diagram's motion, after the touch and the values (see there).
-  if (!keyboardOpen)
+  if (!keyboardOpen && !pickerOpen)
   {
     energyStep();
     pullTabStep();
+  }
+  // A released wheel settling onto its value, a frame per pass.
+  if (pickerOpen && !pickerContact)
+  {
+    const uint32_t now = millis();
+    const bool moved = timepicker::animate(pickerState.hour, now) | timepicker::animate(pickerState.minute, now);
+    if (moved) presentPicker();
   }
 
   {

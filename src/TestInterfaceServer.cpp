@@ -36,6 +36,9 @@ bool TestInterfaceServer::begin(ClippedCanvas16& canvas, uint16_t port) {
   guarded("/api/topic-values", HTTP_GET, [this]() { this->handleGetTopicValues(); });
   guarded("/api/input", HTTP_POST, [this]() { this->handleInput(); });
   guarded("/api/touch", HTTP_POST, [this]() { this->handleTouch(); });
+  guarded("/api/picker", HTTP_GET, [this]() {
+    webServer_->send(200, "application/json", pickerHandler_ ? pickerHandler_() : String("{\"open\":false}"));
+  });
   guarded("/api/keyboard", HTTP_GET, [this]() {
     webServer_->send(200, "application/json", keyboardHandler_ ? keyboardHandler_() : String("{\"open\":false}"));
   });

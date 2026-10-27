@@ -154,6 +154,9 @@ public:
   // {"open":false}. What a HIL run taps keys by (designer hil/text-field.js).
   using KeyboardHandler = std::function<String()>;
   void setKeyboardHandler(KeyboardHandler handler) { keyboardHandler_ = handler; }
+  // GET /api/picker: the open time picker of a time field as JSON - its
+  // value, style and each part's rectangle - or {"open":false}.
+  void setPickerHandler(KeyboardHandler handler) { pickerHandler_ = handler; }
 
   // Signalmodus: das Panel zeigt seinen eigenen Empfangspegel gross auf dem
   // Display, statt ihn nur ueber /api/debug zu melden.
@@ -223,6 +226,7 @@ private:
   SettingsChangedHandler settingsChangedHandler_;
   ScreenListHandler screenListHandler_;
   KeyboardHandler keyboardHandler_;
+  KeyboardHandler pickerHandler_;
   DebugHandler debugHandler_;
   File uploadFile_;
   // Empty while a firmware upload is going well. Held rather than answered
