@@ -468,7 +468,8 @@ private:
  private:
   // The project's largest font whose line fits `height` with room around it;
   // the smallest where none does.
-  const BdfFont* keyboardFont(int height, int& ascent, int& descent, const String& needs = String());
+  // `maxWidth` > 0: `needs` must also fit that wide.
+  const BdfFont* keyboardFont(int height, int& ascent, int& descent, const String& needs = String(), int maxWidth = 0);
   // Switch marker bar - solid for a confirmed marked state, hollow while a
   // write is unconfirmed. Geometry constants live next to the definition in
   // ColorScreenRenderer.cpp, mirroring render-switch.ts.

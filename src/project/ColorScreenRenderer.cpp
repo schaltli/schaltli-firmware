@@ -643,7 +643,7 @@ bool ColorScreenRenderer::renderTextField(const ScreenObject& obj) {
   return true;
 }
 
-const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& descent, const String& needs) {
+const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& descent, const String& needs, int maxWidth) {
   // `needs`: a key's label, which every glyph of the font must have - the
   // Lucida fonts have no euro sign, and a key showing nothing was found on
   // the 4.3B (2026-10-27).
@@ -659,6 +659,7 @@ const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& d
   for (const Font& f : projectLoader_.getProject().fonts) {
     const BdfFont* candidate = fontFor(f.id);
     if (candidate == nullptr || !hasAll(candidate)) continue;
+    if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) continue;
     const int line = f.ascent + f.descent;
     if (smallest == nullptr || line < smallest->ascent + smallest->descent) smallest = &f;
     if (line * 10 <= height * 6 && (best == nullptr || line > best->ascent + best->descent)) best = &f;
@@ -741,7 +742,10 @@ void ColorScreenRenderer::renderKeyboard(const keyboard::State& state, const Scr
     size_t probe = 0;
     bool missing = false;
     while (probe < text.length()) missing = missing || !font->hasGlyph(BdfFont::nextCodepoint(text, probe));
-    if (missing) keyFont = keyboardFont(keyH, keyAscent, keyDescent, text);
+    // A word wider than its key ("Cancel" on the knob's 2-unit key) takes
+    // the largest font it fits in, as a missing glyph takes one that has it.
+    const int room = k.w - 2 * std::max(1, k.h / 8);
+    if (missing || font->textWidth(text) > room) keyFont = keyboardFont(keyH, keyAscent, keyDescent, text, room);
     if (keyFont == nullptr) continue;
     const int16_t tw = keyFont->textWidth(text);
     canvas_->setClip(k.x, k.y, k.w, k.h);

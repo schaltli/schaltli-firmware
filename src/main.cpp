@@ -55,6 +55,7 @@
 #include "project/Placeholders.h"
 #include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
+#include "project/Keyboard.h"
 #include "project/ColorAssetLoader.h"
 #include "project/ScreenGraphProject.h"
 #include "GraphOverlays.h"
@@ -435,6 +436,15 @@ static void closeOpenFrame() {
 // Always a complete render, never anything depending on what was on screen
 // before, so repeated snapshots of one index are byte-stable - the property
 // pixel-diffing against the designer rests on.
+// The keyboard a tapped text field opened (Keyboard.h, designer
+// tasks/ha-text-plan.md): the whole round screen, the keys 260 x 150 below
+// the centre as on 2026-08-18. While it is open every touch is its own, the
+// ring does nothing and the values that arrive are drawn when it closes.
+static bool keyboardOpen = false;
+static keyboard::State keyboardState;
+static keyboard::Frame keyboardFrame;
+static ScreenObject keyboardField;
+
 static bool renderScreenIndex(int index) {
   if (!projectLoader.isLoaded() || screenRenderer == nullptr) return false;
   const ProjectConfig &project = projectLoader.getProject();
@@ -452,6 +462,7 @@ static bool renderScreenIndex(int index) {
     screenRenderer->dimOutsidePopupFence();
     screenRenderer->renderPopup(openPopup, 2);
   }
+  if (keyboardOpen) screenRenderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
   const int64_t renderEnd = esp_timer_get_time();
   latMark("rnd", String((int)((renderEnd - renderStart) / 1000)).c_str());
   currentScreenIndex = index;
@@ -1419,6 +1430,56 @@ static void updateDragAnimation() {
 // Modusschalter darueber auf der obersten Ebene. Genau das war das
 // Krankheitsbild - der obere Schalter ging, die vier darunter nicht, und
 // nichts deutete darauf hin, dass die Verschachtelung der Unterschied war.
+static void presentKeyboard() {
+  screenRenderer->renderKeyboard(keyboardState, keyboardField, keyboardFrame);
+  presentCanvas();
+}
+
+static void openKeyboard(const ScreenObject &field) {
+  keyboard::Layout layout = keyboard::Layout::EnUS;
+  keyboard::parseLayout(DeviceSettings::keyboardLayoutOrDefault().c_str(), layout);
+  keyboardField = field;
+  keyboardState = keyboard::State();
+  keyboardState.layout = layout;
+  keyboardState.bounds = textfield::bounds(field.properties.minLength, field.properties.maxLength);
+  String shown = screenRenderer->askedValueFor(field.properties.topic);
+  if (shown.isEmpty() && projectLoader.hasTopicValue(field.properties.topic)) shown = projectLoader.getTopicValue(field.properties.topic);
+  keyboardState.text = textfield::clampText(shown.c_str(), keyboardState.bounds.maxLength);
+  const ProjectConfig &project = projectLoader.getProject();
+  keyboardFrame = keyboard::frameFor(project.screenWidth, project.screenHeight, true);
+  keyboardOpen = true;
+  canvasPresenter.invalidateSlots();
+  presentKeyboard();
+}
+
+// OK sends the text as it is, not retained, and the field shows it until
+// its topic answers (the asked value, levelAskedTopic) - as on the 4.3B.
+static String levelAskedTopic;
+static void closeKeyboard(bool send) {
+  keyboardOpen = false;
+  if (send) {
+    const String text(keyboardState.text.c_str());
+    writeProjectTopic(keyboardField.properties.writeTopic, text);
+    levelAskedTopic = keyboardField.properties.topic;
+    screenRenderer->setAskedValue(levelAskedTopic, text);
+    Serial.printf("[tap] text field \"%s\" -> %s = %s\n", keyboardField.id.c_str(),
+                  keyboardField.properties.writeTopic.c_str(), text.c_str());
+  }
+  canvasPresenter.invalidateSlots();
+  renderScreenIndex(currentScreenIndex);
+}
+
+static void keyboardTouch(int16_t x, int16_t y) {
+  const std::vector<keyboard::KeyRect> keys = keyboard::layoutKeys(
+      keyboardState, keyboardFrame.keysX, keyboardFrame.keysY, keyboardFrame.keysW, keyboardFrame.keysH, keyboardFrame.gap);
+  const keyboard::Key *key = keyboard::keyAt(keys, x, y);
+  if (key == nullptr) return;
+  const keyboard::Outcome outcome = keyboard::press(keyboardState, *key);
+  if (outcome == keyboard::Outcome::Send) closeKeyboard(true);
+  else if (outcome == keyboard::Outcome::Cancel) closeKeyboard(false);
+  else presentKeyboard();
+}
+
 static bool dispatchTapAt(int16_t x, int16_t y) {
   if (!projectLoader.isLoaded()) return false;
   if (screenRenderer == nullptr) return false;
@@ -1457,6 +1518,12 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
     popupOriginH = treffer->height;
     dispatchButtonAction(treffer->properties.action);
     popupOriginKnown = false;
+    return true;
+  }
+
+  if (treffer->type == "text-field") {
+    Serial.printf("[tap] text field \"%s\" - keyboard\n", treffer->id.c_str());
+    openKeyboard(*treffer);
     return true;
   }
 
@@ -1518,8 +1585,8 @@ static String levelDragWriteTopic;
 static std::optional<scaled::WriteFormat> levelDragWriteFormat;
 static String levelDragPayload;
 // Das Lese-Topic, dessen naechste Nachricht die Anforderung beendet. Getrennt
-// von levelDragTopic, weil die Anforderung den Finger ueberlebt.
-static String levelAskedTopic;
+// von levelDragTopic, weil die Anforderung den Finger ueberlebt. Declared
+// with the keyboard above dispatchTapAt, which needs it too.
 // Nach dem Loslassen: der Wert, dessen Antwort die Anforderung beendet, und
 // bis wann auf sie gewartet wird (endLevelDrag, MQTT-Callback, loop()).
 static String levelAwaitValue;
@@ -1700,6 +1767,19 @@ static bool overlaysTriedThisContact = false;
 static bool mapTriedThisContact = false;
 
 static void pollTouchGesturesInner() {
+  // The keyboard takes every contact while it is open, a key on its press:
+  // no swipe, no setup hold, nothing under it.
+  if (keyboardOpen) {
+    if (touchIsDown && !touchDown) {
+      touchDown = true;
+      const bool wasOff = displayIsOff;
+      wakeDisplay();
+      if (!wasOff) keyboardTouch(touchX, touchY);
+    } else if (!touchIsDown) {
+      touchDown = false;
+    }
+    return;
+  }
   if (touchIsDown) {
 #if INPUT_DEBUG
     touchSampleCount++;
@@ -2418,6 +2498,8 @@ static void pollEncoder() {
   const bool wasOff = displayIsOff;
   wakeDisplay();
   if (wasOff) return;
+  // The ring does nothing while the keyboard is open (Keyboard.h).
+  if (keyboardOpen) return;
 
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
   latMark("knob", buttonId);
@@ -2836,6 +2918,9 @@ static void applyTopicValue(const String &topic, const String &payload) {
   // backdrop, which is one of those slots.
   canvasPresenter.invalidateSlots();
 
+  // While the keyboard is open nothing is drawn: closing draws the screen.
+  if (keyboardOpen) return;
+
   // Im Signalmodus gehoert die Anzeige dem Pegel. Der Wert wird oben
   // trotzdem uebernommen, damit nach dem Ausschalten sofort der richtige
   // Stand dasteht - nur gezeichnet wird nicht, sonst blinkt bei jedem
@@ -3147,6 +3232,10 @@ static void setupWiFi() {
       // GET /api/debug?set=touchPeriodMs=30 adjusts the touch sample
       // period per request - the polling-rate hypothesis is tested over
       // HTTP rather than one reflash per candidate value.
+      testInterface.setKeyboardHandler([]() -> String {
+        if (!keyboardOpen) return String("{\"open\":false}");
+        return String(keyboard::describe(keyboardState, keyboardFrame).c_str());
+      });
       testInterface.setDebugHandler([](const String &setArg) {
         if (setArg.startsWith("touchPeriodMs=")) {
           long v = setArg.substring(14).toInt();
@@ -3736,7 +3825,7 @@ void loop() {
   firmwareUpdater.service();
   deviceRequests.service();
   testInterfaceSwitch.service();
-  PHASE("energy", energyStep());
+  if (!keyboardOpen) PHASE("energy", energyStep());
   PHASE("pull tabs", pullTabStep());
 
   delay(5);
