@@ -86,6 +86,11 @@ bool isNo(const std::string& value);
 bool matches(const std::string& value, const std::string& op, const std::string& operand);
 Applies evaluate(const LiveValue& liveValue, const std::optional<std::string>& value);
 std::string formatValue(const std::string& value, const Format& format, const placeholders::Separators& separators);
+
+// Whole seconds as h:mm:ss, or the value as it came where it is no number of
+// seconds: a dial's or gauge's number shown as a duration (designer device
+// contract §2.12, the lib/live-value.ts formatDuration the designer draws with).
+std::string durationText(const std::string& value);
 // What a live value reads as text; an icon result reads as nothing.
 std::string textOf(const LiveValue& liveValue, const std::optional<std::string>& value, const placeholders::Separators& separators);
 // A text with `{live:<id>}` references as it reads.

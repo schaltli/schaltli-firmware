@@ -437,6 +437,6 @@
     "navigator",
     "energy-diagram"
   ],
-  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values"],
+  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display"],
   "supportsSoftwareButtons": true
 }

@@ -2299,13 +2299,18 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // rather than side by side: it has the room.
   if (noValue) return true;
   const bool asPercent = obj.properties.displayValue == "percentage";
-  if (!asPercent && obj.properties.displayValue != "value") return true;
+  // Seconds as h:mm:ss (designer device contract §2.12).
+  const bool asDuration = obj.properties.displayValue == "duration";
+  if (!asPercent && !asDuration && obj.properties.displayValue != "value") return true;
+  auto asText = [asDuration](const String& raw) {
+    return asDuration ? String(livevalue::durationText(raw.c_str()).c_str()) : raw;
+  };
 
   // Round, don't truncate - the same Math.round the bar's own value text
   // matches, for the same reason.
-  const String measured = asPercent ? String((int)(fillPercent + 0.5f)) + "%" : valueStr;
+  const String measured = asPercent ? String((int)(fillPercent + 0.5f)) + "%" : asText(valueStr);
   const String commanded =
-      hasSetpoint ? (asPercent ? String((int)(setpointPercent + 0.5f)) + "%" : rawMarker) : measured;
+      hasSetpoint ? (asPercent ? String((int)(setpointPercent + 0.5f)) + "%" : asText(rawMarker)) : measured;
   if (commanded.isEmpty()) return true;
   const bool showsSub = hasSetpoint && measured != commanded;
 
@@ -3546,6 +3551,8 @@ bool ColorScreenRenderer::arcLevelTextRect(const ScreenObject& obj, const String
     String text;
     if (obj.properties.displayValue == "percentage") {
       text = String((int)(interpolateCalibration(roh.toFloat(), obj.properties.calibrationPoints) + 0.5f)) + "%";
+    } else if (obj.properties.displayValue == "duration") {
+      text = String(livevalue::durationText(roh.c_str()).c_str());
     } else {
       text = roh;
     }

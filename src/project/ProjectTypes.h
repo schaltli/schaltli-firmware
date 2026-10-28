@@ -240,7 +240,7 @@ struct ObjectProperties {
   
   // level-indicator properties
   String barDirection;                    // "left-to-right", "right-to-left", "bottom-to-top", "top-to-bottom"
-  String displayValue;                    // "none", "percentage", "value"
+  String displayValue;                    // "none", "percentage", "value", "duration" (dial, gauge)
   String fillColor;                       // Color of filled portion of bar
   // Where the fill runs to along its scale, from fillColor (a theme's second
   // accent); empty is a flat fill. And how far a glow reaches around it, in

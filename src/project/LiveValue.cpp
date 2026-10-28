@@ -103,6 +103,11 @@ static std::optional<std::string> formatDuration(const std::string& value, const
     return std::to_string(seconds / 60) + ":" + twoDigits(s);
 }
 
+std::string durationText(const std::string& value) {
+    const auto formatted = formatDuration(value, "h:mm:ss");
+    return formatted ? *formatted : value;
+}
+
 std::string formatValue(const std::string& value, const Format& format, const placeholders::Separators& separators) {
     if (format.kind == FormatKind::AsIs) return value;
     if (format.kind == FormatKind::Number) {
