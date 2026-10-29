@@ -59,6 +59,7 @@
 // cross-checked line by line against the pin table in the board's wiki. Both
 // sources agree; nothing here is inferred from the 1.8" knob port, which is
 // the mistake that produced four hardware bugs on the last one.
+#include "../../ChartFeed.h"
 #include "project/NavigatorLayout.h"
 #include "project/PinchDetector.h"
 #include "project/ScreenGraphProject.h"
@@ -385,6 +386,11 @@ static DeviceRequests deviceRequests(mqttClient);
 // hil-on <password> / hil-off over USB (TestInterfaceSwitch.h).
 static TestInterfaceSwitch testInterfaceSwitch;
 static bool topicsSubscribed = false;
+// The charts' history for the shown screen (ChartFeed.h), and the screen and
+// popup it was last fitted to.
+static ChartFeed chartFeed;
+static int chartFeedScreen = -1;
+static int chartFeedPopup = -1;
 static bool setupModeActive = false;
 
 // The reserved setup gesture, same numbers as the knob: hold a finger still
@@ -1098,6 +1104,8 @@ static void setupNetworking()
     return String(keyboard::describe(keyboardState, keyboardFrame).c_str());
   });
   testInterface.setDebugHandler([](const String &setArg) -> String {
+    // ?set=charts: the charts' history it holds (ChartFeed::describe).
+    if (setArg == "charts") return chartFeed.describe();
     // ?set=theme=dark|light: what schaltli/state/theme would do, without a
     // broker - for the HIL dark pass and for looking at it by hand.
     if (setArg.startsWith("theme="))
@@ -1543,6 +1551,8 @@ static void setupNetworking()
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
     if (deviceRequests.onMessage(topic)) return;
+    // The charts' history (contract 2.13): held for the shown screen, drawn from loop().
+    if (chartFeed.onMessage(topic, payload)) return;
     if (topic == protocol.deviceTopic("firmware"))
     {
       firmwareUpdater.onMessage(payload);
@@ -3524,6 +3534,23 @@ void loop()
     for (const auto &w : writes) applyTopicValue(w.first, w.second);
   }
   subscribeToProjectTopics();
+
+  // The charts' history: what the shown screen reads, subscribed when the
+  // screen, its range or the day changed; drawn again when it arrived.
+  if (projectLoader.isLoaded())
+  {
+    const ProjectConfig &project = projectLoader.getProject();
+    const int popup = openPopup >= 0 ? openPopup - (int)project.screens.size() : -1;
+    if (chartFeed.due() || currentScreen != chartFeedScreen || popup != chartFeedPopup)
+    {
+      chartFeedScreen = currentScreen;
+      chartFeedPopup = popup;
+      chartFeed.update(project, currentScreen, popup, mqttClient);
+    }
+    if (chartFeed.takeRedraw() && currentScreen < (int)project.screens.size() &&
+        (ChartFeed::hasChart(project.screens[currentScreen].objects) || popup >= 0))
+      renderAndPresent("chart");
+  }
   firmwareUpdater.service();
   deviceRequests.service();
   testInterfaceSwitch.service();

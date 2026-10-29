@@ -49,6 +49,7 @@ class History {
   /** The payload held for a topic; empty for none. */
   const std::string& payload(const std::string& topic) const;
   size_t heldBytes() const;
+  const std::vector<std::string>& wanted() const { return wanted_; }
 
  private:
   std::vector<std::string> wanted_;

@@ -32,7 +32,11 @@ MqttClient::MqttClient()
   // MQTTTopic), which would otherwise just get silently truncated/dropped.
   // Must be set before connect() - PubSubClient allocates the buffer at
   // that size up front, so this belongs here at construction, not later.
-  mqttClient_.setBufferSize(1024);
+  //
+  // 4096 since the charts (designer tasks/charts-firmware-plan.md decision
+  // 2): a day of a chart's history is up to 4 KB, recent's two hours about
+  // 2.5 KB.
+  mqttClient_.setBufferSize(4096);
 
   // PubSubClient's default 15s keepalive (docs/device-contract.md's
   // shared broker also runs a dozen+ other MQTT clients, e.g. Home

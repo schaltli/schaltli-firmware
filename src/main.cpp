@@ -27,6 +27,7 @@
 // one write of 0x00 to register 0x00, and LV_TICK_CUSTOM never worked here
 // so the tick is driven manually from loop().
 
+#include "ChartFeed.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -131,6 +132,11 @@ static String lastPopup = "none since boot";
 // The screen or popup a finger or the ring acts on now.
 static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreenIndex; }
 static bool topicsSubscribed = false;
+// The charts' history for the shown screen (ChartFeed.h), and the screen and
+// popup it was last fitted to.
+static ChartFeed chartFeed;
+static int chartFeedScreen = -1;
+static int chartFeedPopup = -1;
 static bool setupModeActive = false;
 // Deploy work is deferred out of the MQTT callback - see onMqttMessage().
 static bool pendingDeploy = false;
@@ -2677,6 +2683,7 @@ static void loadAndRenderProject() {
   screenRenderer->preloadFonts();
 
   topicsSubscribed = false;
+  chartFeed.onProjectLoaded(mqttClient);
   // Onto the idle screen, for the same reason blanking returns to it: the
   // device should come up on something harmless rather than on whatever
   // happens to be first in the project. Falls back to screen 0 when nothing
@@ -2965,6 +2972,9 @@ static void writeProjectTopic(const String &topic, const String &payload) {
 }
 
 static void onMqttMessage(const String &topic, const String &payload) {
+  // The charts' history (contract 2.13): held for the shown screen, drawn
+  // from loop().
+  if (chartFeed.onMessage(topic, payload)) return;
   // Light or dark for the whole installation. Handled before the project's
   // own topics: it is not one of them unless a Theme switch reads it too, in
   // which case the switch gets the value as well.
@@ -3385,6 +3395,8 @@ static void setupWiFi() {
           restartAtMs = millis() + 500;
           return String("restarting");
         }
+        // set=charts: the charts' history it holds (ChartFeed::describe).
+        if (setArg == "charts") return chartFeed.describe();
         if (setArg == "describe") {
           return screenRenderer ? screenRenderer->describeScreen(currentScreenIndex)
                                 : String("no renderer\n");
@@ -3811,6 +3823,23 @@ void loop() {
   PHASE("sampleTouch", sampleTouch());
 
   if (restartAtMs != 0 && (long)(millis() - restartAtMs) >= 0) ESP.restart();
+
+  // The charts' history: what the shown screen reads, subscribed when the
+  // screen, its range or the day changed; drawn again when it arrived.
+  if (projectLoader.isLoaded()) {
+    const ProjectConfig &project = projectLoader.getProject();
+    const int popup = openPopup >= 0 ? openPopup - (int)project.screens.size() : -1;
+    if (chartFeed.due() || currentScreenIndex != chartFeedScreen || popup != chartFeedPopup) {
+      chartFeedScreen = currentScreenIndex;
+      chartFeedPopup = popup;
+      chartFeed.update(project, currentScreenIndex, popup, mqttClient);
+    }
+    if (chartFeed.takeRedraw() && currentScreenIndex < (int)project.screens.size() &&
+        (ChartFeed::hasChart(project.screens[currentScreenIndex].objects) || popup >= 0)) {
+      canvasPresenter.invalidateSlots();
+      renderScreenIndex(currentScreenIndex);
+    }
+  }
 
   // What this display wrote to its local topics, taken in as arrivals.
   if (!localWrites.empty()) {

@@ -15,6 +15,7 @@
 // genuinely different, which is the panel (EpdPanel.h) and what that implies
 // for when to draw.
 
+#include "../../ChartFeed.h"
 #include "project/NavigatorLayout.h"
 #include "project/ScreenGraphProject.h"
 #include <Arduino.h>
@@ -98,6 +99,11 @@ static bool pendingDeploy = false;
 static String pendingDeployPayload;
 static TestInterfaceServer testInterface;
 static bool topicsSubscribed = false;
+// The charts' history for the shown screen (ChartFeed.h), and the screen and
+// popup it was last fitted to.
+static ChartFeed chartFeed;
+static int chartFeedScreen = -1;
+static int chartFeedPopup = -1;
 
 // Set when a topic value lands, cleared when the screen is drawn. The draw
 // never happens inside the MQTT callback: on this panel it costs the better
@@ -1120,6 +1126,8 @@ static void setupNetworking()
     return json;
   });
   testInterface.setDebugHandler([](const String &setting) -> String {
+    // ?set=charts: the charts' history it holds (ChartFeed::describe).
+    if (setting == "charts") return chartFeed.describe();
     String out = "ip " + WiFi.localIP().toString() + "  rssi " + String(WiFi.RSSI()) + " dBm\n";
     out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " +
            String(ESP.getFreePsram() / 1024) + " KB\n";
@@ -1220,6 +1228,8 @@ static void setupNetworking()
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
     if (deviceRequests.onMessage(topic)) return;
+    // The charts' history (contract 2.13): held for the shown screen, drawn from loop().
+    if (chartFeed.onMessage(topic, payload)) return;
     if (topic == protocol.deviceTopic("firmware"))
     {
       firmwareUpdater.onMessage(payload);
@@ -1320,6 +1330,23 @@ void loop()
     for (const auto &w : writes) applyTopicValue(w.first, w.second);
   }
   subscribeToProjectTopics();
+
+  // The charts' history: what the shown screen reads, subscribed when the
+  // screen, its range or the day changed; drawn again when it arrived.
+  if (projectLoader.isLoaded())
+  {
+    const ProjectConfig &project = projectLoader.getProject();
+    const int popup = openPopup >= 0 ? openPopup - (int)project.screens.size() : -1;
+    if (chartFeed.due() || currentScreen != chartFeedScreen || popup != chartFeedPopup)
+    {
+      chartFeedScreen = currentScreen;
+      chartFeedPopup = popup;
+      chartFeed.update(project, currentScreen, popup, mqttClient);
+    }
+    if (chartFeed.takeRedraw() && currentScreen < (int)project.screens.size() &&
+        (ChartFeed::hasChart(project.screens[currentScreen].objects) || popup >= 0))
+      renderPending = true;
+  }
   firmwareUpdater.service();
   deviceRequests.service();
   testInterfaceSwitch.service();
