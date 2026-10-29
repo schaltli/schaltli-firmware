@@ -431,9 +431,10 @@
     "box",
     "switcher",
     "panel",
-    "energy-diagram"
+    "energy-diagram",
+    "chart"
   ],
-  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display"],
+  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display", "charts"],
   "supportsSoftwareButtons": true,
   "testInterface": {
     "uploadUrl": "http://{ip}/api/project",

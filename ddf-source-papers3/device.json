@@ -433,8 +433,9 @@
     "switcher",
     "panel",
     "navigator",
-    "energy-diagram"
+    "energy-diagram",
+    "chart"
   ],
-  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display"],
+  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display", "charts"],
   "supportsSoftwareButtons": true
 }
