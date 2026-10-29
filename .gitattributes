@@ -23,3 +23,6 @@ test/test_placeholders/placeholder-vectors.json text eol=lf
 # The same for the screen graph's vectors (schaltli-designer
 # lib/screen-graph/vectors.json), compared byte for byte by test/test_screen_graph.
 test/test_screen_graph/screen-graph-vectors.json text eol=lf
+
+# And the chart's (schaltli-designer lib/chart/vectors.json), test/test_chart.
+test/test_chart/chart-vectors.json text eol=lf
