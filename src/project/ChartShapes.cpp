@@ -12,7 +12,7 @@ using Outline = std::vector<PPoint>;
 
 static const std::vector<double> DASHES[4] = {{}, {6, 4}, {2, 3}, {8, 3, 2, 3}};
 static const double HATCH_GAP = 5;
-static const double PI = 3.14159265358979323846;
+static const double HALF_TURN = 3.14159265358979323846;  // not PI: Arduino.h defines that
 
 // In double, as the designer's toEighths: half away from zero.
 static int32_t eighths(double px) {
@@ -36,7 +36,7 @@ static bool quad(double x1, double y1, double x2, double y2, double width, Outli
 static Outline disc(double cx, double cy, double r) {
   Outline out;
   for (int i = 0; i < 16; i++) {
-    const double a = i * PI / 8;
+    const double a = i * HALF_TURN / 8;
     out.push_back(pt(cx + r * std::cos(a), cy + r * std::sin(a)));
   }
   return out;

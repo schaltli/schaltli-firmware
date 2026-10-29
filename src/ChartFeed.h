@@ -53,6 +53,7 @@ class ChartFeed {
       mqtt.subscribe(charthistory::RECORDER);
       baseSubscribed_ = true;
     }
+    shownScreen_ = screenIndex;
     if (screenIndex >= 0 && screenIndex < (int)project.screens.size()) collect(project.screens[screenIndex].objects, charts);
     if (popupIndex >= 0 && popupIndex < (int)project.popups.size()) collect(project.popups[popupIndex].objects, charts);
     std::vector<std::string> topics;
@@ -89,6 +90,9 @@ class ChartFeed {
   }
 
   const charthistory::History& history() const { return history_; }
+
+  /** The view of the screen shown last fitted to (update). */
+  chartcore::RangeView shownView(const ProjectConfig& project) { return view(project, shownScreen_); }
 
   /** For the test interface (?set=charts): what it holds, as JSON. */
   String describe() const {
@@ -132,5 +136,6 @@ class ChartFeed {
   std::map<int, chartcore::RangeView> views_;
   bool baseSubscribed_ = false;
   bool redraw_ = false;
+  int shownScreen_ = -1;
   uint32_t checkAt_ = 0;
 };

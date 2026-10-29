@@ -97,8 +97,12 @@ struct PillShading {
   int32_t boxH = 0;
 };
 
+class ChartFeed;
+
 class ColorScreenRenderer {
 public:
+  // Where a chart's history comes from (ChartFeed.h); none, and a chart says so.
+  void setChartFeed(ChartFeed* feed) { chartFeed_ = feed; }
   ColorScreenRenderer(IProjectLoader& projectLoader, ClippedCanvas16* canvas);
 
   // Redirects rendering to another canvas of the same size. Used to draw the
@@ -207,6 +211,9 @@ public:
   // phase and each line's dots' (by node id); none - everything at phase 0.
   using EnergyDotPhases = std::vector<std::pair<std::string, double>>;
   bool renderEnergyDiagram(const ScreenObject& obj, float wavePhase = 0, const EnergyDotPhases* dots = nullptr);
+  // A chart (contract 2.13, ColorScreenRendererChart.cpp), from the history
+  // the board's ChartFeed holds.
+  bool renderChart(const ScreenObject& obj);
   // How often a diagram has been drawn: a board moving one takes its
   // measure again when this changes (a value, a screen, a region redraw).
   uint32_t energyDrawCount() const { return energyDrawCount_; }
@@ -686,4 +693,5 @@ private:
   // transparent-detection conventions (see its own comment for the exact
   // string set this mirrors).
   uint16_t parseHexColor(const String& colorStr, bool* isTransparent = nullptr) const;
+  ChartFeed* chartFeed_ = nullptr;
 };

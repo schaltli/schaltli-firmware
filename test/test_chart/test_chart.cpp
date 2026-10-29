@@ -295,6 +295,22 @@ static void test_layouts() {
   }
 }
 
+// No recorder has spoken yet: an empty table. The 4.3B looped for ever over
+// the midnights of a window whose every day began at 0 (2026-10-29).
+static void test_without_a_table() {
+  Calendar empty;
+  TEST_ASSERT_EQUAL_STRING("1970-01-04", dateOf(86400 * 3 + 5, empty).c_str());
+  TEST_ASSERT_TRUE(midnightOf("1970-01-04", empty) == 86400 * 3);
+  Chart c;
+  Window w = chartWindow(c, "24h", 0, empty);
+  TEST_ASSERT_TRUE(w.from == 0 && w.to == 86400);
+  LayoutOptions o;
+  o.width = 400;
+  o.height = 200;
+  Layout L = chartLayout(c, w, {}, o);
+  TEST_ASSERT_EQUAL(5, L.times.size());
+}
+
 static void test_numbers() {
   TEST_ASSERT_EQUAL_STRING("3", fixed(2.5, 0).c_str());
   TEST_ASSERT_EQUAL_STRING("-3", fixed(-2.5, 0).c_str());
@@ -353,6 +369,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_copy_is_the_designers);
   RUN_TEST(test_numbers);
+  RUN_TEST(test_without_a_table);
   RUN_TEST(test_chart_from_the_export);
   RUN_TEST(test_windows);
   RUN_TEST(test_range_steps);

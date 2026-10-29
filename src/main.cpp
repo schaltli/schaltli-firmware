@@ -2669,6 +2669,7 @@ static void loadAndRenderProject() {
   canvasPresenter.invalidateSlots();
   if (screenRenderer == nullptr) {
     screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
+    screenRenderer->setChartFeed(&chartFeed);
     // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
     // The id is fixed at construction, so it is there before the first draw.
     screenRenderer->setDeviceId(mqttClient.getClientId());

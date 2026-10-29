@@ -791,6 +791,7 @@ static void setupRenderStack()
                 (unsigned)ESP.getFreePsram());
 
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+  renderer->setChartFeed(&chartFeed);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());

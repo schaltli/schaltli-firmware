@@ -59,7 +59,9 @@ int daysBetween(const std::string& a, const std::string& b) { return static_cast
 
 std::string dateOf(double t, const Calendar& cal) {
   const auto& days = cal.days;
-  if (days.empty()) return "1970-01-01";
+  // No table yet (no recorder has spoken): days in UTC, so a window still
+  // has its edges - and the loops over its midnights an end.
+  if (days.empty()) return civilFromDays(static_cast<long>(std::floor(t / 86400)));
   size_t at = 0;
   for (size_t i = 0; i < days.size(); i++)
     if (days[i].start <= t) at = i;
@@ -72,7 +74,7 @@ double midnightOf(const std::string& date, const Calendar& cal) {
   const auto& days = cal.days;
   for (const Day& d : days)
     if (d.date == date) return d.start;
-  if (days.empty()) return 0;
+  if (days.empty()) return dayNumber(date) * 86400.0;
   const Day& near = daysBetween(days.front().date, date) < 0 ? days.front() : days.back();
   return near.start + daysBetween(near.date, date) * 86400.0;
 }
@@ -218,7 +220,8 @@ Window chartWindow(const Chart& chart, const std::string& range, double now, con
   w.to = to;
   w.source = "day";
   w.step = 900;
-  for (std::string d = dateOf(from, cal); midnightOf(d, cal) < to; d = addDays(d, 1)) w.dates.push_back(d);
+  int guard = 0;
+  for (std::string d = dateOf(from, cal); midnightOf(d, cal) < to && guard++ < 40; d = addDays(d, 1)) w.dates.push_back(d);
   return w;
 }
 
@@ -667,7 +670,8 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     if (span <= 3600) every = 900;
     else if (span <= 6 * 3600) every = 3600;
     else if (span <= 25 * 3600) every = 6 * 3600;
-    for (std::string d = dateOf(w.from, o.cal); midnightOf(d, o.cal) <= w.to; d = addDays(d, 1)) {
+    int guard = 0;
+    for (std::string d = dateOf(w.from, o.cal); midnightOf(d, o.cal) <= w.to && guard++ < 40; d = addDays(d, 1)) {
       const double m = midnightOf(d, o.cal);
       if (m >= w.from && m <= w.to) L.midnights.push_back({xOf(m), weekdayOf(d)});
       if (every == 0) continue;

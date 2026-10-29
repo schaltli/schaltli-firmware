@@ -2908,6 +2908,7 @@ bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pr
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
   if (obj.type == "energy-diagram") return renderEnergyDiagram(obj);
+  if (obj.type == "chart") return renderChart(obj);
   if (obj.type == "text-field") return renderTextField(obj);
   if (obj.type == "time-field") return renderTimeField(obj);
   if (obj.type == "panel") {

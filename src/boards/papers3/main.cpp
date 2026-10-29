@@ -959,6 +959,7 @@ static bool setupPanelAndProject()
 
   displayAdapter = new PanelDisplayAdapter(*canvas, panel, panel.width(), panel.height());
   renderer = new ColorScreenRenderer(projectLoader, canvas);
+  renderer->setChartFeed(&chartFeed);
   // Paper animates nothing: the energy diagram stands, dots at phase 0.
   renderer->setAnimates(false);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
