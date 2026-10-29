@@ -386,6 +386,7 @@ void ProjectLoader::parseScreenInto(JsonObject screenJson, Screen& screen) {
     for (int e = 0; e < 4; e++) screen.neighbours[e] = screenJson["neighbours"][EDGES[e]] | "";
     screen.back = screenJson["back"] | "";
     screen.pullTabColor = screenJson["pullTabColor"] | "";
+    screen.timeRange = screenJson["timeRange"] | "";
     screen.pullTabColorDark = screenJson["pullTabColorDark"] | "";
 
     if (screenJson["objects"].is<JsonArray>()) {
@@ -451,6 +452,9 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   }
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
     obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));
+  }
+  if (obj.type == "chart" && objJson["properties"].is<JsonObject>()) {
+    obj.properties.chart.p.reset(new ChartProps(parseChart(objJson["properties"])));
   }
   // A text field without a read topic reads its write topic: it shows what
   // was last sent, as Home Assistant's optimistic text does (designer
@@ -995,6 +999,25 @@ EnergyDiagramProps ProjectLoader::parseEnergyDiagram(JsonObject p) {
   return e;
 }
 
+// A chart (contract 2.13): the core's model, and its colours apart for the
+// dark swap.
+ChartProps ProjectLoader::parseChart(JsonObject p) {
+  ChartProps c;
+  c.chart = chartcore::chartFrom(p);
+  c.fontId = p["fontId"] | "";
+  c.mutedColor = p["mutedColor"] | "";
+  c.mutedColorDark = p["mutedColorDark"] | "";
+  for (JsonObject s : p["series"].as<JsonArray>()) {
+    c.seriesColor.push_back(s["color"] | "");
+    c.seriesColorDark.push_back(s["colorDark"] | "");
+  }
+  for (JsonObject z : p["zones"].as<JsonArray>()) {
+    c.zoneColor.push_back(z["color"] | "");
+    c.zoneColorDark.push_back(z["colorDark"] | "");
+  }
+  return c;
+}
+
 ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {
   ButtonAction action;
   action.type = actionJson["type"] | "";
@@ -1005,6 +1028,8 @@ ButtonAction ProjectLoader::parseButtonAction(JsonObject actionJson) {
   action.targetObjectId = actionJson["targetObjectId"] | "";
   action.direction = actionJson["direction"] | "";
   action.side = actionJson["side"] | "";
+  action.rangeDirection = actionJson["rangeDirection"] | "";
+  action.range = actionJson["range"] | "";
   action.onlyWhen = actionJson["onlyWhen"] | "";
   action.clears = actionJson["clears"] | "";
   return action;

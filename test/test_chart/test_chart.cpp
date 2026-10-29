@@ -279,6 +279,42 @@ static void test_numbers() {
   TEST_ASSERT_EQUAL_STRING("2:05 h", runtimeText(125).c_str());
 }
 
+// A chart as the designer exports it (device contract 2.13, the spec's water
+// page): every field the core reads.
+static void test_chart_from_the_export() {
+  JsonDocument d;
+  deserializeJson(d, R"({
+    "mode": "time", "scroll": true, "legend": "top-right",
+    "left": { "scale": "fixed", "min": 0, "max": 100, "unit": "%" },
+    "zones": [{ "axis": "left", "to": 15, "color": "#cccccc", "colorDark": "#333333" }],
+    "series": [
+      { "id": "s1", "source": { "kind": "topic", "topic": "schaltli/state/tank/1/level" }, "name": "Frischwasser",
+        "valueKind": "level", "unit": "%", "draw": "steps", "color": "#6750a4", "colorDark": "#d0bcff", "annotations": ["current"] },
+      { "id": "s2", "source": { "kind": "balance" }, "name": "Rest", "valueKind": "power", "draw": "stacked", "stack": "e",
+        "invert": true, "factor": 0.001, "decimals": 2, "axis": "right", "range": true, "color": "#888888" }
+    ]
+  })");
+  Chart c = chartFrom(d.as<JsonObjectConst>());
+  TEST_ASSERT_EQUAL_STRING("time", c.mode.c_str());
+  TEST_ASSERT_TRUE(c.scroll);
+  TEST_ASSERT_EQUAL_STRING("fixed", c.left.scale.c_str());
+  TEST_ASSERT_TRUE(c.left.hasMin && c.left.hasMax);
+  TEST_ASSERT_EQUAL_FLOAT(100, c.left.max);
+  TEST_ASSERT_FALSE(c.hasRight);
+  TEST_ASSERT_EQUAL(1, c.zones.size());
+  TEST_ASSERT_TRUE(c.zones[0].hasTo && !c.zones[0].hasFrom);
+  TEST_ASSERT_EQUAL_STRING("#333333", c.zones[0].colorDark.c_str());
+  TEST_ASSERT_EQUAL(2, c.series.size());
+  TEST_ASSERT_EQUAL_STRING("schaltli/state/tank/1/level", c.series[0].topic.c_str());
+  TEST_ASSERT_FALSE(c.series[0].balance);
+  TEST_ASSERT_TRUE(c.series[0].annotated("current"));
+  TEST_ASSERT_TRUE(c.series[1].balance && c.series[1].invert && c.series[1].range);
+  TEST_ASSERT_TRUE(c.series[1].hasFactor && c.series[1].hasDecimals);
+  TEST_ASSERT_EQUAL(2, c.series[1].decimals);
+  TEST_ASSERT_EQUAL_STRING("right", c.series[1].axis.c_str());
+  TEST_ASSERT_EQUAL_STRING("e", c.series[1].stack.c_str());
+}
+
 int main(int, char**) {
   std::string text;
   if (!readFile(COPY, text)) {
@@ -290,6 +326,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_copy_is_the_designers);
   RUN_TEST(test_numbers);
+  RUN_TEST(test_chart_from_the_export);
   RUN_TEST(test_windows);
   RUN_TEST(test_range_steps);
   RUN_TEST(test_layouts);

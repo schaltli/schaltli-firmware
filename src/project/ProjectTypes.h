@@ -1,4 +1,5 @@
 #pragma once
+#include "ChartCore.h"
 #include <Arduino.h>
 #include <memory>
 #include <optional>
@@ -111,6 +112,10 @@ struct ButtonAction {
   // for "goto-neighbour" (contract 2.10): "up", "down", "left" or "right" -
   // the screen lying there, Screen::neighbours.
   String side;
+  // for "move-range" (contract 2.13): "earlier" or "later"; for "set-range":
+  // the span, "1h", "6h", "24h" or "7d" (ChartCore.h RangeView).
+  String rangeDirection;
+  String range;
   // for "send-mqtt", the DDF feature "button-values" (ButtonValues.h): a
   // combined topic that must be yes for the press to send, and a local
   // topic set empty after it did.
@@ -182,6 +187,33 @@ struct EnergyDiagramHandle {
   explicit operator bool() const { return static_cast<bool>(p); }
   EnergyDiagramProps& operator*() const { return *p; }
   EnergyDiagramProps* operator->() const { return p.get(); }
+};
+
+// A chart (designer device contract 2.13): its model for the core
+// (ChartCore.h), and its colours as the dark swap (ThemeVariant.h) takes
+// them - the chart's own beyond textColor and lineColor, which every object
+// has, and one per series and zone, in their order.
+struct ChartProps {
+  chartcore::Chart chart;
+  String fontId;
+  String mutedColor, mutedColorDark;
+  std::vector<String> seriesColor, seriesColorDark;
+  std::vector<String> zoneColor, zoneColorDark;
+};
+
+struct ChartHandle {
+  std::unique_ptr<ChartProps> p;
+  ChartHandle() = default;
+  ChartHandle(const ChartHandle& o) : p(o.p ? new ChartProps(*o.p) : nullptr) {}
+  ChartHandle& operator=(const ChartHandle& o) {
+    if (this != &o) p.reset(o.p ? new ChartProps(*o.p) : nullptr);
+    return *this;
+  }
+  ChartHandle(ChartHandle&&) = default;
+  ChartHandle& operator=(ChartHandle&&) = default;
+  explicit operator bool() const { return static_cast<bool>(p); }
+  ChartProps& operator*() const { return *p; }
+  ChartProps* operator->() const { return p.get(); }
 };
 
 // Base properties for screen objects
@@ -381,6 +413,8 @@ struct ObjectProperties {
   // An energy diagram's own data (above); empty for every other type, so
   // the other objects pay a pointer for it.
   EnergyDiagramHandle energy;
+  // A chart's (above); empty for every other type.
+  ChartHandle chart;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
@@ -494,6 +528,9 @@ struct Screen {
   String back;
   String pullTabColor;
   String pullTabColorDark;
+  // The span its charts open with (contract 2.13): "1h", "6h", "24h" or "7d";
+  // empty: 24 hours.
+  String timeRange;
   String path;                            // Background BMP path (optional)
   String backgroundColor;                 // Screen fill color, e.g. "#ffffff" (optional, defaults to white)
   String backgroundColorDark;             // The dark variant's (ThemeVariant.h); empty: same as light
