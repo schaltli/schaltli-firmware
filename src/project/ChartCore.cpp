@@ -222,6 +222,28 @@ Window chartWindow(const Chart& chart, const std::string& range, double now, con
   return w;
 }
 
+std::string historyName(const std::string& topic) {
+  std::string out = topic;
+  const size_t at = out.find('#');
+  if (at != std::string::npos) out[at] = '~';
+  return out;
+}
+
+std::vector<std::string> historyTopicsFor(const Chart& chart, const Window& window) {
+  std::vector<std::string> out;
+  auto add = [&out](const std::string& t) {
+    if (std::find(out.begin(), out.end(), t) == out.end()) out.push_back(t);
+  };
+  for (const Series& s : chart.series) {
+    if (s.balance || s.topic.empty()) continue;
+    const std::string base = "schaltli/history/" + historyName(s.topic);
+    if (window.source == "day")
+      for (const std::string& d : window.dates) add(base + "/day/" + d);
+    else add(base + "/" + window.source);
+  }
+  return out;
+}
+
 // ---- a screen's range
 
 static const char* RANGES[] = {"1h", "6h", "24h", "7d"};

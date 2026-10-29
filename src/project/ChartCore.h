@@ -100,6 +100,12 @@ struct Window {
 /** range: "1h", "6h", "24h", "7d". */
 Window chartWindow(const Chart& chart, const std::string& range, double now, const Calendar& cal, double back = 0);
 
+/** Where a topic's history lies under schaltli/history/: its `#` written `~`. */
+std::string historyName(const std::string& topic);
+
+/** The retained topics a chart reads for a window (lib/chart-window.ts historyTopicsFor). */
+std::vector<std::string> historyTopicsFor(const Chart& chart, const Window& window);
+
 // ---- a screen's range (lib/chart-range.ts)
 
 struct RangeView {
