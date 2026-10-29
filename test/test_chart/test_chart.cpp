@@ -19,6 +19,7 @@
 #include <string>
 
 #include "project/ChartCore.h"
+#include "project/ChartShapes.h"
 
 using namespace chartcore;
 
@@ -255,6 +256,32 @@ static void test_layouts() {
       expectNear(texts[k]["w"], L.texts[k].w, at + " w");
       expectText(texts[k]["align"].as<std::string>(), L.texts[k].align, at + " align");
       expectText(texts[k]["tone"].as<std::string>(), L.texts[k].tone, at + " tone");
+    }
+
+    // The fills a board draws (designer lib/chart-shapes.ts), on colour and on grey.
+    for (int grey = 0; grey < 2; grey++) {
+      chartshapes::Look look;
+      look.grid = "#cccccc";
+      look.grey = grey == 1;
+      const std::vector<chartshapes::Fill> fills = chartshapes::chartShapes(L, look);
+      JsonArrayConst expected = v[grey ? "greyShapes" : "shapes"];
+      const std::string at = name + (grey ? " grey" : "") + " shapes";
+      TEST_ASSERT_EQUAL_MESSAGE(expected.size(), fills.size(), (at + " count").c_str());
+      for (size_t k = 0; k < expected.size(); k++) {
+        JsonObjectConst e = expected[k];
+        const chartshapes::Fill& f = fills[k];
+        const std::string fat = at + " " + std::to_string(k);
+        expectText(e["colour"].as<std::string>(), f.colour, fat + " colour");
+        TEST_ASSERT_EQUAL_MESSAGE(e["alpha"].as<int>(), f.alpha, (fat + " alpha").c_str());
+        TEST_ASSERT_EQUAL_MESSAGE(!e["clip"].isNull(), f.hasClip, (fat + " clip").c_str());
+        JsonArrayConst pts = e["points"];
+        TEST_ASSERT_EQUAL_MESSAGE(pts.size(), f.points.size(), (fat + " points").c_str());
+        // An eighth apart at most: a layout number one rounding step away moves a corner by under one.
+        for (size_t q = 0; q < pts.size(); q++) {
+          TEST_ASSERT_TRUE_MESSAGE(std::abs(pts[q]["x"].as<int>() - f.points[q].x) <= 1, (fat + " x").c_str());
+          TEST_ASSERT_TRUE_MESSAGE(std::abs(pts[q]["y"].as<int>() - f.points[q].y) <= 1, (fat + " y").c_str());
+        }
+      }
     }
 
     if (out["now"].isNull()) {
