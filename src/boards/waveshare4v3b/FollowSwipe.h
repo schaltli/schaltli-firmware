@@ -57,6 +57,8 @@ public:
     uint32_t totalUs = 0;
     uint32_t worstUs = 0;
     uint32_t startRenderUs = 0;
+    // Of it, the navigator's strip drawn for the marker (prepareMarker).
+    uint32_t stripUs = 0;
     uint32_t durationMs = 0;
     int travel = 0;
     int pxPerSecond = 0;
@@ -121,7 +123,9 @@ public:
     renderer_->setCanvas(spare_);
     renderer_->renderScreen(target_);
     renderer_->setCanvas(*current_);
+    const uint32_t t1 = micros();
     marker_ = prepareMarker(target_);
+    stats_.stripUs = micros() - t1;
     stats_.startRenderUs = micros() - t0;
 
     startPos_ = from;
@@ -297,7 +301,7 @@ public:
                  String(stats_.frames && stats_.totalUs ? 1000000.0f * stats_.frames / stats_.totalUs : 0.0f, 1) +
                  " fps\n";
     out += "  worst frame " + String(stats_.worstUs / 1000.0f, 1) + " ms, incoming render " +
-           String(stats_.startRenderUs / 1000.0f, 1) + " ms\n";
+           String(stats_.startRenderUs / 1000.0f, 1) + " ms (the strip for the marker " + String(stats_.stripUs / 1000.0f, 1) + " ms)\n";
     if (stats_.markerFrames > 0)
       out += "  the navigator's marker settled in " + String(stats_.markerFrames) + " frames, " +
              String(stats_.markerUs / stats_.markerFrames / 1000.0f, 1) + " ms/frame\n";
@@ -488,15 +492,75 @@ private:
     const int scroll = renderer_->effectiveNavigatorScroll(*currentScreen_);
     if (!navigatorlayout::markerGlides(from, to, scroll, renderer_->effectiveNavigatorScroll(target))) return false;
     if (!renderer_->navigatorMarkerBox(*currentScreen_, markerBox_, markerRadius_)) return false;
-    renderer_->setCanvas(accent_);
-    renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllActive);
-    renderer_->setCanvas(*current_);
-    renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllNormal);
+    // Both strips are the same for every screen of this navigator at this
+    // scroll and theme, so they are drawn once and kept: drawn anew they were
+    // 53 ms of every swipe's start, 310 ms of the first (4.3B, 2026-10-30).
+    const bool dark = renderer_->themeDark();
+    if (!restoreStrips(navHere, dark, scroll, here.bar))
+    {
+      renderer_->setCanvas(accent_);
+      renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllActive);
+      renderer_->setCanvas(*current_);
+      renderer_->renderNavigatorStrip(*currentScreen_, ColorScreenRenderer::StripLook::AllNormal);
+      keepStrips(navHere, dark, scroll, here.bar);
+    }
     markerLayout_ = here;
     markerFrom_ = from;
     markerTo_ = to;
     markerScroll_ = scroll;
     markerAt_ = 0;
+    return true;
+  }
+
+  // The bar's rectangle within the panel, row by row, between a canvas and a
+  // kept copy of it.
+  void copyBar(const navigatorlayout::Rect &bar, uint16_t *canvas, uint16_t *kept, bool toKept)
+  {
+    const int x0 = std::max(bar.x, 0), x1 = std::min(bar.x + bar.width, (int)w_);
+    const int y0 = std::max(bar.y, 0), y1 = std::min(bar.y + bar.height, (int)h_);
+    if (x1 <= x0 || y1 <= y0) return;
+    const size_t rowBytes = (size_t)(x1 - x0) * 2;
+    for (int y = y0; y < y1; y++)
+    {
+      uint16_t *c = canvas + (size_t)y * w_ + x0;
+      uint16_t *k = kept + (size_t)(y - y0) * (x1 - x0);
+      if (toKept) memcpy(k, c, rowBytes);
+      else memcpy(c, k, rowBytes);
+    }
+  }
+
+  // The two strips prepareMarker() draws, kept in PSRAM after the first swipe.
+  void keepStrips(const Navigator *nav, bool dark, int scroll, const navigatorlayout::Rect &bar)
+  {
+    const size_t pixels = (size_t)std::max(bar.width, 0) * (size_t)std::max(bar.height, 0);
+    if (pixels == 0) return;
+    if (pixels != stripPixels_)
+    {
+      free(stripActive_);
+      free(stripNormal_);
+      stripActive_ = (uint16_t *)heap_caps_malloc(pixels * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      stripNormal_ = (uint16_t *)heap_caps_malloc(pixels * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+      stripPixels_ = pixels;
+    }
+    stripNav_ = nullptr;
+    if (!stripActive_ || !stripNormal_) return;
+    copyBar(bar, accent_->getBuffer(), stripActive_, true);
+    copyBar(bar, (*current_)->getBuffer(), stripNormal_, true);
+    stripNav_ = nav;
+    stripDark_ = dark;
+    stripScroll_ = scroll;
+    stripBar_ = bar;
+  }
+
+  // Both strips back where prepareMarker() would draw them; false when what
+  // is kept is for another navigator, scroll, theme or place.
+  bool restoreStrips(const Navigator *nav, bool dark, int scroll, const navigatorlayout::Rect &bar)
+  {
+    if (!stripNav_ || stripNav_ != nav || stripDark_ != dark || stripScroll_ != scroll || stripBar_.x != bar.x ||
+        stripBar_.y != bar.y || stripBar_.width != bar.width || stripBar_.height != bar.height)
+      return false;
+    copyBar(bar, accent_->getBuffer(), stripActive_, false);
+    copyBar(bar, (*current_)->getBuffer(), stripNormal_, false);
     return true;
   }
 
@@ -545,6 +609,14 @@ private:
   navigatorlayout::Rect markerBox_;
   int markerRadius_ = 0;
   int markerFrom_ = 0, markerTo_ = 0, markerScroll_ = 0, markerAt_ = 0;
+  // The strips kept by keepStrips(), and what they were drawn for.
+  uint16_t *stripActive_ = nullptr;
+  uint16_t *stripNormal_ = nullptr;
+  size_t stripPixels_ = 0;
+  const Navigator *stripNav_ = nullptr;
+  bool stripDark_ = false;
+  int stripScroll_ = 0;
+  navigatorlayout::Rect stripBar_;
   ClippedCanvas16 **current_ = nullptr;
   ClippedCanvas16 *spare_ = nullptr;
   ColorScreenRenderer *renderer_ = nullptr;

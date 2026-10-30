@@ -1463,12 +1463,61 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
     if (cy1 < pyTo) pyTo = cy1;
   }
 
+  // Into the canvas's own pixels, row by row, rather than through drawPixel:
+  // a virtual call with a clip test per pixel was most of what a pill cost
+  // once the coverage was quick (4.3B, 2026-10-30). The walk is inside the
+  // clip already; it is kept inside the canvas here, as drawPixel would.
+  if (pxFrom < 0) pxFrom = 0;
+  if (pyFrom < 0) pyFrom = 0;
+  if (pxTo > canvas_->width()) pxTo = canvas_->width();
+  if (pyTo > canvas_->height()) pyTo = canvas_->height();
+  uint16_t* const pixels = canvas_->getRotation() == 0 ? canvas_->getBuffer() : nullptr;
+  const int32_t stride = canvas_->width();
+  auto put = [&](int32_t px, int32_t py, uint16_t colour) {
+    if (pixels) pixels[py * stride + px] = colour;
+    else canvas_->drawPixel((int16_t)px, (int16_t)py, colour);
+  };
+
   const ArcRaster::Rgb565 mix = ArcRaster::toRgb565(mixInto);
   std::vector<uint8_t> counts(bands.size(), 0);
+  // Each run's reach along the row, worked out once a row: a pixel then asks
+  // two comparisons per run rather than the run's whole geometry
+  // (PillRaster::rowSpan; 4.3B, 2026-10-30).
+  std::vector<PillRaster::RowSpan> spans(bands.size());
 
   for (int32_t py = pyFrom; py < pyTo; py++) {
+    for (size_t b = 0; b < bands.size(); b++) spans[b] = PillRaster::rowSpan(bands[b], py);
     for (int32_t px = pxFrom; px < pxTo; px++) {
-      PillRaster::pixelBandsQuick(bands, px, py, counts.data());
+      // A stretch one run holds whole, with no run before it reaching in:
+      // every pixel of it would come out as that run's own colour below (or
+      // be left alone, for a hole), so it is written in one go. Not for a
+      // graded run, whose colour changes along the track.
+      {
+        size_t first = bands.size();
+        int32_t end = pxTo;
+        for (size_t i = 0; i < bands.size(); i++) {
+          const PillRaster::RowSpan& s = spans[i];
+          if (px >= s.touchLo && px < s.touchHi) {
+            first = i;
+            break;
+          }
+          if (s.touchLo > px && s.touchLo < s.touchHi && s.touchLo < end) end = s.touchLo;
+        }
+        if (first < bands.size() && !graded[first] && px >= spans[first].fullLo && px < spans[first].fullHi) {
+          if (spans[first].fullHi < end) end = spans[first].fullHi;
+          if (paints[first]) {
+            if (pixels) {
+              uint16_t* row = pixels + py * stride;
+              for (int32_t x = px; x < end; x++) row[x] = packed[first];
+            } else {
+              for (int32_t x = px; x < end; x++) canvas_->drawPixel((int16_t)x, (int16_t)py, packed[first]);
+            }
+          }
+          px = end - 1;
+          continue;
+        }
+      }
+      PillRaster::pixelBandsSpans(bands, spans.data(), px, py, counts.data());
 
       // The same arithmetic ArcRaster::blendBands does, over a list rather
       // than over three fixed pairs: a ring has exactly three bands and never
@@ -1521,7 +1570,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
         const ArcRaster::Rgb565 under = ArcRaster::toRgb565(canvas_->getPixel((int16_t)px, (int16_t)py));
         mixHere = levelglow::blend565(under, gradedAt(clamped), levelglow::ALPHA[level]);
         if (covered == 0) {
-          canvas_->drawPixel((int16_t)px, (int16_t)py, ArcRaster::packRgb565(mixHere));
+          put(px, py, ArcRaster::packRgb565(mixHere));
           continue;
         }
       }
@@ -1539,8 +1588,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
       // ((16c + 8) / 16 == c). It stays because the rule is shared, and
       // because it skips the arithmetic on most of the control's pixels.
       if (inked == 1 && covered == PillRaster::COVERAGE_MAX) {
-        canvas_->drawPixel((int16_t)px, (int16_t)py,
-                           graded[only] ? ArcRaster::packRgb565(onlyColour) : packed[only]);
+        put(px, py, graded[only] ? ArcRaster::packRgb565(onlyColour) : packed[only]);
         continue;
       }
 
@@ -1555,7 +1603,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>& painted, ui
       out.r = (uint8_t)((r + half) / PillRaster::COVERAGE_MAX);
       out.g = (uint8_t)((g + half) / PillRaster::COVERAGE_MAX);
       out.b = (uint8_t)((b + half) / PillRaster::COVERAGE_MAX);
-      canvas_->drawPixel((int16_t)px, (int16_t)py, ArcRaster::packRgb565(out));
+      put(px, py, ArcRaster::packRgb565(out));
     }
   }
 }
@@ -2518,9 +2566,15 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     return true;
   }
 
+  uint32_t probe = micros();
   LevelFontMetrics metrics = levelMetrics(obj);
+  RenderProfile::add("  switch metrics", micros() - probe);
+  probe = micros();
   const SwitchLook look = switchshape::look(obj, currentScreenBgHex_);
+  RenderProfile::add("  switch look", micros() - probe);
+  probe = micros();
   const int activeIndex = getActiveSwitchStateIndex(obj);
+  RenderProfile::add("  switch state", micros() - probe);
 
   // What a finger here asked this switch to become, keyed by the topic an
   // answer would arrive on - the same bookkeeping a settable level's marker
@@ -2680,7 +2734,9 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
     } else {
       painted.push_back(wholePill(box, colourOf(look.surface)));
     }
+    probe = micros();
     paintPills(painted, pillMix);
+    RenderProfile::add("  switch pills", micros() - probe);
 #else
     // The container's outline encloses whatever the screen is: there is no
     // colour behind a framed container, and this path cannot leave a hole.
@@ -2711,6 +2767,7 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
 
     // The icons and the labels, once the shapes are down: the same loop
     // whichever way they were painted.
+    probe = micros();
     for (int i = 0; i < count && i < (int)segs.size(); i++) {
       const SwitchRect& seg = segs[i];
       const bool chosen = i == activeIndex;
@@ -2726,6 +2783,7 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
       canvas_->clearClip();
       drawStateText(label, seg, content.textX, content.baseline, ink);
     }
+    RenderProfile::add("  switch labels", micros() - probe);
     return true;
   }
 

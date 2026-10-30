@@ -1,5 +1,6 @@
-// Holds PillRaster::pixelBandsQuick() to PillRaster::pixelBands(), on a
-// laptop - run by tools/pill-raster/run.js.
+// Holds PillRaster::pixelBandsQuick() and PillRaster::pixelBandsSpans() (the
+// row spans paintPills walks with since 2026-10-30) to PillRaster::pixelBands(),
+// on a laptop - run by tools/pill-raster/run.js.
 //
 // The quick one exists only for speed (PillRaster.h says why), so the whole
 // claim is that it answers what the full sampling answers, count for count,
@@ -41,18 +42,21 @@ int main() {
       if (rnd(0, 5) == 0) b.tip = (uint8_t)rnd(1, 4);
       bands.push_back(b);
     }
-    std::vector<uint8_t> full(bands.size()), quick(bands.size());
+    std::vector<uint8_t> full(bands.size()), quick(bands.size()), spanned(bands.size());
+    std::vector<PillRaster::RowSpan> spans(bands.size());
     for (int32_t py = -10; py < 120; py++) {
+      for (size_t b = 0; b < bands.size(); b++) spans[b] = PillRaster::rowSpan(bands[b], py);
       for (int32_t px = -10; px < 120; px++) {
         PillRaster::pixelBands(bands, px, py, full.data());
         PillRaster::pixelBandsQuick(bands, px, py, quick.data());
+        PillRaster::pixelBandsSpans(bands, spans.data(), px, py, spanned.data());
         pixels++;
         bool partial = false;
         for (size_t b = 0; b < bands.size(); b++) {
-          if (full[b] != quick[b]) {
+          if (full[b] != quick[b] || full[b] != spanned[b]) {
             if (failures < 20) {
-              std::printf("FAIL control %d pixel (%d,%d) band %zu: sampled %d, quick %d\n", c, (int)px, (int)py, b,
-                          (int)full[b], (int)quick[b]);
+              std::printf("FAIL control %d pixel (%d,%d) band %zu: sampled %d, quick %d, spans %d\n", c, (int)px, (int)py,
+                          b, (int)full[b], (int)quick[b], (int)spanned[b]);
             }
             failures++;
           }
@@ -63,10 +67,10 @@ int main() {
     }
   }
   if (failures) {
-    std::printf("\npixelBandsQuick disagrees with pixelBands on %ld pixel(s).\n", failures);
+    std::printf("\npixelBandsQuick or pixelBandsSpans disagrees with pixelBands on %ld pixel(s).\n", failures);
     return 1;
   }
   std::printf("  ok   %d random controls, %ld pixels, %ld of them on an edge\n", controls, pixels, sampled);
-  std::printf("\nThe quick coverage agrees with the full sampling, count for count.\n");
+  std::printf("\nThe quick coverage and the row spans agree with the full sampling, count for count.\n");
   return 0;
 }

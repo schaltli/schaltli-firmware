@@ -2874,61 +2874,100 @@ static bool renderTopicChangePartial(const String &topic, const String &oldValue
   int16_t rx[MAX_RECHTECKE], ry[MAX_RECHTECKE], rw[MAX_RECHTECKE], rh[MAX_RECHTECKE];
   int anzahl = 0;
 
-  for (const auto &obj : screen.objects) {
-    // Verschachtelte Objekte sind nicht eingegrenzt - Kindkoordinaten sind
-    // relativ zum Elternobjekt.
-    if (!obj.children.empty()) return false;
-    // Ein Text, dessen Platzhalter das Topic nennt: sein ganzes Feld, wie
-    // jedes Textfeld. Er hat keine Bindung und fiele unten durch - und neben
-    // einem gebundenen Objekt am selben Topic wurde nur dieses neu
-    // gezeichnet, der Text behielt den alten Wert (wie auf dem 4.3B,
-    // 2026-10-05).
-    // A live icon, or a text through a live value, the same way (contract
-    // 2.6) - also through a combined topic the changed topic feeds.
-    if (ColorScreenRenderer::readsTopic(obj, topic, project.combinedTopics)) {
-      if (anzahl + 1 > MAX_RECHTECKE) return false;
-      // Accents above a text's box belong to it (textOverhangLimit).
-      const int16_t over = obj.type == "text" ? std::min<int16_t>(screenRenderer->textOverhangLimit(obj), obj.y) : 0;
-      rx[anzahl] = obj.x;
-      ry[anzahl] = obj.y - over;
-      rw[anzahl] = obj.width;
-      rh[anzahl] = obj.height + over;
-      anzahl++;
-      continue;
-    }
-    if (obj.properties.topic.isEmpty()) continue;
-    if (stripJsonPath(obj.properties.topic) != topic) continue;
-    // Der erste Wert eines gebundenen Objekts: nichts, wogegen sich ein
-    // Ausschnitt abgrenzen liesse. Ein Text oben braucht keinen alten Wert.
-    if (oldValue.isEmpty()) return false;
+  // What reads the topic in a way this board knows of; one that does and
+  // gets no rectangle below leaves the whole picture to be drawn.
+  auto reads = [&](const ScreenObject &obj) {
+    return stripJsonPath(obj.properties.topic) == topic || stripJsonPath(obj.properties.setpointTopic) == topic ||
+           stripJsonPath(obj.properties.writeTopic) == topic ||
+           ColorScreenRenderer::readsTopic(obj, topic, project.combinedTopics);
+  };
+  // A switcher's objects lie in its visible panel, their coordinates relative
+  // to the switcher (as hitTestWalk reads them). Until 2026-10-30 any object
+  // with children sent every value to a full picture, as on the 4.3B.
+  std::function<bool(const std::vector<ScreenObject> &, int16_t, int16_t)> visit;
+  visit = [&](const std::vector<ScreenObject> &objects, int16_t dx, int16_t dy) -> bool {
+    for (const auto &source : objects) {
+      ScreenObject obj = source;
+      obj.x += dx;
+      obj.y += dy;
+      const int vorher = anzahl;
+      const bool liest = reads(obj);
+      if (obj.type == "switcher") {
+        // Its own topic picks the panel: the whole switcher anew.
+        if (liest) {
+          if (anzahl + 1 > MAX_RECHTECKE) return false;
+          rx[anzahl] = obj.x;
+          ry[anzahl] = obj.y;
+          rw[anzahl] = obj.width;
+          rh[anzahl] = obj.height;
+          anzahl++;
+          continue;
+        }
+        const ScreenObject *shown = screenRenderer->visiblePanel(source);
+        if (shown != nullptr && !visit(shown->children, obj.x, obj.y)) return false;
+        continue;
+      }
+      if (!obj.children.empty()) return false;
+      // 1: bounded (a rectangle, or nothing to draw), 0: not.
+      auto bound = [&]() -> int {
+        // Ein Text, dessen Platzhalter das Topic nennt: sein ganzes Feld, wie
+        // jedes Textfeld. Er hat keine Bindung und fiele unten durch - und neben
+        // einem gebundenen Objekt am selben Topic wurde nur dieses neu
+        // gezeichnet, der Text behielt den alten Wert (wie auf dem 4.3B,
+        // 2026-10-05).
+        // A live icon, or a text through a live value, the same way (contract
+        // 2.6) - also through a combined topic the changed topic feeds.
+        if (ColorScreenRenderer::readsTopic(obj, topic, project.combinedTopics)) {
+          if (anzahl + 1 > MAX_RECHTECKE) return 0;
+          // Accents above a text's box belong to it (textOverhangLimit).
+          const int16_t over = obj.type == "text" ? std::min<int16_t>(screenRenderer->textOverhangLimit(obj), obj.y) : 0;
+          rx[anzahl] = obj.x;
+          ry[anzahl] = obj.y - over;
+          rw[anzahl] = obj.width;
+          rh[anzahl] = obj.height + over;
+          anzahl++;
+          return 1;
+        }
+        if (obj.properties.topic.isEmpty()) return 1;
+        if (stripJsonPath(obj.properties.topic) != topic) return 1;
+        // Der erste Wert eines gebundenen Objekts: nichts, wogegen sich ein
+        // Ausschnitt abgrenzen liesse. Ein Text oben braucht keinen alten Wert.
+        if (oldValue.isEmpty()) return 0;
 
-    if (objecttypes::isArc(obj.type)) {
-      const String newValue = projectLoader.getTopicValue(obj.properties.topic);
-      if (newValue.isEmpty() || newValue == oldValue) return false;
-      if (anzahl + 2 > MAX_RECHTECKE) return false;
-      // Der bewegte Bogenabschnitt und die Zahl in der Mitte, getrennt: ihre
-      // gemeinsame Huelle waere fast das ganze Bild, weil das eine aussen und
-      // das andere in der Mitte liegt.
-      if (!screenRenderer->arcLevelDirtyRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
-                                             &rw[anzahl], &rh[anzahl])) {
-        return false;
-      }
-      anzahl++;
-      if (screenRenderer->arcLevelTextRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
-                                           &rw[anzahl], &rh[anzahl])) {
-        anzahl++;
-      }
-    } else {
-      // Alles andere: sein eigenes Rechteck. Ein Zahlenfeld oder ein Schalter
-      // ist klein, und ihn ganz neu zu zeichnen kostet nichts gegen den Ring.
-      if (anzahl + 1 > MAX_RECHTECKE) return false;
-      rx[anzahl] = obj.x;
-      ry[anzahl] = obj.y;
-      rw[anzahl] = obj.width;
-      rh[anzahl] = obj.height;
-      anzahl++;
+        if (objecttypes::isArc(obj.type)) {
+          const String newValue = projectLoader.getTopicValue(obj.properties.topic);
+          if (newValue.isEmpty() || newValue == oldValue) return 0;
+          if (anzahl + 2 > MAX_RECHTECKE) return 0;
+          // Der bewegte Bogenabschnitt und die Zahl in der Mitte, getrennt: ihre
+          // gemeinsame Huelle waere fast das ganze Bild, weil das eine aussen und
+          // das andere in der Mitte liegt.
+          if (!screenRenderer->arcLevelDirtyRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
+                                                 &rw[anzahl], &rh[anzahl])) {
+            return 0;
+          }
+          anzahl++;
+          if (screenRenderer->arcLevelTextRect(obj, oldValue, newValue, &rx[anzahl], &ry[anzahl],
+                                               &rw[anzahl], &rh[anzahl])) {
+            anzahl++;
+          }
+        } else {
+          // Alles andere: sein eigenes Rechteck. Ein Zahlenfeld oder ein Schalter
+          // ist klein, und ihn ganz neu zu zeichnen kostet nichts gegen den Ring.
+          if (anzahl + 1 > MAX_RECHTECKE) return 0;
+          rx[anzahl] = obj.x;
+          ry[anzahl] = obj.y;
+          rw[anzahl] = obj.width;
+          rh[anzahl] = obj.height;
+          anzahl++;
+        }
+        return 1;
+      };
+      if (!bound()) return false;
+      if (liest && anzahl == vorher) return false;
     }
-  }
+    return true;
+  };
+  if (!visit(screen.objects, 0, 0)) return false;
   if (anzahl == 0) return false;
 
   for (int i = 0; i < anzahl; i++) {

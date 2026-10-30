@@ -237,6 +237,14 @@ static bool pendingTopicOverflow = false;
 // What the last value change cost, so "the partial path is running" stays
 // checkable from outside rather than being assumed.
 static String lastValueDraw = "none since boot";
+// ?set=partialcheck=on: after every value change drawn in part (or found to
+// need nothing), the same screen drawn whole into the spare canvas, at the
+// same values, and the two compared pixel for pixel - so a partial draw can
+// be held to a full one on whatever project the board runs, without a race
+// against the next value (2026-10-30, the van's energy screen).
+static bool partialCheck = false;
+static uint32_t partialChecks = 0, partialCheckFailures = 0;
+static String lastPartialCheck = "off";
 
 // ------------------------------------------------------ display blanking
 //
@@ -1212,6 +1220,8 @@ static void setupNetworking()
     out += "  energy motion: " + energyReport() + "\n";
     if (renderer) out += "  energy draw: " + renderer->energyProfile() + "\n";
     out += "  last value draw: " + lastValueDraw + "\n";
+    out += "  partial check: " + lastPartialCheck + " (" + String(partialChecks) + " checked, " + String(partialCheckFailures) +
+           " differed; ?set=partialcheck=on|off)\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
            String(displayOffAfterMs / 1000) + " s, idle screen \"" + idleScreenId + "\"\n";
     out += swipe.report();
@@ -1391,6 +1401,12 @@ static void setupNetworking()
         out += "\npinches: " + String(pinchIns) + " in, " + String(pinchOuts) + " out, " + String(pinchNones) + " neither\n";
         out += "pinch log\n" + pinchLog;
       }
+    }
+    else if (setArg == "partialcheck=on" || setArg == "partialcheck=off")
+    {
+      partialCheck = setArg == "partialcheck=on";
+      partialChecks = partialCheckFailures = 0;
+      lastPartialCheck = partialCheck ? "on, nothing drawn in part yet" : "off";
     }
     else if (setArg == "topicrender=off" || setArg == "topicrender=on")
     {
@@ -1831,6 +1847,7 @@ static String stripJsonPath(const String &topicOrPath)
 //
 // Returns false when the change cannot be bounded safely; the caller then
 // draws a full screen, which is always correct and merely slow.
+static void checkPartialAgainstFull();
 static bool renderValueChangesPartial()
 {
   if (renderer == nullptr || canvas == nullptr || !projectLoader.isLoaded()) return false;
@@ -1846,83 +1863,138 @@ static bool renderValueChangesPartial()
   int16_t rx[MAX_RECTS], ry[MAX_RECTS], rw[MAX_RECTS], rh[MAX_RECTS];
   int rects = 0;
 
-  for (const auto &obj : screen.objects)
-  {
-    // Nested objects are not bounded here: a child's coordinates are
-    // relative to its parent, and getting that wrong leaves a stale
-    // rectangle on the glass rather than failing loudly.
-    if (!obj.children.empty()) return false;
-
-    // A text whose placeholder names a changed topic (designer
-    // docs/2026-10-05-placeholder-devices.md). It has no binding of its own,
-    // so the loop below would pass it by - and when another object on the
-    // screen is bound to the same topic, only that one was redrawn and the
-    // text kept the old value. Its whole box, as for any other text; no old
-    // value is needed for that.
-    // A live icon the same way, and a text through its live values - also
-    // through a combined topic the changed topic feeds (contract 2.6).
-    // An energy diagram the same way, as one box: a value moves its bands,
-    // lines and labels (contract 2.8).
-    if (obj.type == "text" || obj.type == "energy-diagram" || !obj.properties.liveIconId.isEmpty())
-    {
-      bool named = false;
-      for (int i = 0; i < pendingTopicCount && !named; i++)
-      {
-        named = ColorScreenRenderer::readsTopic(obj, pendingTopics[i].topic, projectLoader.getProject().combinedTopics);
-      }
-      if (!named) continue;
-      if (rects + 1 > MAX_RECTS) return false;
-      // Accents above a text's box belong to it (textOverhangLimit).
-      const int16_t over = obj.type == "text" ? std::min<int16_t>(renderer->textOverhangLimit(obj), obj.y) : 0;
-      rx[rects] = obj.x;
-      ry[rects] = obj.y - over;
-      rw[rects] = obj.width;
-      rh[rects] = obj.height + over;
-      rects++;
-      continue;
-    }
-
-    if (obj.properties.topic.isEmpty()) continue;
-
-    const String objTopic = stripJsonPath(obj.properties.topic);
-    const String *oldValue = nullptr;
+  const auto &combinedTopics = projectLoader.getProject().combinedTopics;
+  // Whether an object reads one of the changed topics in any way this board
+  // knows of - what it is bound to, its setpoint marker, what it writes back
+  // and hears answered, a placeholder, a live value, an energy node. One that
+  // does and gets no rectangle below leaves the whole screen to be drawn.
+  auto mentions = [&](const ScreenObject &obj) {
     for (int i = 0; i < pendingTopicCount; i++)
     {
-      if (pendingTopics[i].topic == objTopic) { oldValue = &pendingTopics[i].oldValue; break; }
+      const String &t = pendingTopics[i].topic;
+      if (stripJsonPath(obj.properties.topic) == t || stripJsonPath(obj.properties.setpointTopic) == t ||
+          stripJsonPath(obj.properties.writeTopic) == t)
+        return true;
+      if (ColorScreenRenderer::readsTopic(obj, t, combinedTopics)) return true;
+      for (const std::string &read : ColorScreenRenderer::liveTopics(obj, combinedTopics))
+        if (t == read.c_str()) return true;
     }
-    if (oldValue == nullptr) continue;
-    if (oldValue->isEmpty()) return false;  // nothing to compare a sweep against
+    return false;
+  };
 
-    if (objecttypes::isArc(obj.type))
+  // A switcher's objects lie in its visible panel, their coordinates
+  // relative to the switcher (as hitTestWalk reads them); the other panels
+  // are not on the glass. Until 2026-10-30 any object with children sent
+  // every value to a full screen: on the van's energy screen, a switcher of
+  // two diagrams, that was 200-250 ms with the touch unread about every two
+  // seconds, and a swipe begun then started late or not at all.
+  std::function<bool(const std::vector<ScreenObject> &, int16_t, int16_t)> visit;
+  visit = [&](const std::vector<ScreenObject> &objects, int16_t dx, int16_t dy) -> bool {
+  for (const auto &source : objects)
+  {
+    ScreenObject obj = source;
+    obj.x += dx;
+    obj.y += dy;
+    const int before = rects;
+    const bool reads = mentions(obj);
+    if (obj.type == "switcher")
     {
-      const String newValue = projectLoader.getTopicValue(obj.properties.topic);
-      if (newValue.isEmpty() || newValue == *oldValue) return false;
-      if (rects + 2 > MAX_RECTS) return false;
-      // The swept arc and the number in the middle, separately: their
-      // common hull would be nearly the whole object, because one is at
-      // the rim and the other at the centre.
-      if (!renderer->arcLevelDirtyRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
-                                       &rh[rects]))
+      // Its own topic picks the panel: the whole switcher anew.
+      if (reads)
       {
-        return false;
+        if (rects + 1 > MAX_RECTS) return false;
+        rx[rects] = obj.x;
+        ry[rects] = obj.y;
+        rw[rects] = obj.width;
+        rh[rects] = obj.height;
+        rects++;
+        continue;
       }
-      rects++;
-      if (renderer->arcLevelTextRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
-                                     &rh[rects]))
+      const ScreenObject *panelShown = renderer->visiblePanel(source);
+      if (panelShown != nullptr && !visit(panelShown->children, obj.x, obj.y)) return false;
+      continue;
+    }
+    if (!obj.children.empty()) return false;
+
+    // What this object needs drawn: 1 bounded (a rectangle or none), 0 not.
+    auto bound = [&]() -> int {
+      // A text whose placeholder names a changed topic (designer
+      // docs/2026-10-05-placeholder-devices.md). It has no binding of its own,
+      // so the loop below would pass it by - and when another object on the
+      // screen is bound to the same topic, only that one was redrawn and the
+      // text kept the old value. Its whole box, as for any other text; no old
+      // value is needed for that.
+      // A live icon the same way, and a text through its live values - also
+      // through a combined topic the changed topic feeds (contract 2.6).
+      // An energy diagram the same way, as one box: a value moves its bands,
+      // lines and labels (contract 2.8).
+      if (obj.type == "text" || obj.type == "energy-diagram" || !obj.properties.liveIconId.isEmpty())
       {
+        bool named = false;
+        for (int i = 0; i < pendingTopicCount && !named; i++)
+        {
+          named = ColorScreenRenderer::readsTopic(obj, pendingTopics[i].topic, projectLoader.getProject().combinedTopics);
+        }
+        if (!named) return 1;
+        if (rects + 1 > MAX_RECTS) return 0;
+        // Accents above a text's box belong to it (textOverhangLimit).
+        const int16_t over = obj.type == "text" ? std::min<int16_t>(renderer->textOverhangLimit(obj), obj.y) : 0;
+        rx[rects] = obj.x;
+        ry[rects] = obj.y - over;
+        rw[rects] = obj.width;
+        rh[rects] = obj.height + over;
+        rects++;
+        return 1;
+      }
+
+      if (obj.properties.topic.isEmpty()) return 1;
+
+      const String objTopic = stripJsonPath(obj.properties.topic);
+      const String *oldValue = nullptr;
+      for (int i = 0; i < pendingTopicCount; i++)
+      {
+        if (pendingTopics[i].topic == objTopic) { oldValue = &pendingTopics[i].oldValue; break; }
+      }
+      if (oldValue == nullptr) return 1;
+      if (oldValue->isEmpty()) return 0;  // nothing to compare a sweep against
+
+      if (objecttypes::isArc(obj.type))
+      {
+        const String newValue = projectLoader.getTopicValue(obj.properties.topic);
+        if (newValue.isEmpty() || newValue == *oldValue) return 0;
+        if (rects + 2 > MAX_RECTS) return 0;
+        // The swept arc and the number in the middle, separately: their
+        // common hull would be nearly the whole object, because one is at
+        // the rim and the other at the centre.
+        if (!renderer->arcLevelDirtyRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
+                                         &rh[rects]))
+        {
+          return 0;
+        }
+        rects++;
+        if (renderer->arcLevelTextRect(obj, *oldValue, newValue, &rx[rects], &ry[rects], &rw[rects],
+                                       &rh[rects]))
+        {
+          rects++;
+        }
+      }
+      else
+      {
+        if (rects + 1 > MAX_RECTS) return 0;
+        rx[rects] = obj.x;
+        ry[rects] = obj.y;
+        rw[rects] = obj.width;
+        rh[rects] = obj.height;
         rects++;
       }
-    }
-    else
-    {
-      if (rects + 1 > MAX_RECTS) return false;
-      rx[rects] = obj.x;
-      ry[rects] = obj.y;
-      rw[rects] = obj.width;
-      rh[rects] = obj.height;
-      rects++;
-    }
+      return 1;
+    };
+    if (!bound()) return false;
+    if (reads && rects == before) return false;
   }
+  return true;
+  };
+  if (!visit(screen.objects, 0, 0)) return false;
   // A navigator entry that reads a changed topic - a live screen icon -
   // redrawn as its own rectangle, cut to the strip (contract 2.7).
   {
@@ -1956,7 +2028,14 @@ static bool renderValueChangesPartial()
     }
   }
 
-  if (rects == 0) return false;
+  // Nothing shown reads what changed - a value for another screen: nothing to
+  // draw. It used to be a full screen, every time.
+  if (rects == 0)
+  {
+    lastValueDraw = "nothing on this screen reads it";
+    checkPartialAgainstFull();
+    return true;
+  }
 
   const uint32_t t0 = micros();
   for (int i = 0; i < rects; i++)
@@ -1977,7 +2056,37 @@ static bool renderValueChangesPartial()
   lastValueDraw = String(rects) + " region(s), render " + String((t1 - t0) / 1000.0f, 1) + " ms, blit " +
                   String((t2 - t1) / 1000.0f, 1) + " ms, " + String(panel.lastPresentPixels()) +
                   " px copied";
+  checkPartialAgainstFull();
   return true;
+}
+
+static void checkPartialAgainstFull()
+{
+  if (!partialCheck || openPopup >= 0 || renderer == nullptr || canvas == nullptr || spareCanvas == nullptr ||
+      spareCanvas->getBuffer() == nullptr)
+    return;
+  renderer->setCanvas(spareCanvas);
+  renderer->renderScreen(activeScreen(), pressedButtonId, pendingSwitchId, pendingSwitchIndex, pressedSwitchId,
+                         pressedSwitchIndex);
+  renderer->setCanvas(canvas);
+  const uint16_t *a = canvas->getBuffer(), *b = spareCanvas->getBuffer();
+  uint32_t n = 0;
+  int x0 = PANEL_W, y0 = PANEL_H, x1 = -1, y1 = -1;
+  for (int y = 0; y < PANEL_H; y++)
+    for (int x = 0; x < PANEL_W; x++)
+      if (a[y * PANEL_W + x] != b[y * PANEL_W + x])
+      {
+        n++;
+        x0 = min(x0, x);
+        y0 = min(y0, y);
+        x1 = max(x1, x);
+        y1 = max(y1, y);
+      }
+  partialChecks++;
+  if (n) partialCheckFailures++;
+  lastPartialCheck = n == 0 ? String("0 px differ from a full draw")
+                            : String(n) + " px differ from a full draw, in (" + String(x0) + "," + String(y0) + ")-(" +
+                                  String(x1) + "," + String(y1) + ")";
 }
 
 // ------------------------------------------------------------------ popups

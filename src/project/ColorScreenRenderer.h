@@ -195,6 +195,12 @@ public:
   int navigatorScroll() const { return navigatorScroll_; }
   // The scroll the navigator is drawn at on that screen.
   int effectiveNavigatorScroll(int screenIndex) const;
+  // Whether the project is drawn in its dark variant - what a picture of the
+  // navigator kept for later has to be keyed by.
+  bool themeDark() const { return projectLoader_.isLoaded() && projectLoader_.getProject().themeDark; }
+  // The panel a switcher shows now (getActivePanel), for a caller bounding
+  // what a value changes inside it.
+  const ScreenObject* visiblePanel(const ScreenObject& switcher) const { return getActivePanel(switcher); }
   // The navigator's marker gliding with a swipe (designer #59, contract
   // 2.7): its bar drawn into the canvas alone, as the screen shows it, with
   // every entry normal, or with every entry active on the marker's colour -

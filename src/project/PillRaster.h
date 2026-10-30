@@ -254,7 +254,22 @@ inline int pixelCover(const Band& band, int32_t px, int32_t py) {
   const int32_t acrossHigh = acrossLow + (band.vertical ? band.w : band.h);
   const int32_t r = rLow > rHigh ? rLow : rHigh;
   if (across >= acrossLow + r && across < acrossHigh - r) return 2;
-  return 1;
+  // Near a rounded end: decided from the pixel's four outermost sub-samples.
+  // Every zone insideBand() tells apart begins and ends on a whole pixel, so
+  // all sixteen sub-samples of a pixel fall in the same zone, and in a corner
+  // the distance to its centre grows with both coordinates away from it - the
+  // nearest and the farthest sub-sample are two of these four. All four in:
+  // all sixteen in; all four out: none in. Only a pixel the edge runs through
+  // is sampled whole. A group's buttons, round at one end and barely at the
+  // other, sent nearly every pixel of both ends to pixelBands(): 36 ms for a
+  // 130x43 group on the 4.3B (2026-10-30, ?set=render=1).
+  const int32_t S = SUBPIXEL_SCALE;
+  const int32_t xs[2] = {px * S + 1, px * S + 2 * SUBSAMPLES - 1};
+  const int32_t ys[2] = {py * S + 1, py * S + 2 * SUBSAMPLES - 1};
+  int in = 0;
+  for (int j = 0; j < 2; j++)
+    for (int i = 0; i < 2; i++) in += insideBand(band, xs[i], ys[j]) ? 1 : 0;
+  return in == 4 ? 2 : in == 0 ? 0 : 1;
 }
 
 // pixelBands(), with the same answer and most of the work left out.
@@ -276,6 +291,59 @@ inline void pixelBandsQuick(const std::vector<Band>& bands, int32_t px, int32_t 
     const int cover = pixelCover(bands[b], px, py);
     if (cover == 0) continue;
     if (cover == 2) {
+      into[b] = (uint8_t)COVERAGE_MAX;
+      return;
+    }
+    pixelBands(bands, px, py, into);
+    return;
+  }
+}
+
+// Where along one row of pixels pixelCover() answers 1 or 2 ("touched") and
+// where it answers 2 ("full"): two half-open intervals, empty when lo >= hi.
+//
+// They are intervals because pixelCover() rises and falls only once along a
+// row: 0 outside the band's box; inside it, in a rounded end, the four
+// outermost sub-samples come nearer the corner's centre with every pixel
+// towards the middle, so the answer can only grow there and only shrink at
+// the other end; 2 between. A triangle answers 1 across its whole box. So the
+// edges are found walking in from both ends of the row on pixelCover()
+// itself - as many pixels as the rounded ends are wide, not the whole row -
+// and a pixel's answer is then two comparisons: the same answer, not an
+// approximation of it. tools/pill-raster/ holds the two to each other.
+struct RowSpan {
+  int32_t touchLo = 0, touchHi = 0;
+  int32_t fullLo = 0, fullHi = 0;
+};
+
+inline RowSpan rowSpan(const Band& band, int32_t py) {
+  RowSpan s;
+  if (band.w <= 0 || band.h <= 0 || py < band.y || py >= band.y + band.h) return s;
+  const int32_t x0 = band.x, x1 = band.x + band.w;
+  int32_t lo = x0;
+  while (lo < x1 && pixelCover(band, lo, py) == 0) lo++;
+  if (lo == x1) return s;
+  s.touchLo = lo;
+  while (lo < x1 && pixelCover(band, lo, py) == 1) lo++;
+  int32_t hi = x1 - 1;
+  while (hi >= s.touchLo && pixelCover(band, hi, py) == 0) hi--;
+  s.touchHi = hi + 1;
+  if (lo == x1) return s;  // never whole: no full span
+  s.fullLo = lo;
+  while (hi >= lo && pixelCover(band, hi, py) == 1) hi--;
+  s.fullHi = hi + 1;
+  return s;
+}
+
+// pixelBandsQuick(), with each band's answer taken from its row's spans.
+inline void pixelBandsSpans(const std::vector<Band>& bands, const RowSpan* spans, int32_t px, int32_t py,
+                            uint8_t* into) {
+  const size_t n = bands.size();
+  for (size_t b = 0; b < n; b++) into[b] = 0;
+  for (size_t b = 0; b < n; b++) {
+    const RowSpan& s = spans[b];
+    if (px < s.touchLo || px >= s.touchHi) continue;
+    if (px >= s.fullLo && px < s.fullHi) {
       into[b] = (uint8_t)COVERAGE_MAX;
       return;
     }
