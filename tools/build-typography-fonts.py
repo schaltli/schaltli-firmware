@@ -49,6 +49,7 @@ DSEG7 = os.path.join(REPO, "tools", "fonts-src", "dseg7")
 BOARDS = {
     "ddf-source": 55,                # Knob 1.8, 7.88 px/mm
     "ddf-source-waveshare4v3b": 61,  # 4.3B, 8.66 px/mm
+    "ddf-source-waveshare4": 47,     # 4", 6.68 px/mm (from the diagonal, to be measured)
     "ddf-source-papers3": 65,        # PaperS3, 9.26 px/mm
 }
 

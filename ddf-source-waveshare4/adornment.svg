@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Adornment for the Waveshare ESP32-S3-Touch-LCD-4 (Rev 4.0).
+
+  Drawn to scale, as the 4.3B's is (see its adornment.svg for why). The
+  touch version measures 84.2 x 84.2 mm (Waveshare's product page). The
+  active area is taken from the 4" diagonal of a square 480 x 480 panel:
+  71.84 mm a side, 6.68 px per millimetre - to be measured on the glass
+  (?set=aspect=1) and corrected here and in device.json if it differs. That
+  puts the board at 562 x 562 with the screen centred, 41px of bezel all
+  round.
+
+  The screen is a punched-out hole (fill-rule="evenodd"), <rect
+  id="screen"> only marks it for the designer; explicit width/height on
+  <svg>; nothing past the edge (DEVICE_GUIDE.md, "Building the adornment
+  SVG"). No hardware buttons a screen can bind to - RESET and BOOT are on
+  the back.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="562" height="562" viewBox="0 0 562 562">
+  <defs>
+    <linearGradient id="case-shade" x1="0" y1="0" x2="0" y2="562" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#34343c" />
+      <stop offset="1" stop-color="#16161a" />
+    </linearGradient>
+    <linearGradient id="rim-light" x1="0" y1="0" x2="0" y2="562" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.45" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.08" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.02" />
+    </linearGradient>
+    <linearGradient id="glass-sheen" x1="27" y1="27" x2="535" y2="535" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2a2a31" />
+      <stop offset="0.45" stop-color="#0c0c0f" />
+      <stop offset="1" stop-color="#050507" />
+    </linearGradient>
+  </defs>
+
+  <!-- Case with the screen punched out: corners ~5mm (33px), the active
+       area at 41,41, 480x480. -->
+  <path id="case"
+        fill-rule="evenodd"
+        fill="url(#case-shade)"
+        d="M 33,0 H 529 A 33,33 0 0 1 562,33 V 529 A 33,33 0 0 1 529,562 H 33
+           A 33,33 0 0 1 0,529 V 33 A 33,33 0 0 1 33,0 Z
+           M 41,41 H 521 V 521 H 41 Z" />
+
+  <path id="case-rim"
+        fill="none"
+        stroke="url(#rim-light)"
+        stroke-width="3"
+        d="M 33,1.5 H 529 A 31.5,31.5 0 0 1 560.5,33 V 529 A 31.5,31.5 0 0 1 529,560.5 H 33
+           A 31.5,31.5 0 0 1 1.5,529 V 33 A 31.5,31.5 0 0 1 33,1.5 Z" />
+
+  <!-- The cover glass's black border, 14px around the active area. -->
+  <path id="glass-border"
+        fill-rule="evenodd"
+        fill="url(#glass-sheen)"
+        d="M 33,27 H 529 A 6,6 0 0 1 535,33 V 529 A 6,6 0 0 1 529,535 H 33
+           A 6,6 0 0 1 27,529 V 33 A 6,6 0 0 1 33,27 Z
+           M 41,41 H 521 V 521 H 41 Z" />
+  <path fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1"
+        d="M 33,26.5 H 529" />
+
+  <rect id="screen" x="41" y="41" width="480" height="480"
+        fill="none" stroke="none"
+        inkscape:label="screen" />
+</svg>
