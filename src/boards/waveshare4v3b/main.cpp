@@ -1109,6 +1109,8 @@ static void setupNetworking()
   testInterface.setDebugHandler([](const String &setArg) -> String {
     // ?set=charts: the charts' history it holds (ChartFeed::describe).
     if (setArg == "charts") return chartFeed.describe();
+    // ?set=coredump: where the last panic happened (BootReport::coreDump).
+    if (setArg == "coredump") return BootReport::coreDump();
     // ?set=chartpulse=off stills the NowPoint for a test comparing pixels; =on again.
     if (setArg == "chartpulse=off" || setArg == "chartpulse=on")
     {
@@ -1136,7 +1138,10 @@ static void setupNetworking()
     out += String("theme ") + (wantedThemeDark ? "dark" : "light") + ", shown " +
            (projectLoader.isLoaded() && projectLoader.getProject().themeDark ? "dark" : "light") +
            " (?set=theme=dark|light)\n";
-    out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB, psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
+    // The lowest since boot and the largest block: an fopen with none left
+    // aborted the board in the van (2026-10-30, ?set=coredump).
+    out += "heap " + String(ESP.getFreeHeap() / 1024) + " KB (lowest " + String(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL) / 1024) +
+           " KB, largest block " + String(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024) + " KB), psram free " + String(ESP.getFreePsram() / 1024) + " KB\n";
     out += "uptime " + String(millis() / 1000) + " s\n";
     {
       // The radio's power save, switchable live so it can be measured on and
@@ -1585,6 +1590,14 @@ static void setupNetworking()
 
 void setup()
 {
+  // Every malloc of 256 bytes and more into PSRAM, not only those of 4 KB and
+  // more (the framework's CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL). A large project
+  // - its strings, vectors and topic values - left 25-31 KB of internal RAM
+  // with 1.6 MB of PSRAM free, and in the van a chart drawn over an energy
+  // diagram took the rest: the icon's fopen found no room for its lock and
+  // aborted the board (2026-10-30, ?set=coredump). Drivers that need internal
+  // or DMA memory ask for it by its caps and are not affected.
+  heap_caps_malloc_extmem_enable(256);
   Serial.begin(115200);
   // Writes wait for a reader for 1 ms at most. The USB serial counts as
   // connected once a host has read from it or written to it - hil-on, hil?,
