@@ -94,6 +94,7 @@ const REPO = path.join(__dirname, "..")
 const BOARDS = [
   { env: "waveshare-knob-touch-lcd-1v8", dir: "waveshareknob1v8" },
   { env: "waveshare-touch-lcd-4v3b", dir: "waveshare4v3b" },
+  { env: "waveshare-touch-lcd-4", dir: "waveshare4" },
   { env: "m5stack-papers3", dir: "papers3" },
 ]
 
