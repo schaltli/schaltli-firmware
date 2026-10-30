@@ -95,6 +95,9 @@
 // Scaled values (designer docs/device-contract.md 2.11) - scaled topics and
 // write formats - are the feature "scaled-values" in the DDF, not a
 // generation.
+// Charts (designer docs/device-contract.md 2.13) - the chart object, the
+// history it reads from the recorder, the screen's time range and its four
+// actions - are the features "charts" and "pinch", not a generation.
 
 // Where DeployManager.cpp promotes a verified deploy download to, and
 // TestInterfaceServer.cpp's recovery endpoint (GET /recovery-project) reads
