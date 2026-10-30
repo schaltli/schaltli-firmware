@@ -237,6 +237,7 @@ static bool pendingTopicOverflow = false;
 // What the last value change cost, so "the partial path is running" stays
 // checkable from outside rather than being assumed.
 static String lastValueDraw = "none since boot";
+static int pagingTargetFor(int d, bool vertical = false);
 // ?set=partialcheck=on: after every value change drawn in part (or found to
 // need nothing), the same screen drawn whole into the spare canvas, at the
 // same values, and the two compared pixel for pixel - so a partial draw can
@@ -1219,6 +1220,11 @@ static void setupNetworking()
     out += "  tap latency: " + tapLatencyReport() + "\n";
     out += "  energy motion: " + energyReport() + "\n";
     if (renderer) out += "  energy draw: " + renderer->energyProfile() + "\n";
+    // Where a swipe leads from here, each way (pagingTargetFor): -1 is
+    // nowhere - what a swipe that never follows the finger comes down to.
+    out += "  swipes lead: finger left " + String(pagingTargetFor(-1)) + ", right " + String(pagingTargetFor(1)) +
+           ", up " + String(pagingTargetFor(-1, true)) + ", down " + String(pagingTargetFor(1, true)) + " (screen " +
+           String(currentScreen) + ")\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  partial check: " + lastPartialCheck + " (" + String(partialChecks) + " checked, " + String(partialCheckFailures) +
            " differed; ?set=partialcheck=on|off)\n";
@@ -2300,7 +2306,7 @@ static void dispatchButtonAction(const ButtonAction &action)
 // tab stands - up and down as well as sideways; `d` is the finger's travel
 // along the axis. Everything else, a wrap from the row's last page among
 // it, is the release's.
-static int pagingTargetFor(int d, bool vertical = false)
+static int pagingTargetFor(int d, bool vertical)
 {
   if (!projectLoader.isLoaded()) return -1;
   const ProjectConfig &project = projectLoader.getProject();
