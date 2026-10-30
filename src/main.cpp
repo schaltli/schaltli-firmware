@@ -679,6 +679,8 @@ static void closePopup(const char *reason) {
 static void writeProjectTopic(const String &topic, const String &payload);
 
 static void dispatchButtonAction(const ButtonAction &action) {
+  // The screen's time range (contract 2.13): drawn again from loop().
+  if (projectLoader.isLoaded() && chartFeed.applyAction(action, projectLoader.getProject(), currentScreenIndex)) return;
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
   const ProjectConfig &project = projectLoader.getProject();
   int count = (int)project.screens.size();

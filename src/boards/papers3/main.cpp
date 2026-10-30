@@ -47,6 +47,7 @@
 #include "../../project/ProjectLoader.h"
 #include "../../project/ThemeVariant.h"
 #include "project/ObjectTypes.h"
+#include "../../project/PinchDetector.h"
 
 // The panel's own size, read back at boot and checked against what the DDF
 // declares. A mismatch means the designer is laying out screens for a panel
@@ -127,6 +128,16 @@ static int16_t injectX = 0, injectY = 0;
 static bool injectDown = false;
 static uint32_t injectUntilMs = 0;
 static bool injectLiftOnce = false;
+// A second finger, posted with x2/y2 (TestInterfaceServer's
+// TwoFingerTouchHandler), for a pinch.
+static bool injectTwo = false;
+static int16_t injectX2 = 0, injectY2 = 0;
+// How many fingers the last sample had, and the second one's place.
+static uint8_t touchPointCount = 0;
+static int16_t touchX2 = 0, touchY2 = 0;
+// Pinch in and pinch out (designer docs/2026-10-16-charts.md decision 15,
+// contract 2.13): decided at the lift, as the 4.3B does.
+static PinchDetector pinch;
 
 // The setup-mode gesture (decision 7): ten seconds held in the top left
 // quadrant. Long on purpose - 0.3s of feedback latency trains people to
@@ -328,6 +339,8 @@ static bool writeProjectTopic(const String &topic, const String &payload)
 static void dispatchButtonAction(const ButtonAction &action)
 {
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
+  // The screen's time range (contract 2.13): drawn again from loop().
+  if (chartFeed.applyAction(action, projectLoader.getProject(), currentScreen)) return;
   const ProjectConfig &project = projectLoader.getProject();
   const int count = (int)project.screens.size();
 
@@ -710,6 +723,7 @@ static void dispatchSwipeAtRelease(int dx, int dy)
 // tell which.
 static bool readTouch(int16_t &x, int16_t &y)
 {
+  touchPointCount = 0;
   if (injectLiftOnce)
   {
     injectLiftOnce = false;
@@ -719,6 +733,9 @@ static bool readTouch(int16_t &x, int16_t &y)
   {
     x = injectX;
     y = injectY;
+    touchX2 = injectX2;
+    touchY2 = injectY2;
+    touchPointCount = !injectDown ? 0 : injectTwo ? 2 : 1;
     return injectDown;
   }
 
@@ -726,6 +743,17 @@ static bool readTouch(int16_t &x, int16_t &y)
   if (!d.isPressed()) return false;
   x = d.x;
   y = d.y;
+  touchPointCount = 1;
+  if (M5.Touch.getCount() >= 2)
+  {
+    const auto &d2 = M5.Touch.getDetail(1);
+    if (d2.isPressed())
+    {
+      touchX2 = d2.x;
+      touchY2 = d2.y;
+      touchPointCount = 2;
+    }
+  }
   return true;
 }
 
@@ -789,11 +817,20 @@ static void serviceTouch()
     contactStartX = contactLastX = x;
     contactStartY = contactLastY = y;
     contactMoved = false;
+    pinch.begin(millis());
+    pinch.sample(touchPointCount, x, y, touchX2, touchY2, millis());
     return;
   }
 
   if (down && holdActive)
   {
+    pinch.sample(touchPointCount, x, y, touchX2, touchY2, millis());
+    // Two fingers are never the setup hold, a tap or a swipe.
+    if (pinch.multi())
+    {
+      contactMoved = true;
+      return;
+    }
     contactLastX = x;
     contactLastY = y;
     if (abs(x - contactStartX) > HOLD_MOVE_CANCEL || abs(y - contactStartY) > HOLD_MOVE_CANCEL)
@@ -839,6 +876,20 @@ static void serviceTouch()
     const int dx = contactLastX - contactStartX;
     const int dy = contactLastY - contactStartY;
 
+    // Two fingers were a pinch or nothing: the screen's action for pinch in
+    // or pinch out, where it has one (contract 2.13).
+    if (pinch.multi())
+    {
+      const PinchDetector::Result r = pinch.finish();
+      Serial.printf("[papers3] pinch: %s (%d -> %d px)\n", PinchDetector::name(r), pinch.startDistance(), pinch.endDistance());
+      if ((r == PinchDetector::PinchIn || r == PinchDetector::PinchOut) && projectLoader.isLoaded() && openPopup < 0)
+      {
+        const ButtonAction action = projectLoader.getButtonAction(currentScreen, r == PinchDetector::PinchIn ? "pinch-in" : "pinch-out");
+        if (!action.type.isEmpty()) dispatchButtonAction(action);
+      }
+      return;
+    }
+
     // A hold that got as far as its countdown was the setup hold, let go of.
     // It presses nothing and swipes nothing - the 4.3B's rule - and the
     // project goes back over the box, partially like every other redraw.
@@ -877,6 +928,21 @@ static void serviceTouch()
           renderer->setNavigatorScroll(next);
           renderAndPresent("navigator scroll");
         }
+        return;
+      }
+    }
+
+    // A sideways gesture that began on a scrolling chart moves it through
+    // time (contract 2.13): this board follows no finger, so it draws once,
+    // where the finger let go, already settled on whole days.
+    if (contactMoved && openPopup < 0 && abs(dx) > 2 * abs(dy))
+    {
+      const ScreenObject *chart = ChartFeed::scrollingChartAt(projectLoader.getProject(), currentScreen, contactStartX, contactStartY);
+      if (chart != nullptr)
+      {
+        chartFeed.beginDrag(projectLoader.getProject(), currentScreen, *chart, contactStartX);
+        chartFeed.dragTo(projectLoader.getProject(), contactLastX);
+        chartFeed.endDrag(projectLoader.getProject());
         return;
       }
     }
@@ -1110,6 +1176,17 @@ static void setupNetworking()
   testInterface.setTouchHandler([](int16_t x, int16_t y, bool down) {
     injectX = x;
     injectY = y;
+    injectTwo = false;
+    injectDown = down;
+    injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
+    injectLiftOnce = !down;
+  });
+  testInterface.setTwoFingerTouchHandler([](int16_t x, int16_t y, int16_t x2, int16_t y2, bool down) {
+    injectX = x;
+    injectY = y;
+    injectX2 = x2;
+    injectY2 = y2;
+    injectTwo = down;
     injectDown = down;
     injectUntilMs = down ? millis() + TOUCH_INJECT_HOLD_MS : 0;
     injectLiftOnce = !down;

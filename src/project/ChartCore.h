@@ -8,7 +8,13 @@
 // lib/chart-range.ts and lib/chart-layout.ts, function by function, held to
 // their vectors (test/test_chart). No Arduino: it runs on the PC too.
 
+// ProjectTypes.h holds a Chart, and the host tools that build ProjectTypes.h
+// without ArduinoJson (tools/level-shape, switch-shape, theme-variant) need
+// none of what reads JSON: only that is behind it.
+#if __has_include(<ArduinoJson.h>)
 #include <ArduinoJson.h>
+#define CHARTCORE_JSON 1
+#endif
 
 #include <string>
 #include <utility>
@@ -86,7 +92,9 @@ struct Chart {
 };
 
 /** A chart's properties as the export writes them. */
+#ifdef CHARTCORE_JSON
 Chart chartFrom(JsonObjectConst properties);
+#endif
 
 // ---- the window (lib/chart-window.ts)
 
@@ -139,7 +147,9 @@ struct SeriesData {
   std::vector<DayBar> days;
 };
 
+#ifdef CHARTCORE_JSON
 SeriesData seriesData(const Series& s, const std::vector<JsonObjectConst>& payloads, const Calendar& cal);
+#endif
 
 // ---- numbers and texts
 

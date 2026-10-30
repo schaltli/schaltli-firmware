@@ -91,6 +91,72 @@ class ChartFeed {
 
   const charthistory::History& history() const { return history_; }
 
+  /**
+   * One of the four range actions (contract 2.13, ChartCore.h RangeView) on a
+   * screen's view; true when it was one. The topics are fitted again on the
+   * next loop, and the chart drawn again.
+   */
+  bool applyAction(const ButtonAction& action, const ProjectConfig& project, int screenIndex) {
+    const std::string type = action.type.c_str();
+    if (type != "narrow-range" && type != "widen-range" && type != "move-range" && type != "set-range") return false;
+    chartcore::RangeView& v = view(project, screenIndex);
+    const double t = now();
+    const chartcore::Calendar& cal = history_.calendar();
+    if (type == "narrow-range") v = chartcore::narrowed(v, t, cal);
+    else if (type == "widen-range") v = chartcore::widened(v, t, cal);
+    else if (type == "move-range") v = chartcore::moved(v, action.rangeDirection != "later", t, cal);
+    else v = chartcore::setRange(action.range.isEmpty() ? "24h" : action.range.c_str());
+    checkAt_ = 0;
+    redraw_ = true;
+    return true;
+  }
+
+  /** A scrolling chart at (x, y) on a screen, for a finger to move through time; null where none. */
+  static const ScreenObject* scrollingChartAt(const ProjectConfig& project, int screenIndex, int x, int y) {
+    if (screenIndex < 0 || screenIndex >= (int)project.screens.size()) return nullptr;
+    for (const ScreenObject& o : project.screens[screenIndex].objects) {
+      if (!o.properties.chart || !o.properties.chart->chart.scroll) continue;
+      if (x >= o.x && y >= o.y && x < o.x + o.width && y < o.y + o.height) return &o;
+    }
+    return nullptr;
+  }
+
+  /** A finger down on a scrolling chart: the view it started from, and the seconds one pixel of its plot is. */
+  void beginDrag(const ProjectConfig& project, int screenIndex, const ScreenObject& chart, int x) {
+    dragStartView_ = view(project, screenIndex);
+    dragScreen_ = screenIndex;
+    dragStartX_ = x;
+    chartcore::LayoutOptions o;
+    o.width = chart.width;
+    o.height = chart.height;
+    o.fontSize = 14;
+    for (const Font& f : project.fonts)
+      if (f.id == chart.properties.chart->fontId && f.size > 0) o.fontSize = f.size;
+    const chartcore::Window w = chartcore::chartWindow(chart.properties.chart->chart, dragStartView_.range, now(), history_.calendar(), dragStartView_.back);
+    const chartcore::Layout l = chartcore::chartLayout(chart.properties.chart->chart, w, std::vector<chartcore::SeriesData>(chart.properties.chart->chart.series.size()), o);
+    secondsPerPx_ = chartcore::spanOf(dragStartView_.range) / std::max(1.0, l.plot.w);
+    dragging_ = true;
+  }
+
+  bool dragging() const { return dragging_; }
+
+  /** The finger moved: dragged right, the past comes in from the left. */
+  void dragTo(const ProjectConfig& project, int x) {
+    if (!dragging_) return;
+    view(project, dragScreen_) = chartcore::dragged(dragStartView_, (x - dragStartX_) * secondsPerPx_);
+    redraw_ = true;
+  }
+
+  /** Let go: settled on whole days from 24 hours up, the topics fitted again. */
+  void endDrag(const ProjectConfig& project) {
+    if (!dragging_) return;
+    dragging_ = false;
+    chartcore::RangeView& v = view(project, dragScreen_);
+    v = chartcore::settled(v, now(), history_.calendar());
+    checkAt_ = 0;
+    redraw_ = true;
+  }
+
   /** The view of the screen shown last fitted to (update). */
   chartcore::RangeView shownView(const ProjectConfig& project) { return view(project, shownScreen_); }
 
@@ -137,5 +203,10 @@ class ChartFeed {
   bool baseSubscribed_ = false;
   bool redraw_ = false;
   int shownScreen_ = -1;
+  bool dragging_ = false;
+  chartcore::RangeView dragStartView_;
+  int dragScreen_ = -1;
+  int dragStartX_ = 0;
+  double secondsPerPx_ = 1;
   uint32_t checkAt_ = 0;
 };

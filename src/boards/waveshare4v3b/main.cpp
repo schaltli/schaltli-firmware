@@ -2035,6 +2035,8 @@ static void dispatchButtonAction(const ButtonAction &action)
   if (action.type.isEmpty() || !projectLoader.isLoaded()) return;
   const ProjectConfig &project = projectLoader.getProject();
   const int count = (int)project.screens.size();
+  // The screen's time range (contract 2.13): drawn again from loop().
+  if (chartFeed.applyAction(action, project, currentScreen)) return;
 
   if (action.type == "next-screen" || action.type == "previous-screen")
   {
@@ -2754,6 +2756,14 @@ static void finishPinch()
     pinchLog = pinchLog.substring(cut + 1);
   }
 
+  // Pinch in and pinch out are gestures as the swipes are (contract 2.13):
+  // the screen's action for them, where it has one.
+  if ((r == PinchDetector::PinchIn || r == PinchDetector::PinchOut) && projectLoader.isLoaded() && openPopup < 0)
+  {
+    const ButtonAction action = projectLoader.getButtonAction(currentScreen, r == PinchDetector::PinchIn ? "pinch-in" : "pinch-out");
+    if (!action.type.isEmpty()) dispatchButtonAction(action);
+  }
+
   if (pinchShow && displayAdapter)
   {
     displayAdapter->showLines({r == PinchDetector::PinchIn ? "Pinch in" : r == PinchDetector::PinchOut ? "Pinch out" : "kein Pinch",
@@ -3335,6 +3345,33 @@ void loop()
       return;
     }
 
+    // A sideways drag that began on a scrolling chart moves it through time
+    // (contract 2.13; designer charts decision 12): no page change, the
+    // chart follows the finger and settles on whole days when let go.
+    if (!chartFeed.dragging() && !holdConsumed && openPopup < 0 && abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy))
+    {
+      const ScreenObject *chart = ChartFeed::scrollingChartAt(projectLoader.getProject(), currentScreen, contactStartX, contactStartY);
+      if (chart != nullptr)
+      {
+        chartFeed.beginDrag(projectLoader.getProject(), currentScreen, *chart, contactStartX);
+        if (!pressedButtonId.isEmpty() || !pressedSwitchId.isEmpty())
+        {
+          pressedButtonId = "";
+          pressedSwitchId = "";
+          pressedSwitchIndex = -1;
+          renderFeedbackRegion("chart drag took over", false);
+          if (pendingSwitchId.isEmpty()) feedbackActive = false;
+        }
+      }
+    }
+    if (chartFeed.dragging())
+    {
+      chartFeed.dragTo(projectLoader.getProject(), touchX);
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
     const bool sideways = abs(dx) >= FollowSwipe::startThresholdPx() && abs(dx) > 2 * abs(dy) && pagingTargetFor(dx) >= 0;
     const bool upDown = abs(dy) >= FollowSwipe::startThresholdPx() && abs(dy) > 2 * abs(dx) && pagingTargetFor(dy, true) >= 0;
     if (!holdConsumed && (sideways || upDown))
@@ -3422,6 +3459,16 @@ void loop()
     {
       navigatorContact = false;
       if (!navigatorScrolled && !contactOnlyWoke && contactDrift <= TAP_MAX_DRIFT) dispatchTapAt(holdStartX, holdStartY);
+      contactOnlyWoke = false;
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
+    // A drag through a chart's time is neither a tap nor a swipe.
+    if (chartFeed.dragging())
+    {
+      chartFeed.endDrag(projectLoader.getProject());
       contactOnlyWoke = false;
       testInterface.handleClient();
       delay(5);
