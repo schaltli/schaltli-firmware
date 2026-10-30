@@ -83,6 +83,11 @@ public:
     uint32_t pclkHz;
     uint16_t hPulse, hBack, hFront;
     uint16_t vPulse, vBack, vFront;
+    // Idle levels and the clock edge. The defaults are the 4.3B's ST7262;
+    // the 4"'s ST7701 wants all three the other way (its BoardProfile.h).
+    bool hsyncIdleLow = true;
+    bool vsyncIdleLow = true;
+    bool pclkActiveNeg = true;
   };
 
   bool begin(int16_t w, int16_t h, const Pins &pins, const Timing &t, size_t bounceBufferPx)
@@ -294,10 +299,10 @@ private:
     config.timings.vsync_front_porch = t.vFront;
     // Both idle low, as Waveshare's own example and Arduino_GFX's translation
     // of a zero polarity argument have it.
-    config.timings.flags.hsync_idle_low = 1;
-    config.timings.flags.vsync_idle_low = 1;
+    config.timings.flags.hsync_idle_low = t.hsyncIdleLow;
+    config.timings.flags.vsync_idle_low = t.vsyncIdleLow;
     config.timings.flags.de_idle_high = 0;
-    config.timings.flags.pclk_active_neg = 1;
+    config.timings.flags.pclk_active_neg = t.pclkActiveNeg;
     config.timings.flags.pclk_idle_high = 0;
 
     config.data_width = 16;

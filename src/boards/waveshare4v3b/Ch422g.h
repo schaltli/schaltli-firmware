@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <Wire.h>
+#include "../rgbpanel/PanelExpander.h"
 
 // Minimal driver for the CH422G IO expander on the Waveshare 4.3B.
 //
@@ -23,7 +24,7 @@
 // Addresses and bit meanings are taken from esp-arduino-libs/ESP32_IO_Expander
 // (Apache-2.0), src/port/esp_io_expander_ch422g.c, rather than reconstructed:
 //   WR_SET = 0x48 >> 1, WR_OC = 0x46 >> 1, WR_IO = 0x70 >> 1, RD_IO = 0x4D >> 1
-class Ch422g {
+class Ch422g : public PanelExpander {
 public:
   static const uint8_t ADDR_WR_SET = 0x24; // system settings
   static const uint8_t ADDR_WR_OC = 0x23;  // OC0-3 output
@@ -46,7 +47,7 @@ public:
   // Power-on state of IO0-7 per the reference driver: all high. Starting
   // from that rather than from zero matters - a zero would pull TP_RST and
   // LCD_RST low and hold both devices in reset.
-  bool begin(TwoWire &wire = Wire)
+  bool begin(TwoWire &wire = Wire) override
   {
     wire_ = &wire;
     ioState_ = 0xFF;
@@ -60,6 +61,10 @@ public:
     else ioState_ &= (uint8_t)~(1u << exio);
     return writeByte(ADDR_WR_IO, ioState_);
   }
+
+  bool setBacklight(bool on) override { return write(EXIO_LCD_BL, on); }
+  bool setTouchReset(bool released) override { return write(EXIO_TP_RST, released); }
+  const char *name() const override { return "CH422G"; }
 
   uint8_t state() const { return ioState_; }
 

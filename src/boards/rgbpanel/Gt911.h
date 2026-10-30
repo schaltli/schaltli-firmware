@@ -1,9 +1,9 @@
 #pragma once
 #include <Arduino.h>
 #include <Wire.h>
-#include "Ch422g.h"
+#include "PanelExpander.h"
 
-// GT911 capacitive touch reader for the Waveshare 4.3B.
+// GT911 capacitive touch reader for the Waveshare RGB boards (4.3B, 4").
 //
 // Hand-rolled rather than pulled in as a library, for the same reason the
 // knob port hand-rolls its CST816: the touch path is where board ports go
@@ -38,22 +38,28 @@ public:
   // this drives INT low for the primary address - but it then *probes* both
   // rather than trusting that, because a board that wires INT through
   // anything unexpected would otherwise fail with a silent no-touch.
-  bool begin(Ch422g &expander, int intPin, TwoWire &wire = Wire)
+  bool begin(PanelExpander &expander, int intPin, TwoWire &wire = Wire)
   {
     wire_ = &wire;
     intPin_ = intPin;
 
-    pinMode(intPin_, OUTPUT);
-    digitalWrite(intPin_, LOW);
+    // A board without INT on a GPIO (the 4") gets a plain reset; the
+    // controller then comes up on whichever address it likes, and the probe
+    // below finds it.
+    if (intPin_ >= 0)
+    {
+      pinMode(intPin_, OUTPUT);
+      digitalWrite(intPin_, LOW);
+    }
 
-    expander.write(Ch422g::EXIO_TP_RST, false);
+    expander.setTouchReset(false);
     delay(10);
-    digitalWrite(intPin_, LOW);
+    if (intPin_ >= 0) digitalWrite(intPin_, LOW);
     delay(1);
-    expander.write(Ch422g::EXIO_TP_RST, true);
+    expander.setTouchReset(true);
     delay(10);
 
-    pinMode(intPin_, INPUT);
+    if (intPin_ >= 0) pinMode(intPin_, INPUT);
     delay(50);
 
     for (uint8_t candidate : {ADDR_PRIMARY, ADDR_ALTERNATE})

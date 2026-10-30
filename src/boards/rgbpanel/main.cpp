@@ -1,4 +1,9 @@
-// Firmware entry point for the Waveshare ESP32-S3-Touch-LCD-4.3B.
+// Firmware entry point for the Waveshare RGB boards: the
+// ESP32-S3-Touch-LCD-4.3B, where it was written and every measurement below
+// was taken, and since 2026-10-30 the ESP32-S3-Touch-LCD-4. What differs
+// between them - geometry, timings, pins, the IO expander - is the board's
+// BoardProfile.h, found on the env's include path; this file names no pin
+// and no expander chip.
 //
 // The bring-up scaffolding this file grew during the port has been removed
 // now that the board runs real projects: the colour-bar test pattern, the
@@ -69,7 +74,6 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <LittleFS.h>
-#include "Ch422g.h"
 #include "Gt911.h"
 #include "TestProjectJson.h"
 #include "PanelDisplayAdapter.h"
@@ -101,75 +105,12 @@
 #include "../../project/TimePicker.h"
 #include "../../DeviceSettings.h"
 #include "project/ObjectTypes.h"
-
-// --- panel geometry -------------------------------------------------------
-static const int16_t PANEL_W = 800;
-static const int16_t PANEL_H = 480;
-
-// --- RGB timings (ST7262, 800x480) ---------------------------------------
-//
-// 12 MHz, not the 16 Waveshare's example uses, because at 16 the parallel
-// bus slows this board's own WiFi (2026-09-14). Measured against an access
-// point on channel 6, switching live with ?set=pclk= and interleaving:
-// snapshots ran at 330-480 KB/s at 16 MHz, and in stretches of several
-// minutes as low as 20-30 KB/s with ping answers up to a second, while a
-// PaperS3 on the same access point at the same signal stayed above 800 KB/s
-// throughout. At 12 MHz the 4.3B moved 690-800 KB/s. The CPU was idle and
-// memory unchanged in the slow stretches, which is what pointed at the radio
-// path and away from the firmware.
-//
-// Two limits on what that proves. It was one channel: which harmonics of
-// the pixel clock land inside the WiFi channel depends on the channel, so a
-// board on another access point should be measured again (?set=pclk= is
-// kept for exactly that). And 8 MHz showed no picture at all - only white,
-// which on a white test screen passed for "looks normal" until a coloured
-// one was installed - so the margin below 12 is unknown. 12 was judged by
-// eye on that coloured project, swiping included, and looked right.
-//
-// Refresh is 12 MHz / (820 x 500) = 29 Hz, against 39 at 16; a follow-swipe
-// composes at about 14 frames a second on this board either way.
-static const int32_t PCLK_HZ = 12 * 1000 * 1000;
-static const uint16_t HSYNC_PULSE_WIDTH = 4;
-static const uint16_t HSYNC_BACK_PORCH = 8;
-static const uint16_t HSYNC_FRONT_PORCH = 8;
-static const uint16_t VSYNC_PULSE_WIDTH = 4;
-static const uint16_t VSYNC_BACK_PORCH = 8;
-static const uint16_t VSYNC_FRONT_PORCH = 8;
-
-// Bounce buffer, in pixels. The RGB peripheral streams the framebuffer out
-// of PSRAM continuously; without a bounce buffer through internal SRAM the
-// picture drifts sideways under bus contention. Waveshare uses width * 10.
-static const size_t BOUNCE_BUFFER_PX = PANEL_W * 10;
-
-// --- shared I2C bus -------------------------------------------------------
-// Touch, the CH422G expander and the RTC all sit on the same two lines.
-static const int I2C_SDA = 8;
-static const int I2C_SCL = 9;
-static const int TP_INT = 4;
-
-// --- pin map --------------------------------------------------------------
-// Waveshare's DATA0..DATA15 is an RGB565 bus in the order B, G, R:
-// DATA0-4 = blue, DATA5-10 = green, DATA11-15 = red. Arduino_GFX wants them
-// split, hence the regrouping. The wiki names the same lines B3..B7, G2..G7
-// and R3..R7 - the panel's own bit numbering, same physical pins.
-static const RgbPanel::Pins PANEL_PINS = {
-    /* de */ 5, /* vsync */ 3, /* hsync */ 46, /* pclk */ 7,
-    /* r0..r4 */ {1, 2, 42, 41, 40},
-    /* g0..g5 */ {39, 0, 45, 48, 47, 21},
-    /* b0..b4 */ {14, 38, 18, 17, 10}};
-
-static const RgbPanel::Timing PANEL_TIMING = {
-    PCLK_HZ,
-    HSYNC_PULSE_WIDTH, HSYNC_BACK_PORCH, HSYNC_FRONT_PORCH,
-    VSYNC_PULSE_WIDTH, VSYNC_BACK_PORCH, VSYNC_FRONT_PORCH};
+#include "BoardProfile.h"
 
 static RgbPanel panel;
-
-// No panel reset line on this board - LCD_RST is on the expander and the
-// panel comes up without it, as Waveshare's own example also assumes.
-
-static Ch422g expander;
+static BoardExpander expander;
 static Gt911 touch;
+static bool startExpander();
 
 // --- rendering ------------------------------------------------------------
 // The same ColorScreenRenderer the knob and the M5 Dial run, unchanged. Its
@@ -689,7 +630,7 @@ static void renderAndPresent(const char *reason)
   uint32_t t1 = micros();
   panel.blit(canvas->getBuffer());
   uint32_t t2 = micros();
-  Serial.printf("[4v3b] render(screen %d, %s): %s | draw %lums, blit %lums\n",
+  Serial.printf(BOARD_LOG "render(screen %d, %s): %s | draw %lums, blit %lums\n",
                 currentScreen, reason, ok ? "ok" : "FAILED",
                 (unsigned long)((t1 - t0) / 1000), (unsigned long)((t2 - t1) / 1000));
 }
@@ -699,7 +640,7 @@ static void wakeDisplay()
   lastHumanInputMs = millis();
   if (!displayIsOff) return;
   displayIsOff = false;
-  expander.write(Ch422g::EXIO_LCD_BL, true);
+  expander.setBacklight(true);
   // Repainted before the backlight can reveal a stale frame: the panel
   // keeps whatever it last received, and that is the screen from before it
   // went dark, which may be minutes old.
@@ -711,7 +652,7 @@ static void blankDisplay(const char *reason)
 {
   if (displayIsOff) return;
   displayIsOff = true;
-  expander.write(Ch422g::EXIO_LCD_BL, false);
+  expander.setBacklight(false);
   Serial.printf("[display] off (%s)\n", reason);
 
   // Back to the idle screen AFTER the backlight is out: the panel would
@@ -742,7 +683,7 @@ static void setupRenderStack()
 {
   if (!LittleFS.begin(true))
   {
-    Serial.println("[4v3b] LittleFS mount FAILED");
+    Serial.println(BOARD_LOG "LittleFS mount FAILED");
     return;
   }
 
@@ -755,18 +696,18 @@ static void setupRenderStack()
   bool loaded = projectLoader.loadProject();
   if (loaded)
   {
-    Serial.println("[4v3b] loaded deployed project from /PROJECT");
+    Serial.println(BOARD_LOG "loaded deployed project from /PROJECT");
     // The first screen of the main row (contract 2.10; before it, the first
     // screen that is not hidden, which is what an older export's row is).
     currentScreen = screengraphproject::startIndex(projectLoader.getProject());
   }
   else
   {
-    Serial.println("[4v3b] no deployed project - falling back to the built-in fixture");
+    Serial.println(BOARD_LOG "no deployed project - falling back to the built-in fixture");
     File f = LittleFS.open("/render-smoke.json", "w");
     if (!f)
     {
-      Serial.println("[4v3b] could not write the fallback project");
+      Serial.println(BOARD_LOG "could not write the fallback project");
       return;
     }
     f.print(TEST_PROJECT_JSON);
@@ -775,12 +716,12 @@ static void setupRenderStack()
   }
   if (!loaded)
   {
-    Serial.println("[4v3b] loadProject FAILED");
+    Serial.println(BOARD_LOG "loadProject FAILED");
     return;
   }
   // The theme may have been reported before there was a project to show it.
   projectLoader.applyThemeVariant(wantedThemeDark);
-  Serial.printf("[4v3b] project \"%s\", %ux%u, %u screen(s)\n",
+  Serial.printf(BOARD_LOG "project \"%s\", %ux%u, %u screen(s)\n",
                 projectLoader.getProject().name.c_str(),
                 projectLoader.getProject().screenWidth,
                 projectLoader.getProject().screenHeight,
@@ -793,11 +734,11 @@ static void setupRenderStack()
   canvas = new ClippedCanvas16(PANEL_W, PANEL_H);
   if (!canvas || !canvas->getBuffer())
   {
-    Serial.printf("[4v3b] FATAL: %u-byte canvas allocation failed\n",
+    Serial.printf(BOARD_LOG "FATAL: %u-byte canvas allocation failed\n",
                   (unsigned)(PANEL_W * PANEL_H * 2));
     return;
   }
-  Serial.printf("[4v3b] canvas at %p (%s), psram free %u\n", canvas->getBuffer(),
+  Serial.printf(BOARD_LOG "canvas at %p (%s), psram free %u\n", canvas->getBuffer(),
                 esp_ptr_external_ram(canvas->getBuffer()) ? "PSRAM" : "internal SRAM",
                 (unsigned)ESP.getFreePsram());
 
@@ -822,14 +763,14 @@ static void setupRenderStack()
     swipe.attach(&panel, &canvas, spareCanvas, renderer, &currentScreen,
                  (int)projectLoader.getProject().screens.size(), PANEL_W, PANEL_H,
                  markerCanvas && markerCanvas->getBuffer() ? markerCanvas : nullptr);
-    Serial.printf("[4v3b] swipe %s: %u screens, spare canvas at %p, psram free %u\n",
+    Serial.printf(BOARD_LOG "swipe %s: %u screens, spare canvas at %p, psram free %u\n",
                   swipe.ready() ? "ready" : "idle (needs two screens)",
                   (unsigned)projectLoader.getProject().screens.size(), spareCanvas->getBuffer(),
                   (unsigned)ESP.getFreePsram());
   }
   else
   {
-    Serial.println("[4v3b] spare canvas allocation failed - no transitions");
+    Serial.println(BOARD_LOG "spare canvas allocation failed - no transitions");
   }
 
   renderAndPresent("boot");
@@ -844,13 +785,13 @@ static void subscribeToProjectTopics()
     if (!t.local) topics.push_back(t.topic);
   if (!topics.empty()) mqttClient.subscribeToKeys(topics);
   topicsSubscribed = true;
-  Serial.printf("[4v3b] subscribed to %d project topic(s)\n", (int)topics.size());
+  Serial.printf(BOARD_LOG "subscribed to %d project topic(s)\n", (int)topics.size());
 }
 
 static void enterSetupMode()
 {
   if (setupModeActive || !wifiSetupServer) return;
-  Serial.println("[4v3b] entering setup mode - starting AP");
+  Serial.println(BOARD_LOG "entering setup mode - starting AP");
   setupModeActive = true;
   // The test interface owns port 80 in normal operation and the setup server
   // wants the same port, so it has to be stopped rather than left to fail a
@@ -995,13 +936,13 @@ static void setupNetworking()
   WiFiCredentials creds;
   if (!configStorage.loadWiFiCredentials(creds) || creds.ssid.isEmpty())
   {
-    Serial.println("[4v3b] no WiFi credentials - starting setup AP");
+    Serial.println(BOARD_LOG "no WiFi credentials - starting setup AP");
     setupModeActive = true;
     wifiSetupServer->startAP();
     return;
   }
 
-  Serial.printf("[4v3b] connecting to \"%s\"\n", creds.ssid.c_str());
+  Serial.printf(BOARD_LOG "connecting to \"%s\"\n", creds.ssid.c_str());
   // WiFiSupervisor turns the radio's power save off, as the knob has had it
   // since 2026-08-24 - a cross-device building block this port never copied.
   // Measured on this board on 2026-09-14, interleaved on the same minutes:
@@ -1014,7 +955,7 @@ static void setupNetworking()
     lateWifiMagic = 0;
     lateWifiBootSeconds = lateWifiSeconds;
     holdBackMs = lateWifiSeconds * 1000UL;
-    Serial.printf("[4v3b] WiFi held back %us by ?set=latewifi\n", (unsigned)lateWifiSeconds);
+    Serial.printf(BOARD_LOG "WiFi held back %us by ?set=latewifi\n", (unsigned)lateWifiSeconds);
   }
   wifi.begin(creds.ssid, creds.password, holdBackMs);
   for (int i = 0; i < 40 && !wifi.up(); i++)
@@ -1029,14 +970,14 @@ static void setupNetworking()
   // listening until its next restart (2026-09-14, hil/late-wifi.js).
   if (!wifi.up())
   {
-    Serial.println("[4v3b] no WiFi yet - carrying on, the supervisor keeps trying");
+    Serial.println(BOARD_LOG "no WiFi yet - carrying on, the supervisor keeps trying");
     displayAdapter->showLines({"WLAN nicht erreichbar", creds.ssid});
     noWifiScreenShown = true;
   }
 
   // The snapshot endpoint reads this canvas directly, which is what gives
   // this board a HIL comparison at all.
-  if (testInterface.begin(*canvas)) Serial.println("[4v3b] test interface on :80");
+  if (testInterface.begin(*canvas)) Serial.println(BOARD_LOG "test interface on :80");
 
   // The three the HIL orchestrator drives. Only the debug handler was wired
   // before, which is why no pixel-parity run has ever been possible on this
@@ -1551,7 +1492,7 @@ static void setupNetworking()
 
   if (creds.mqttHost.isEmpty())
   {
-    Serial.println("[4v3b] no broker configured - skipping MQTT");
+    Serial.println(BOARD_LOG "no broker configured - skipping MQTT");
     return;
   }
 
@@ -1590,7 +1531,7 @@ static void setupNetworking()
   mqttClient.setConnectedCallback([]() {
     protocol.publishHello();
     protocol.publishTestInterface(testInterface.isRunning() ? "http://" + WiFi.localIP().toString() : "");
-    Serial.println("[4v3b] published hello");
+    Serial.println(BOARD_LOG "published hello");
   });
   mqttClient.setCallback([](const String &topic, const String &payload) {
     if (deviceRequests.onMessage(topic)) return;
@@ -1613,7 +1554,7 @@ static void setupNetworking()
     applyTopicValue(topic, payload);
   });
   mqttClient.connect();
-  Serial.printf("[4v3b] mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
+  Serial.printf(BOARD_LOG "mqtt %s:%d as %s\n", creds.mqttHost.c_str(), creds.mqttPort,
                 mqttClient.getClientId().c_str());
 }
 
@@ -1641,30 +1582,45 @@ void setup()
   Serial.setTxTimeoutMs(1);
   delay(200);
   Serial.println();
-  Serial.println("[4v3b] boot");
+  Serial.println(BOARD_LOG "boot");
+
+  // The board's own order (its BoardProfile.h): the 4.3B's panel runs
+  // without the expander, the 4"'s needs power, reset and an SPI
+  // configuration from it first.
+  if (EXPANDER_BEFORE_PANEL && !startExpander()) return;
 
   if (!panel.begin(PANEL_W, PANEL_H, PANEL_PINS, PANEL_TIMING, BOUNCE_BUFFER_PX))
   {
     // Nothing to draw on if this fails, so the serial line is the only
     // channel left - which is why this build keeps CDC-on-boot enabled.
-    Serial.println("[4v3b] panel.begin() FAILED");
+    Serial.println(BOARD_LOG "panel.begin() FAILED");
     return;
   }
   panel.fill(0x0000);
 
-  Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.setClock(400000);
-  if (!expander.begin()) Serial.println("[4v3b] CH422G init FAILED");
+  if (!EXPANDER_BEFORE_PANEL) startExpander();
   if (!touch.begin(expander, TP_INT))
-    Serial.println("[4v3b] GT911 not found on 0x5D or 0x14");
+    Serial.println(BOARD_LOG "GT911 not found on 0x5D or 0x14");
   else
-    Serial.printf("[4v3b] GT911 at 0x%02X\n", touch.address());
+    Serial.printf(BOARD_LOG "GT911 at 0x%02X\n", touch.address());
 
   setupRenderStack();
   // After the project is loaded: the idle screen is held as an id and has
   // to be resolved against a project that exists.
   applyDeviceSettings();
   setupNetworking();
+}
+
+// The shared I2C bus and the IO expander, then whatever the board's panel
+// needs from them (BoardProfile.h's boardPanelInit). False when the board
+// cannot go on.
+static bool startExpander()
+{
+  Wire.begin(I2C_SDA, I2C_SCL);
+  Wire.setClock(400000);
+  const bool up = expander.begin(Wire);
+  if (!up) Serial.printf(BOARD_LOG "%s init FAILED\n", expander.name());
+  return boardPanelInit(up);
 }
 
 // Which segment of a switch a tap at x selects.
@@ -3242,7 +3198,7 @@ void loop()
     // It also means setupModeActive never has to be cleared.
     if (wifiSetupServer->tick() || wifiSetupServer->exitRequested() || tapToCancel)
     {
-      Serial.printf("[4v3b] leaving setup mode%s - restarting\n", tapToCancel ? " (tap to cancel)" : "");
+      Serial.printf(BOARD_LOG "leaving setup mode%s - restarting\n", tapToCancel ? " (tap to cancel)" : "");
       delay(200);
       ESP.restart();
     }
