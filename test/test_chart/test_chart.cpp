@@ -258,14 +258,16 @@ static void test_layouts() {
       expectText(texts[k]["tone"].as<std::string>(), L.texts[k].tone, at + " tone");
     }
 
-    // The fills a board draws (designer lib/chart-shapes.ts), on colour and on grey.
-    for (int grey = 0; grey < 2; grey++) {
+    // The fills a board draws (designer lib/chart-shapes.ts), on colour, on
+    // grey, and on colour with the NowPoint's pulse a third of the way out.
+    for (int kind = 0; kind < 3; kind++) {
       chartshapes::Look look;
       look.grid = "#cccccc";
-      look.grey = grey == 1;
+      look.grey = kind == 1;
+      if (kind == 2) look.pulse = 1.0 / 3;
       const std::vector<chartshapes::Fill> fills = chartshapes::chartShapes(L, look);
-      JsonArrayConst expected = v[grey ? "greyShapes" : "shapes"];
-      const std::string at = name + (grey ? " grey" : "") + " shapes";
+      JsonArrayConst expected = v[kind == 0 ? "shapes" : kind == 1 ? "greyShapes" : "pulseShapes"];
+      const std::string at = name + (kind == 1 ? " grey" : kind == 2 ? " pulse" : "") + " shapes";
       TEST_ASSERT_EQUAL_MESSAGE(expected.size(), fills.size(), (at + " count").c_str());
       for (size_t k = 0; k < expected.size(); k++) {
         JsonObjectConst e = expected[k];

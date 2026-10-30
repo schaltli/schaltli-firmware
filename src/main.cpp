@@ -53,6 +53,7 @@
 #include "project/ProjectLoader.h"
 #include "project/ThemeVariant.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/ChartShapes.h"
 #include "project/Placeholders.h"
 #include "project/ObjectTypes.h"
 #include "project/SwitchShape.h"
@@ -3400,6 +3401,11 @@ static void setupWiFi() {
         }
         // set=charts: the charts' history it holds (ChartFeed::describe).
         if (setArg == "charts") return chartFeed.describe();
+        // ?set=chartpulse=off stills the NowPoint for a test comparing pixels; =on again.
+        if (setArg == "chartpulse=off" || setArg == "chartpulse=on") {
+          chartFeed.setPulsing(setArg == "chartpulse=on");
+          return chartFeed.describe();
+        }
         if (setArg == "describe") {
           return screenRenderer ? screenRenderer->describeScreen(currentScreenIndex)
                                 : String("no renderer\n");
@@ -3672,6 +3678,35 @@ static void pullTabStep() {
   for (const screengraph::Rect &r : screenRenderer->pullTabRegions(currentScreenIndex)) {
     if (!screenRenderer->renderScreenRegion(currentScreenIndex, r.x, r.y, r.width, r.height)) continue;
     canvasPresenter.presentRegion(r.x, r.y, r.x + r.width - 1, r.y + r.height - 1);
+  }
+}
+
+// The NowPoint's pulse (designer docs/2026-10-16-charts.md decisions 9 and
+// 13): a ring widening from it and fading, once every 1.8 s, about 20 frames
+// a second - only the boxes around the points drawn again. Not while a finger
+// is down, a slide runs, a popup is open or the display is off; stilled by
+// ?set=chartpulse=off, and then drawn once without a ring.
+static unsigned long chartPulseLastMs = 0;
+static bool chartPulseShown = false;
+
+static void chartPulseStep() {
+  if (screenRenderer == nullptr || !projectLoader.isLoaded() || displayIsOff || touchIsDown || dragActive || dragAnimating ||
+      signalModeActive || setupModeActive || pendingScreenRender || canvasPresenter.transitionActive() || openPopup >= 0)
+    return;
+  const unsigned long now = millis();
+  if (now - chartPulseLastMs < 50) return;
+  chartPulseLastMs = now;
+  const bool on = chartFeed.pulsing();
+  if (!on && !chartPulseShown) return;
+  chartPulseShown = on;
+  screenRenderer->setChartPulse(on ? (double)(now % chartshapes::PULSE_MS) / chartshapes::PULSE_MS : -1);
+  const std::vector<ColorScreenRenderer::PulseBox> boxes = screenRenderer->chartPulseBoxes();
+  for (const ColorScreenRenderer::PulseBox &b : boxes) {
+    const int16_t x0 = max<int16_t>(0, b.x), y0 = max<int16_t>(0, b.y);
+    const int16_t x1 = min<int16_t>(SCREEN_SIZE, b.x + b.w), y1 = min<int16_t>(SCREEN_SIZE, b.y + b.h);
+    if (x1 <= x0 || y1 <= y0) continue;
+    if (!screenRenderer->renderScreenRegion(currentScreenIndex, x0, y0, x1 - x0, y1 - y0)) continue;
+    canvasPresenter.presentRegion(x0, y0, x1 - 1, y1 - 1);
   }
 }
 
@@ -3989,6 +4024,7 @@ void loop() {
     if (moved) presentPicker();
   }
   PHASE("pull tabs", pullTabStep());
+  PHASE("chart pulse", chartPulseStep());
 
   delay(5);
 #if INPUT_DEBUG

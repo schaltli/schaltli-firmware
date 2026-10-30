@@ -103,6 +103,17 @@ class ColorScreenRenderer {
 public:
   // Where a chart's history comes from (ChartFeed.h); none, and a chart says so.
   void setChartFeed(ChartFeed* feed) { chartFeed_ = feed; }
+  // The NowPoint's pulse (designer lib/chart-shapes.ts ShapeLook.pulse): the
+  // phase 0..1 every chart is drawn at, below 0 none. Set by a board that
+  // animates, before each render, so a region drawn again matches the rest.
+  void setChartPulse(double phase) { chartPulse_ = phase; }
+  // Where the NowPoints of the charts drawn last stand, on the screen, with
+  // room for the widest ring: what a pulse step draws again.
+  struct PulseBox {
+    int16_t x, y, w, h;
+  };
+  const std::vector<PulseBox>& chartPulseBoxes() const { return chartPulseBoxes_; }
+  void clearChartPulseBoxes() { chartPulseBoxes_.clear(); }
   ColorScreenRenderer(IProjectLoader& projectLoader, ClippedCanvas16* canvas);
 
   // Redirects rendering to another canvas of the same size. Used to draw the
@@ -694,4 +705,6 @@ private:
   // string set this mirrors).
   uint16_t parseHexColor(const String& colorStr, bool* isTransparent = nullptr) const;
   ChartFeed* chartFeed_ = nullptr;
+  double chartPulse_ = -1;
+  std::vector<PulseBox> chartPulseBoxes_;
 };

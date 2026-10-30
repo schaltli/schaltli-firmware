@@ -161,6 +161,16 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
   chartshapes::Look look;
   look.grid = gridHex.c_str();
   look.grey = !project.exportColorDepth.isEmpty() && project.exportColorDepth != "24bit";
+  look.pulse = look.grey ? -1 : chartPulse_;
+  // The NowPoints, for the next pulse step: the ring at its widest, and a pixel more.
+  for (const chartcore::SeriesLayout& s : layout.series) {
+    if (!s.hasNowPoint) continue;
+    const int16_t r = 18;
+    const PulseBox b{(int16_t)(obj.x + lround(s.nowPoint.first) - r), (int16_t)(obj.y + lround(s.nowPoint.second) - r), (int16_t)(2 * r), (int16_t)(2 * r)};
+    bool known = false;
+    for (const PulseBox& k : chartPulseBoxes_) known = known || (k.x == b.x && k.y == b.y);
+    if (!known) chartPulseBoxes_.push_back(b);
+  }
   const uint16_t ground = parseHexColor(currentScreenBgHex_);
   if (chartPixels.begin(obj.width, obj.height, ground)) {
     for (const chartshapes::Fill& f : chartshapes::chartShapes(layout, look)) chartPixels.fill(f, parseHexColor(String(f.colour.c_str())));

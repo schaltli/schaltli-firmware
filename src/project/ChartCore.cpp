@@ -86,6 +86,12 @@ std::string weekdayOf(const std::string& date) {
   return names[n];
 }
 
+std::string dayLabelOf(const std::string& date) {
+  const int m = std::atoi(date.substr(5, 2).c_str());
+  const int d = std::atoi(date.substr(8, 2).c_str());
+  return weekdayOf(date) + " " + std::to_string(d) + "." + std::to_string(m) + ".";
+}
+
 bool Series::annotated(const char* a) const { return std::find(annotations.begin(), annotations.end(), a) != annotations.end(); }
 
 // ---- the chart, from JSON
@@ -276,7 +282,6 @@ RangeView settled(const RangeView& v, double now, const Calendar& cal) {
   const double before = midnightOf(dateOf(from, cal), cal);
   const double after = midnightOf(dateOf(from + 86400, cal), cal);
   const double near = from - before <= after - from ? before : after;
-  if (std::fabs(from - near) > 6 * 3600) return v;
   out.back = std::max(0.0, todayStart - near);
   return out;
 }
@@ -673,7 +678,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     int guard = 0;
     for (std::string d = dateOf(w.from, o.cal); midnightOf(d, o.cal) <= w.to && guard++ < 40; d = addDays(d, 1)) {
       const double m = midnightOf(d, o.cal);
-      if (m >= w.from && m <= w.to) L.midnights.push_back({xOf(m), weekdayOf(d)});
+      if (m >= w.from && m <= w.to) L.midnights.push_back({xOf(m), dayLabelOf(d)});
       if (every == 0) continue;
       const double next = midnightOf(addDays(d, 1), o.cal);
       for (double t = m; t < next; t += every) {
@@ -862,7 +867,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     for (const AxisTick& t : L.right.ticks) box(t.label, plot.x + plot.w + pad, t.y - half, labelW, "left", "muted");
   for (const Labelled& t : L.times) box(t.label, t.x - labelW, plot.y + plot.h + pad, labelW * 2, "center", "muted");
   for (const Labelled& m : L.midnights)
-    if (m.x < plot.x + plot.w - o.fontSize * 2) box(m.label, m.x + 3, plot.y, labelW * 2, "left", "muted");
+    if (m.x < plot.x + plot.w - o.fontSize * 2) box(m.label, m.x + 3, plot.y, labelW * 3, "left", "muted");
   for (const SeriesLayout& s : L.series)
     for (const Mark& m : s.marks) box(m.label, m.x - labelW * 3, m.below ? m.y + pad : m.y - pad - o.fontSize, labelW * 6, "center", "text");
   for (const LegendRow& row : L.legend) {

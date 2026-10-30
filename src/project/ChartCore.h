@@ -39,6 +39,8 @@ std::string dateOf(double t, const Calendar& cal);
 double midnightOf(const std::string& date, const Calendar& cal);
 /** «Mo» … «So». */
 std::string weekdayOf(const std::string& date);
+// A midnight's label: «Fr 30.10.» (lib/chart-layout.ts dayLabelOf).
+std::string dayLabelOf(const std::string& date);
 
 // ---- the chart, as the project has it
 

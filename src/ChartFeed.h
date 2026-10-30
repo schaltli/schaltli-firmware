@@ -140,10 +140,20 @@ class ChartFeed {
 
   bool dragging() const { return dragging_; }
 
+  /**
+   * Whether a board that animates lets the NowPoint pulse: on, until a test
+   * stills it (?set=chartpulse=off) to compare pixels at rest.
+   */
+  bool pulsing() const { return pulsing_; }
+  void setPulsing(bool on) { pulsing_ = on; }
+
   /** The finger moved: dragged right, the past comes in from the left. */
   void dragTo(const ProjectConfig& project, int x) {
     if (!dragging_) return;
-    view(project, dragScreen_) = chartcore::dragged(dragStartView_, (x - dragStartX_) * secondsPerPx_);
+    chartcore::RangeView& v = view(project, dragScreen_);
+    const chartcore::RangeView next = chartcore::dragged(dragStartView_, (x - dragStartX_) * secondsPerPx_);
+    if (next.back == v.back && next.range == v.range) return;
+    v = next;
     redraw_ = true;
   }
 
@@ -173,6 +183,7 @@ class ChartFeed {
       if (!history_.payload(t).empty()) held.add(t.c_str());
     }
     doc["bytes"] = history_.heldBytes();
+    doc["pulse"] = pulsing_;
     for (const auto& v : views_) {
       JsonObject o = doc["views"][String(v.first)].to<JsonObject>();
       o["range"] = v.second.range.c_str();
@@ -199,6 +210,7 @@ class ChartFeed {
   }
 
   charthistory::History history_;
+  bool pulsing_ = true;
   std::map<int, chartcore::RangeView> views_;
   bool baseSubscribed_ = false;
   bool redraw_ = false;

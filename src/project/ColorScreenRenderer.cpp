@@ -3077,6 +3077,8 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
                                         int pendingSwitchStateIndex, const String& pressedSwitchId,
                                         int pressedSwitchStateIndex) {
   if (!projectLoader_.isLoaded()) return false;
+  // A screen drawn whole: its charts say anew where their NowPoints stand.
+  chartPulseBoxes_.clear();
 
   const ProjectConfig& project = projectLoader_.getProject();
   const Screen* screenPtr = screenOrPopupAt(project, screenIndex);

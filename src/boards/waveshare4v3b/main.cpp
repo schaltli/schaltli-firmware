@@ -62,6 +62,7 @@
 #include "../../ChartFeed.h"
 #include "project/NavigatorLayout.h"
 #include "project/PinchDetector.h"
+#include "project/ChartShapes.h"
 #include "project/ScreenGraphProject.h"
 #include <Arduino.h>
 #include <Wire.h>
@@ -653,6 +654,7 @@ static void navigatorFollow(int target)
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
+  renderer->clearChartPulseBoxes();
   navigatorFollow(currentScreen);
   uint32_t t0 = micros();
   bool ok;
@@ -1107,6 +1109,12 @@ static void setupNetworking()
   testInterface.setDebugHandler([](const String &setArg) -> String {
     // ?set=charts: the charts' history it holds (ChartFeed::describe).
     if (setArg == "charts") return chartFeed.describe();
+    // ?set=chartpulse=off stills the NowPoint for a test comparing pixels; =on again.
+    if (setArg == "chartpulse=off" || setArg == "chartpulse=on")
+    {
+      chartFeed.setPulsing(setArg == "chartpulse=on");
+      return chartFeed.describe();
+    }
     // ?set=theme=dark|light: what schaltli/state/theme would do, without a
     // broker - for the HIL dark pass and for looking at it by hand.
     if (setArg.startsWith("theme="))
@@ -1669,6 +1677,18 @@ static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const c
   lastFeedback = String(reason) + ": " + String(rw) + "x" + String(rh) +
                  " region " + String((t1 - t0) / 1000.0f, 1) + " ms" +
                  (present ? ", blit " + String((t2 - t1) / 1000.0f, 1) + " ms" : ", no blit");
+}
+
+// A drag through time moves every chart on the screen - they share its
+// range - so each is drawn again where it stands, and nothing else: the loop's
+// own redraw is never reached while the finger is down.
+static void renderCharts(const char *reason)
+{
+  if (!projectLoader.isLoaded()) return;
+  const ProjectConfig &project = projectLoader.getProject();
+  if (currentScreen < 0 || currentScreen >= (int)project.screens.size()) return;
+  for (const ScreenObject &o : project.screens[currentScreen].objects)
+    if (o.properties.chart) renderRegion(o.x, o.y, o.width, o.height, reason);
 }
 
 // The rectangle whatever is currently showing lives in.
@@ -2842,6 +2862,35 @@ static void energyRestoreDots(int16_t &rowLo, int16_t &rowHi)
   energyDotBoxes.clear();
 }
 
+// The NowPoint's pulse (designer docs/2026-10-16-charts.md decisions 9 and
+// 13): a ring widening from it and fading, once every 1.8 s, about 20 frames
+// a second - only the boxes around the points drawn again, the rest of the
+// chart as it is. Not while a finger, a slide or a popup is up or the display
+// is off; stilled by ?set=chartpulse=off, and then drawn once without a ring.
+static unsigned long chartPulseLastMs = 0;
+static bool chartPulseShown = false;
+
+static void chartPulseStep()
+{
+  if (!canvas || !renderer || !projectLoader.isLoaded() || displayIsOff || holdActive || swipe.active() || setupModeActive || openPopup >= 0) return;
+  const unsigned long now = millis();
+  if (now - chartPulseLastMs < 50) return;
+  chartPulseLastMs = now;
+  const bool on = chartFeed.pulsing();
+  if (!on && !chartPulseShown) return;
+  chartPulseShown = on;
+  renderer->setChartPulse(on ? (double)(now % chartshapes::PULSE_MS) / chartshapes::PULSE_MS : -1);
+  const std::vector<ColorScreenRenderer::PulseBox> boxes = renderer->chartPulseBoxes();
+  for (const ColorScreenRenderer::PulseBox &b : boxes)
+  {
+    const int16_t x0 = max<int16_t>(0, b.x), y0 = max<int16_t>(0, b.y);
+    const int16_t x1 = min<int16_t>(canvas->width(), b.x + b.w), y1 = min<int16_t>(canvas->height(), b.y + b.h);
+    if (x1 <= x0 || y1 <= y0) continue;
+    renderer->renderScreenRegion(currentScreen, x0, y0, x1 - x0, y1 - y0);
+    panel.blitRegion(canvas->getBuffer(), x0, y0, x1 - x0, y1 - y0);
+  }
+}
+
 // The pull tabs' nudge (designer device contract 2.10): towards the middle
 // and back once every 5 s, the tabs' rectangles redrawn while it moves. Not
 // while a finger, a slide or a popup is up, the display is off, or the test
@@ -3367,6 +3416,7 @@ void loop()
     if (chartFeed.dragging())
     {
       chartFeed.dragTo(projectLoader.getProject(), touchX);
+      if (chartFeed.takeRedraw()) renderCharts("chart drag");
       testInterface.handleClient();
       delay(5);
       return;
@@ -3689,6 +3739,7 @@ void loop()
   {
     energyStep();
     pullTabStep();
+    chartPulseStep();
   }
   // A released wheel settling onto its value, a frame per pass.
   if (pickerOpen && !pickerContact)

@@ -186,6 +186,14 @@ std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look) {
   }
   for (const chartcore::SeriesLayout& s : l.series) {
     for (const chartcore::Mark& m : s.marks) add(disc(m.x, m.y, 3), s.color, 256, nullptr);
+    if (s.hasNowPoint && look.pulse >= 0) {
+      const double r = 4 + 12 * look.pulse;
+      const int alpha = (int)jsRound(141 * (1 - look.pulse));
+      std::vector<Point> ring;
+      for (int i = 0; i <= 16; i++) ring.push_back({s.nowPoint.first + r * std::cos(i * HALF_TURN / 8), s.nowPoint.second + r * std::sin(i * HALF_TURN / 8)});
+      if (alpha > 0)
+        for (const Outline& q : polyline(ring, DASHES[0])) add(q, s.color, alpha, nullptr);
+    }
     if (s.hasNowPoint) add(disc(s.nowPoint.first, s.nowPoint.second, 4), s.color, 256, nullptr);
   }
   for (const chartcore::LegendRow& row : l.legend) add(rect(row.swatch.x, row.swatch.y, row.swatch.w, row.swatch.h), row.color, 256, nullptr);

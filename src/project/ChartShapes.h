@@ -26,7 +26,13 @@ struct Fill {
 struct Look {
   std::string grid;
   bool grey = false;
+  // The NowPoint's pulse, its phase 0..1 (lib/chart-shapes.ts ShapeLook.pulse);
+  // below 0 none - the point stands still.
+  double pulse = -1;
 };
+
+// One pulse lasts this long, in ms (lib/chart-shapes.ts PULSE_MS).
+constexpr unsigned long PULSE_MS = 1800;
 
 std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look);
 
