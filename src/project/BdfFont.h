@@ -67,6 +67,10 @@ public:
   // every label's box by seven pixels, including labels of plain ASCII
   // where nothing overhangs at all. Ä Ö Ü need exactly one.
   int16_t inkAscentOf(const String& utf8) const;
+  // How far the last glyph's ink reaches past its advance, in px - a
+  // right-aligned text moves left by it (designer lib/bdffont.ts
+  // inkRightOverhangOf; luRS10's «%» is 11 px of ink on an advance of 9).
+  int16_t inkRightOverhangOf(const String& utf8) const;
   // The highest any glyph of the font reaches above the baseline.
   int16_t maxInkAscent() const;
 

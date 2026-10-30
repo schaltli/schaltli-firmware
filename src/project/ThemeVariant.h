@@ -76,6 +76,7 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
   if (p.chart) {
     ChartProps& c = *p.chart;
     f(c.mutedColor, c.mutedColorDark);
+    f(c.nowColor, c.nowColorDark);
     for (size_t i = 0; i < c.seriesColor.size(); i++) f(c.seriesColor[i], c.seriesColorDark[i]);
     for (size_t i = 0; i < c.zoneColor.size(); i++) f(c.zoneColor[i], c.zoneColorDark[i]);
   }

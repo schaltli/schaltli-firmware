@@ -467,7 +467,8 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
   if (obj.properties.textAlign == "center") {
     textX = obj.x + jsRound((obj.width - textWidth) / 2.0f);
   } else if (obj.properties.textAlign == "right") {
-    textX = obj.x + obj.width - textWidth;
+    // Less the last glyph's ink past its advance (BdfFont::inkRightOverhangOf).
+    textX = obj.x + obj.width - textWidth - (font ? font->inkRightOverhangOf(displayText) : 0);
   }
 
   // The box grows upward by whatever the font's ink needs beyond its

@@ -197,6 +197,8 @@ struct ChartProps {
   chartcore::Chart chart;
   String fontId;
   String mutedColor, mutedColorDark;
+  // The line at now and a stack's NowPoint (designer lib/chart-shapes.ts ShapeLook.now).
+  String nowColor, nowColorDark;
   std::vector<String> seriesColor, seriesColorDark;
   std::vector<String> zoneColor, zoneColorDark;
 };

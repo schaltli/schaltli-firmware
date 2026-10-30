@@ -327,6 +327,15 @@ int16_t BdfFont::inkAscentOf(const String& utf8) const {
   return top;
 }
 
+int16_t BdfFont::inkRightOverhangOf(const String& utf8) const {
+  const Glyph* last = nullptr;
+  size_t i = 0;
+  while (i < utf8.length()) last = find(nextCodepoint(utf8, i));
+  if (last == nullptr) return 0;
+  const int16_t over = (int16_t)(last->bbox + last->bbw + 1 - last->dwidth);
+  return over > 0 ? over : 0;
+}
+
 int16_t BdfFont::maxInkAscent() const {
   int16_t top = fontAscent_;
   for (uint32_t i = 0; i < glyphCount_; i++) {

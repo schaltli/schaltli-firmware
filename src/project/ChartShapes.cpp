@@ -42,12 +42,12 @@ static Outline disc(double cx, double cy, double r) {
   return out;
 }
 
-static std::vector<Outline> polyline(const std::vector<Point>& points, const std::vector<double>& pattern) {
+static std::vector<Outline> polyline(const std::vector<Point>& points, const std::vector<double>& pattern, double width = 2) {
   std::vector<Outline> out;
   Outline q;
   if (pattern.empty()) {
     for (size_t i = 1; i < points.size(); i++)
-      if (quad(points[i - 1].first, points[i - 1].second, points[i].first, points[i].second, 2, q)) out.push_back(q);
+      if (quad(points[i - 1].first, points[i - 1].second, points[i].first, points[i].second, width, q)) out.push_back(q);
     return out;
   }
   size_t k = 0;
@@ -137,10 +137,16 @@ static std::vector<Outline> frame(const Box& b) {
 // Math.round
 static double jsRound(double x) { return std::floor(x + 0.5); }
 
+int fadeAlpha(const chartcore::Fade& f, int y) {
+  if (f.y1 == f.y0) return (int)f.a1;
+  const double t = std::min(1.0, std::max(0.0, (y + 0.5 - f.y0) / (f.y1 - f.y0)));
+  return (int)jsRound(f.a0 + (f.a1 - f.a0) * t);
+}
+
 std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look) {
   std::vector<Fill> out;
   const Box& plot = l.plot;
-  auto add = [&](const Outline& points, const std::string& colour, int alpha, const Box* clip) {
+  auto add = [&](const Outline& points, const std::string& colour, int alpha, const Box* clip, const chartcore::Fade* fade = nullptr) {
     Fill f;
     f.points = points;
     f.colour = colour;
@@ -148,6 +154,10 @@ std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look) {
     if (clip) {
       f.hasClip = true;
       f.clip = *clip;
+    }
+    if (fade) {
+      f.hasFade = true;
+      f.fade = *fade;
     }
     out.push_back(f);
   };
@@ -167,7 +177,8 @@ std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look) {
 
   for (const chartcore::SeriesLayout& s : l.series) {
     for (const auto& r : s.ranges) add(outline(r), s.color, 38, &plot);
-    for (const auto& a : s.areas) add(outline(a), s.color, s.draw == "stacked" ? 154 : 77, &plot);
+    for (size_t k = 0; k < s.areas.size(); k++)
+      add(outline(s.areas[k]), s.color, s.draw == "stacked" ? 154 : 77, &plot, k < s.areaFades.size() ? &s.areaFades[k] : nullptr);
     std::vector<Box> boxes = s.bands;
     boxes.insert(boxes.end(), s.bars.begin(), s.bars.end());
     for (const Box& b : boxes) {
@@ -184,17 +195,21 @@ std::vector<Fill> chartShapes(const chartcore::Layout& l, const Look& look) {
     for (const auto& line : s.lines)
       for (const Outline& q : polyline(line, dash)) add(q, s.color, 256, &plot);
   }
+  // The line at now, over the curves and under the NowPoints.
+  if (!look.now.empty() && l.nowOn) add(rect(jsRound(l.nowX), plot.y, 1, plot.h), look.now, NOW_LINE_ALPHA, &plot);
   for (const chartcore::SeriesLayout& s : l.series) {
+    const std::string& colour = s.nowOnStack && !look.now.empty() ? look.now : s.color;
     for (const chartcore::Mark& m : s.marks) add(disc(m.x, m.y, 3), s.color, 256, nullptr);
     if (s.hasNowPoint && look.pulse >= 0) {
-      const double r = 4 + 12 * look.pulse;
-      const int alpha = (int)jsRound(141 * (1 - look.pulse));
+      // Stronger since 2026-10-30 (lib/chart-shapes.ts pulseRing): 5 to 22 px, from 220, 3 px wide.
+      const double r = 5 + 17 * look.pulse;
+      const int alpha = (int)jsRound(220 * (1 - look.pulse));
       std::vector<Point> ring;
       for (int i = 0; i <= 16; i++) ring.push_back({s.nowPoint.first + r * std::cos(i * HALF_TURN / 8), s.nowPoint.second + r * std::sin(i * HALF_TURN / 8)});
       if (alpha > 0)
-        for (const Outline& q : polyline(ring, DASHES[0])) add(q, s.color, alpha, nullptr);
+        for (const Outline& q : polyline(ring, DASHES[0], 3)) add(q, colour, alpha, nullptr);
     }
-    if (s.hasNowPoint) add(disc(s.nowPoint.first, s.nowPoint.second, 4), s.color, 256, nullptr);
+    if (s.hasNowPoint) add(disc(s.nowPoint.first, s.nowPoint.second, 5), colour, 256, nullptr);
   }
   for (const chartcore::LegendRow& row : l.legend) add(rect(row.swatch.x, row.swatch.y, row.swatch.w, row.swatch.h), row.color, 256, nullptr);
   return out;

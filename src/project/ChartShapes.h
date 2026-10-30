@@ -21,7 +21,16 @@ struct Fill {
   int alpha = 256;     // of 256
   bool hasClip = false;
   chartcore::Box clip;
+  // Instead of alpha, an alpha by row: fadeAlpha(fade, y) (lib/chart-shapes.ts Fill.fade).
+  bool hasFade = false;
+  chartcore::Fade fade;
 };
+
+// A fading fill's alpha on pixel row y (lib/chart-shapes.ts fadeAlpha).
+int fadeAlpha(const chartcore::Fade& f, int y);
+
+// How much of the now colour the line at now is, of 256 (lib/chart-shapes.ts NOW_LINE_ALPHA).
+constexpr int NOW_LINE_ALPHA = 90;
 
 struct Look {
   std::string grid;
@@ -29,6 +38,8 @@ struct Look {
   // The NowPoint's pulse, its phase 0..1 (lib/chart-shapes.ts ShapeLook.pulse);
   // below 0 none - the point stands still.
   double pulse = -1;
+  // The chart's now colour: the line at now and a stack's NowPoint; empty, no line.
+  std::string now;
 };
 
 // One pulse lasts this long, in ms (lib/chart-shapes.ts PULSE_MS).

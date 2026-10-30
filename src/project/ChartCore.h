@@ -186,16 +186,32 @@ struct Mark {
   bool below = false;
 };
 
+// How an area fades from one row to another (lib/chart-layout.ts Fade).
+struct Fade {
+  double y0 = 0, a0 = 0, y1 = 0, a1 = 0;
+};
+
+// Straight segments a curve between two points is drawn with
+// (lib/chart-layout.ts CURVE_SEGMENTS).
+constexpr int CURVE_SEGMENTS = 6;
+
+// A run of points as a smooth curve, flattened (lib/chart-layout.ts smoothCurve).
+std::vector<Point> smoothCurve(const std::vector<Point>& points);
+
 struct SeriesLayout {
   std::string id, draw, axis, color, colorDark;
   int pattern = 0;
   std::vector<std::vector<Point>> lines, areas, ranges;
+  // Each area's fade, by row, one per area.
+  std::vector<Fade> areaFades;
   std::vector<Box> bands;
   std::vector<double> starts;
   std::vector<Box> bars;
   std::vector<Mark> marks;
   bool hasNowPoint = false;
   Point nowPoint;
+  // A stack's NowPoint: on zero, in the chart's now colour.
+  bool nowOnStack = false;
 };
 
 struct LegendRow {

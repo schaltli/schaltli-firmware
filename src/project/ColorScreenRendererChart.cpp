@@ -64,10 +64,13 @@ struct ChartPixels {
       touched[i] = mark;
     };
     PolygonRaster::Sink sink;
+    // A fading fill's alpha by row (chartshapes::fadeAlpha).
+    auto alphaAt = [&](int y) { return f.hasFade ? chartshapes::fadeAlpha(f.fade, y) : f.alpha; };
     sink.fullRun = [&](int16_t y, int16_t x0, int16_t x1) {
-      for (int x = x0; x <= x1; x++) put(x, y, f.alpha);
+      const int a = alphaAt(y);
+      for (int x = x0; x <= x1; x++) put(x, y, a);
     };
-    sink.partial = [&](int16_t y, int16_t x, uint8_t c) { put(x, y, c * f.alpha / 16); };
+    sink.partial = [&](int16_t y, int16_t x, uint8_t c) { put(x, y, c * alphaAt(y) / 16); };
     PolygonRaster::fill(f.points, 0, (int16_t)(h - 1), sink);
   }
 
@@ -160,12 +163,14 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
   // The shapes: into the chart's pixels over the screen's ground, then onto the canvas.
   chartshapes::Look look;
   look.grid = gridHex.c_str();
+  // The line at now and a stack's NowPoint; the designer exports the theme's accent.
+  look.now = props.nowColor.isEmpty() ? "#e53935" : props.nowColor.c_str();
   look.grey = !project.exportColorDepth.isEmpty() && project.exportColorDepth != "24bit";
   look.pulse = look.grey ? -1 : chartPulse_;
   // The NowPoints, for the next pulse step: the ring at its widest, and a pixel more.
   for (const chartcore::SeriesLayout& s : layout.series) {
     if (!s.hasNowPoint) continue;
-    const int16_t r = 18;
+    const int16_t r = 25;
     const PulseBox b{(int16_t)(obj.x + lround(s.nowPoint.first) - r), (int16_t)(obj.y + lround(s.nowPoint.second) - r), (int16_t)(2 * r), (int16_t)(2 * r)};
     bool known = false;
     for (const PulseBox& k : chartPulseBoxes_) known = known || (k.x == b.x && k.y == b.y);

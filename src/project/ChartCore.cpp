@@ -498,7 +498,29 @@ static AxisLayout axisLayout(const Range& r, const Box& plot, const std::string&
 
 struct Slice {
   double t = 0, len = 0, lo = 0, hi = 0;
+  // Above zero (1) or below it (-1) (lib/chart-layout.ts StackSlice.side).
+  int side = 1;
 };
+
+std::vector<Point> smoothCurve(const std::vector<Point>& points) {
+  if (points.size() < 3) return points;
+  std::vector<Point> out{points[0]};
+  double cx = points[0].first, cy = points[0].second;
+  for (size_t i = 1; i < points.size() - 1; i++) {
+    const double kx = points[i].first, ky = points[i].second;
+    const double ex = (points[i].first + points[i + 1].first) / 2;
+    const double ey = (points[i].second + points[i + 1].second) / 2;
+    for (int k = 1; k <= CURVE_SEGMENTS; k++) {
+      const double t = (double)k / CURVE_SEGMENTS;
+      const double u = 1 - t;
+      out.push_back({round1(u * u * cx + 2 * u * t * kx + t * t * ex), round1(u * u * cy + 2 * u * t * ky + t * t * ey)});
+    }
+    cx = ex;
+    cy = ey;
+  }
+  out.push_back(points.back());
+  return out;
+}
 
 static std::vector<std::vector<Slice>> stackSlices(const Chart& chart, const std::vector<SeriesData>& data) {
   std::vector<std::vector<Slice>> out(chart.series.size());
@@ -549,13 +571,14 @@ static std::vector<std::vector<Slice>> stackSlices(const Chart& chart, const std
           }
         }
         if (!has) continue;
-        if (v >= 0) {
-          out[i].push_back({t, len, up, up + v});
-          up += v;
-        } else {
-          out[i].push_back({t, len, down + v, down});
-          down += v;
-        }
+        // Both sides at every step, the one it does not reach empty: a
+        // storage taking and giving is two shapes, neither across
+        // the others (lib/chart-layout.ts stackSlices).
+        const double pos = std::max(v, 0.0), neg = std::min(v, 0.0);
+        out[i].push_back({t, len, up, up + pos, 1});
+        out[i].push_back({t, len, down + neg, down, -1});
+        up += pos;
+        down += neg;
       }
     }
   }
@@ -747,25 +770,59 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
         if (p.first >= w.from) out.starts.push_back(xOf(p.first));
       }
     } else if (s.draw == "stacked") {
-      std::vector<std::vector<Slice>> runs;
-      for (const Slice& x : stacks[index]) {
-        if (!inWindow(x.t, x.len)) continue;
-        if (!runs.empty() && runs.back().back().t + runs.back().back().len == x.t) runs.back().push_back(x);
-        else runs.push_back({x});
-      }
-      for (const auto& run : runs) {
-        std::vector<Point> upper, lower;
-        for (const Slice& x : run) {
-          upper.push_back({xOf(x.t), yS(x.hi)});
-          upper.push_back({xOf(x.t + x.len), yS(x.hi)});
-          lower.push_back({xOf(x.t), yS(x.lo)});
-          lower.push_back({xOf(x.t + x.len), yS(x.lo)});
+      const double zero = yS(0);
+      for (int side : {1, -1}) {
+        std::vector<std::vector<Slice>> runs;
+        for (const Slice& x : stacks[index]) {
+          if (x.side != side || !inWindow(x.t, x.len)) continue;
+          if (!runs.empty() && runs.back().back().t + runs.back().back().len == x.t) runs.back().push_back(x);
+          else runs.push_back({x});
         }
-        std::reverse(lower.begin(), lower.end());
-        out.lines.push_back(upper);
-        std::vector<Point> area = upper;
-        area.insert(area.end(), lower.begin(), lower.end());
-        out.areas.push_back(area);
+        // Fading from zero outwards, strongest seven tenths of the way to the plot's edge.
+        const double edge = side == 1 ? plot.y : plot.y + plot.h;
+        const Fade fade{zero, 85, round1(zero + (edge - zero) * 0.7), 221};
+        for (const auto& run : runs) {
+          bool empty = true;
+          for (const Slice& x : run) empty = empty && x.hi == x.lo;
+          if (run.size() < 2 || empty) continue;
+          std::vector<Point> outerRaw, innerRaw;
+          for (const Slice& x : run) {
+            outerRaw.push_back({xOf(x.t + x.len / 2), yS(side == 1 ? x.hi : x.lo)});
+            innerRaw.push_back({xOf(x.t + x.len / 2), yS(side == 1 ? x.lo : x.hi)});
+          }
+          const std::vector<Point> outer = smoothCurve(outerRaw), inner = smoothCurve(innerRaw);
+          std::vector<Point> area = outer;
+          area.insert(area.end(), inner.rbegin(), inner.rend());
+          out.areas.push_back(area);
+          out.areaFades.push_back(fade);
+          // Its line only where it is more than a hairline thick, and a point past either end.
+          const int n = (int)outer.size();
+          auto thick = [&](int j) { return j >= 0 && j < n && std::fabs(outer[j].second - inner[j].second) > 0.5; };
+          std::vector<Point> piece;
+          for (int k = 0; k < n; k++) {
+            if (thick(k) || thick(k - 1) || thick(k + 1)) piece.push_back(outer[k]);
+            else {
+              if (piece.size() > 1) out.lines.push_back(piece);
+              piece.clear();
+            }
+          }
+          if (piece.size() > 1) out.lines.push_back(piece);
+        }
+      }
+      // A stack's NowPoint, on its first series: on zero, where its flows part.
+      if (nowOn) {
+        int first = -1;
+        bool measured = false;
+        for (size_t m = 0; m < chart.series.size(); m++) {
+          if (chart.series[m].draw != "stacked" || chart.series[m].stack != s.stack) continue;
+          if (first < 0) first = (int)m;
+          for (const Step& st : data[m].steps) measured = measured || st.t <= o.now;
+        }
+        if (first == (int)index && measured) {
+          out.hasNowPoint = true;
+          out.nowPoint = {xOf(o.now), zero};
+          out.nowOnStack = true;
+        }
       }
     } else {
       if (s.draw == "line" || s.draw == "area" || s.draw == "steps") {
@@ -779,6 +836,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
         }
         const double zero = yS(0);
         for (const auto& run : runs) {
+          // Steps as steps; a line or an area as a smooth curve.
           std::vector<Point> points;
           for (const Step& st : run) {
             if (s.draw == "steps") {
@@ -786,6 +844,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
               points.push_back({xOf(st.t + st.len), yS(st.mean)});
             } else points.push_back({xOf(st.t + st.len / 2), yS(st.mean)});
           }
+          if (s.draw != "steps") points = smoothCurve(points);
           out.lines.push_back(points);
           if (s.draw == "area") {
             std::vector<Point> area;
@@ -793,6 +852,8 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
             area.insert(area.end(), points.begin(), points.end());
             area.push_back({points.back().first, zero});
             out.areas.push_back(area);
+            // Strongest at the plot's top, nearly gone at zero.
+            out.areaFades.push_back({plot.y, 108, zero, 8});
           }
           if (s.range) {
             std::vector<Point> band;
@@ -865,7 +926,13 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   for (const AxisTick& t : L.left.ticks) box(t.label, 0, t.y - half, plot.x - pad, "right", "muted");
   if (L.hasRight)
     for (const AxisTick& t : L.right.ticks) box(t.label, plot.x + plot.w + pad, t.y - half, labelW, "left", "muted");
-  for (const Labelled& t : L.times) box(t.label, t.x - labelW, plot.y + plot.h + pad, labelW * 2, "center", "muted");
+  // A time centred under its tick, but kept inside the chart (lib/chart-layout.ts).
+  for (const Labelled& t : L.times) {
+    const double y = plot.y + plot.h + pad;
+    if (t.x + labelW > o.width) box(t.label, o.width - labelW * 2, y, labelW * 2, "right", "muted");
+    else if (t.x - labelW < 0) box(t.label, 0, y, labelW * 2, "left", "muted");
+    else box(t.label, t.x - labelW, y, labelW * 2, "center", "muted");
+  }
   for (const Labelled& m : L.midnights)
     if (m.x < plot.x + plot.w - o.fontSize * 2) box(m.label, m.x + 3, plot.y, labelW * 3, "left", "muted");
   for (const SeriesLayout& s : L.series)

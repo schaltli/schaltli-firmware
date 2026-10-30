@@ -263,6 +263,7 @@ static void test_layouts() {
     for (int kind = 0; kind < 3; kind++) {
       chartshapes::Look look;
       look.grid = "#cccccc";
+      look.now = "#ff0000";
       look.grey = kind == 1;
       if (kind == 2) look.pulse = 1.0 / 3;
       const std::vector<chartshapes::Fill> fills = chartshapes::chartShapes(L, look);
@@ -276,6 +277,14 @@ static void test_layouts() {
         expectText(e["colour"].as<std::string>(), f.colour, fat + " colour");
         TEST_ASSERT_EQUAL_MESSAGE(e["alpha"].as<int>(), f.alpha, (fat + " alpha").c_str());
         TEST_ASSERT_EQUAL_MESSAGE(!e["clip"].isNull(), f.hasClip, (fat + " clip").c_str());
+        // A fading area: its rows and alphas (lib/chart-shapes.ts Fill.fade).
+        TEST_ASSERT_EQUAL_MESSAGE(!e["fade"].isNull(), f.hasFade, (fat + " fade").c_str());
+        if (f.hasFade) {
+          expectNear(e["fade"]["y0"], f.fade.y0, fat + " fade y0");
+          expectNear(e["fade"]["y1"], f.fade.y1, fat + " fade y1");
+          TEST_ASSERT_EQUAL_MESSAGE(e["fade"]["a0"].as<int>(), (int)f.fade.a0, (fat + " fade a0").c_str());
+          TEST_ASSERT_EQUAL_MESSAGE(e["fade"]["a1"].as<int>(), (int)f.fade.a1, (fat + " fade a1").c_str());
+        }
         JsonArrayConst pts = e["points"];
         TEST_ASSERT_EQUAL_MESSAGE(pts.size(), f.points.size(), (fat + " points").c_str());
         // An eighth apart at most: a layout number one rounding step away moves a corner by under one.

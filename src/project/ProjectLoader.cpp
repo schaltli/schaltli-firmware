@@ -1007,6 +1007,8 @@ ChartProps ProjectLoader::parseChart(JsonObject p) {
   c.fontId = p["fontId"] | "";
   c.mutedColor = p["mutedColor"] | "";
   c.mutedColorDark = p["mutedColorDark"] | "";
+  c.nowColor = p["nowColor"] | "";
+  c.nowColorDark = p["nowColorDark"] | "";
   for (JsonObject s : p["series"].as<JsonArray>()) {
     c.seriesColor.push_back(s["color"] | "");
     c.seriesColorDark.push_back(s["colorDark"] | "");
