@@ -1111,6 +1111,13 @@ static void setupNetworking()
     if (setArg == "charts") return chartFeed.describe();
     // ?set=coredump: where the last panic happened (BootReport::coreDump).
     if (setArg == "coredump") return BootReport::coreDump();
+    // ?set=extmem=<bytes>: from what size a malloc goes to PSRAM, from now on
+    // (setup() sets it at boot) - to weigh a render's speed against it.
+    if (setArg.startsWith("extmem="))
+    {
+      heap_caps_malloc_extmem_enable((size_t)setArg.substring(7).toInt());
+      return String("extmem ") + setArg.substring(7) + "\n";
+    }
     // ?set=chartpulse=off stills the NowPoint for a test comparing pixels; =on again.
     if (setArg == "chartpulse=off" || setArg == "chartpulse=on")
     {
