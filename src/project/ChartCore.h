@@ -41,6 +41,12 @@ double midnightOf(const std::string& date, const Calendar& cal);
 std::string weekdayOf(const std::string& date);
 // A midnight's label: «Fr 30.10.» (lib/chart-layout.ts dayLabelOf).
 std::string dayLabelOf(const std::string& date);
+// A day's name above the plot: «heute Freitag 30.10.», «gestern Donnerstag
+// 29.10.», any other «Mittwoch, 28.10.»; `today` empty without a clock
+// (lib/chart-layout.ts dateLabelOf).
+std::string dateLabelOf(const std::string& date, const std::string& today);
+// About how wide a text is in a font of `size` px (lib/chart-layout.ts textWidthGuess).
+double textWidthGuess(const std::string& text, double size);
 
 // ---- the chart, as the project has it
 
@@ -230,6 +236,8 @@ struct Text {
   double x = 0, y = 0, w = 0, h = 0;
   std::string align;  // left, center, right
   std::string tone;   // text, muted
+  // A day's name in the row above the plot: in the chart's date font.
+  bool date = false;
 };
 
 struct Labelled {
@@ -259,6 +267,8 @@ struct Layout {
 
 struct LayoutOptions {
   double width = 0, height = 0, fontSize = 14, now = 0;
+  // The date font's height, for the days' names above the plot; 0: the label font's.
+  double dateFontSize = 0;
   Calendar cal;
   std::string decimal = ".";
 };

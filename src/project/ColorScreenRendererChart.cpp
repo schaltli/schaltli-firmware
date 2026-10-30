@@ -123,6 +123,11 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
   int fontSize = 14;
   for (const Font& f : project.fonts)
     if (f.id == props.fontId && f.size > 0) fontSize = f.size;
+  // The days' names above the plot: the date font's size, else the label font's.
+  const String& dateFontId = props.dateFontId.isEmpty() ? props.fontId : props.dateFontId;
+  int dateFontSize = fontSize;
+  for (const Font& f : project.fonts)
+    if (f.id == dateFontId && f.size > 0) dateFontSize = f.size;
 
   // The history this board holds, in the recorder's days; what to say where there is none.
   const charthistory::History* history = chartFeed_ ? &chartFeed_->history() : nullptr;
@@ -130,6 +135,7 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
   o.width = obj.width;
   o.height = obj.height;
   o.fontSize = fontSize;
+  o.dateFontSize = dateFontSize;
   o.now = history && history->hasClock() ? chartFeed_->now() : 0;
   if (history) o.cal = history->calendar();
   o.decimal = project.decimalSeparator.isEmpty() ? "." : project.decimalSeparator.c_str();
@@ -206,7 +212,7 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
     box.properties.backgroundColor = "transparent";
     box.properties.borderColor = "";
     box.properties.textAlign = t.align.c_str();
-    box.properties.fontId = props.fontId;
+    box.properties.fontId = t.date ? dateFontId : props.fontId;
     box.properties.color = t.tone == "text" ? textHex : mutedHex;
     drawTextBox(box, String(t.text.c_str()), false);
   };

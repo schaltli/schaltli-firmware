@@ -165,6 +165,7 @@ static void test_layouts() {
     o.width = opt["width"];
     o.height = opt["height"];
     o.fontSize = opt["fontSize"];
+    o.dateFontSize = opt["dateFontSize"] | 0.0;
     o.now = opt["now"];
     o.cal = zones[opt["tz"].as<std::string>()];
     o.decimal = opt["decimal"] | ".";
@@ -256,6 +257,8 @@ static void test_layouts() {
       expectNear(texts[k]["w"], L.texts[k].w, at + " w");
       expectText(texts[k]["align"].as<std::string>(), L.texts[k].align, at + " align");
       expectText(texts[k]["tone"].as<std::string>(), L.texts[k].tone, at + " tone");
+      expectText(texts[k]["font"] | "", L.texts[k].date ? "date" : "", at + " font");
+      expectNear(texts[k]["h"], L.texts[k].h, at + " h");
     }
 
     // The fills a board draws (designer lib/chart-shapes.ts), on colour, on

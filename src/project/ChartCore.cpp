@@ -92,6 +92,18 @@ std::string dayLabelOf(const std::string& date) {
   return weekdayOf(date) + " " + std::to_string(d) + "." + std::to_string(m) + ".";
 }
 
+std::string dateLabelOf(const std::string& date, const std::string& today) {
+  static const char* names[] = {"Donnerstag", "Freitag", "Samstag", "Sonntag", "Montag", "Dienstag", "Mittwoch"};  // from a Thursday
+  long n = dayNumber(date) % 7;
+  if (n < 0) n += 7;
+  const std::string dm = std::to_string(std::atoi(date.substr(8, 2).c_str())) + "." + std::to_string(std::atoi(date.substr(5, 2).c_str())) + ".";
+  if (date == today) return std::string("heute ") + names[n] + " " + dm;
+  if (!today.empty() && addDays(date, 1) == today) return std::string("gestern ") + names[n] + " " + dm;
+  return std::string(names[n]) + ", " + dm;
+}
+
+double textWidthGuess(const std::string& text, double size) { return text.size() * size * 0.6; }
+
 bool Series::annotated(const char* a) const { return std::find(annotations.begin(), annotations.end(), a) != annotations.end(); }
 
 // ---- the chart, from JSON
@@ -634,12 +646,15 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   const double bottom = o.fontSize + pad * 2;
   const double rowH = o.fontSize + pad;
   const double legendBelow = chart.legend == "bottom" ? rowH * std::max<size_t>(1, chart.series.size()) : 0;
+  const bool perDay = chart.mode == "per-day";
+  // Over time, a row above the plot for the days' names, outside the grid.
+  const double dateSize = o.dateFontSize > 0 ? o.dateFontSize : o.fontSize;
+  const double top = perDay ? pad + jsRound(o.fontSize / 2) : pad + dateSize + pad;
   Box& plot = L.plot;
   plot.x = labelW + pad;
-  plot.y = pad + jsRound(o.fontSize / 2);
+  plot.y = top;
   plot.w = std::max(1.0, o.width - labelW - pad * 2 - (usesRight ? labelW : 0));
-  plot.h = std::max(1.0, o.height - bottom - legendBelow - pad - jsRound(o.fontSize / 2));
-  const bool perDay = chart.mode == "per-day";
+  plot.h = std::max(1.0, o.height - bottom - legendBelow - top);
   const double span = w.to - w.from;
   auto xOf = [&](double t) { return round1(plot.x + ((t - w.from) / span) * plot.w); };
   auto inWindow = [&](double t, double len) { return t + len > w.from && t < w.to; };
@@ -701,7 +716,8 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     int guard = 0;
     for (std::string d = dateOf(w.from, o.cal); midnightOf(d, o.cal) <= w.to && guard++ < 40; d = addDays(d, 1)) {
       const double m = midnightOf(d, o.cal);
-      if (m >= w.from && m <= w.to) L.midnights.push_back({xOf(m), dayLabelOf(d)});
+      // Only inside: at the window's edges the day's name above says it.
+      if (m > w.from && m < w.to) L.midnights.push_back({xOf(m), dayLabelOf(d)});
       if (every == 0) continue;
       const double next = midnightOf(addDays(d, 1), o.cal);
       for (double t = m; t < next; t += every) {
@@ -923,6 +939,41 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   auto box = [&](const std::string& text, double x, double y, double bw, const char* align, const char* tone) {
     L.texts.push_back({text, round1(x), round1(y), round1(bw), o.fontSize, align, tone});
   };
+  // Each day in the window, its name above its part of the plot: the whole
+  // row long, else short, else the weekday - the longest every day fits; a
+  // day too narrow for any, unnamed (lib/chart-layout.ts).
+  if (!perDay) {
+    const std::string today = o.now > 0 ? dateOf(o.now, o.cal) : std::string();
+    struct Named {
+      double x, w;
+      std::string names[3];
+      int fits;
+    };
+    std::vector<Named> days;
+    int guard = 0;
+    for (std::string d = dateOf(w.from, o.cal); midnightOf(d, o.cal) < w.to && guard++ < 40; d = addDays(d, 1)) {
+      const double a = std::max(w.from, midnightOf(d, o.cal));
+      const double b = std::min(w.to, midnightOf(addDays(d, 1), o.cal));
+      if (b <= a) continue;
+      Named n;
+      n.x = xOf(a) + (a > w.from ? pad : 0);
+      n.w = xOf(b) - n.x;
+      n.names[0] = dateLabelOf(d, today);
+      n.names[1] = dayLabelOf(d);
+      n.names[2] = weekdayOf(d);
+      n.fits = -1;
+      for (int k = 0; k < 3 && n.fits < 0; k++)
+        if (textWidthGuess(n.names[k], dateSize) <= xOf(b) - n.x - pad) n.fits = k;
+      if (n.fits >= 0) days.push_back(n);
+    }
+    int level = 0;
+    for (const Named& n : days) level = std::max(level, n.fits);
+    for (const Named& n : days) {
+      Text t{n.names[level], round1(n.x), pad, round1(n.w), dateSize, "left", "text"};
+      t.date = true;
+      L.texts.push_back(t);
+    }
+  }
   for (const AxisTick& t : L.left.ticks) box(t.label, 0, t.y - half, plot.x - pad, "right", "muted");
   if (L.hasRight)
     for (const AxisTick& t : L.right.ticks) box(t.label, plot.x + plot.w + pad, t.y - half, labelW, "left", "muted");
@@ -933,8 +984,6 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     else if (t.x - labelW < 0) box(t.label, 0, y, labelW * 2, "left", "muted");
     else box(t.label, t.x - labelW, y, labelW * 2, "center", "muted");
   }
-  for (const Labelled& m : L.midnights)
-    if (m.x < plot.x + plot.w - o.fontSize * 2) box(m.label, m.x + 3, plot.y, labelW * 3, "left", "muted");
   for (const SeriesLayout& s : L.series)
     for (const Mark& m : s.marks) box(m.label, m.x - labelW * 3, m.below ? m.y + pad : m.y - pad - o.fontSize, labelW * 6, "center", "text");
   for (const LegendRow& row : L.legend) {

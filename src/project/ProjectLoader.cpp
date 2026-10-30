@@ -1005,6 +1005,7 @@ ChartProps ProjectLoader::parseChart(JsonObject p) {
   ChartProps c;
   c.chart = chartcore::chartFrom(p);
   c.fontId = p["fontId"] | "";
+  c.dateFontId = p["dateFontId"] | "";
   c.mutedColor = p["mutedColor"] | "";
   c.mutedColorDark = p["mutedColorDark"] | "";
   c.nowColor = p["nowColor"] | "";

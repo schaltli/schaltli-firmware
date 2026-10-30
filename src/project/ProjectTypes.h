@@ -196,6 +196,8 @@ struct EnergyDiagramHandle {
 struct ChartProps {
   chartcore::Chart chart;
   String fontId;
+  // The days' names above the plot; empty: fontId.
+  String dateFontId;
   String mutedColor, mutedColorDark;
   // The line at now and a stack's NowPoint (designer lib/chart-shapes.ts ShapeLook.now).
   String nowColor, nowColorDark;
