@@ -4,11 +4,11 @@
 
   Drawn to scale, as the 4.3B's is (see its adornment.svg for why). The
   touch version measures 84.2 x 84.2 mm (Waveshare's product page). The
-  active area is taken from the 4" diagonal of a square 480 x 480 panel:
-  71.84 mm a side, 6.68 px per millimetre - to be measured on the glass
-  (?set=aspect=1) and corrected here and in device.json if it differs. That
-  puts the board at 562 x 562 with the screen centred, 41px of bezel all
-  round.
+  active area was measured on the glass on 2026-10-31 with the firmware's
+  400 x 400 px square (?set=aspect=1): 59.4 x 58.6 mm, so 6.73 px/mm across
+  and 6.83 down - the pixels are not quite square - and 71.28 x 70.32 mm for
+  all 480 x 480. At those densities the board is 567 x 575 px, the screen
+  centred in it.
 
   The screen is a punched-out hole (fill-rule="evenodd"), <rect
   id="screen"> only marks it for the designer; explicit width/height on
@@ -18,18 +18,18 @@
 -->
 <svg xmlns="http://www.w3.org/2000/svg"
      xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
-     width="562" height="562" viewBox="0 0 562 562">
+     width="567" height="575" viewBox="0 0 567 575">
   <defs>
-    <linearGradient id="case-shade" x1="0" y1="0" x2="0" y2="562" gradientUnits="userSpaceOnUse">
+    <linearGradient id="case-shade" x1="0" y1="0" x2="0" y2="575" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#34343c" />
       <stop offset="1" stop-color="#16161a" />
     </linearGradient>
-    <linearGradient id="rim-light" x1="0" y1="0" x2="0" y2="562" gradientUnits="userSpaceOnUse">
+    <linearGradient id="rim-light" x1="0" y1="0" x2="0" y2="575" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#ffffff" stop-opacity="0.45" />
       <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.08" />
       <stop offset="1" stop-color="#ffffff" stop-opacity="0.02" />
     </linearGradient>
-    <linearGradient id="glass-sheen" x1="27" y1="27" x2="535" y2="535" gradientUnits="userSpaceOnUse">
+    <linearGradient id="glass-sheen" x1="29" y1="33" x2="537" y2="541" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#2a2a31" />
       <stop offset="0.45" stop-color="#0c0c0f" />
       <stop offset="1" stop-color="#050507" />
@@ -37,32 +37,32 @@
   </defs>
 
   <!-- Case with the screen punched out: corners ~5mm (33px), the active
-       area at 41,41, 480x480. -->
+       area at 43,47, 480x480. -->
   <path id="case"
         fill-rule="evenodd"
         fill="url(#case-shade)"
-        d="M 33,0 H 529 A 33,33 0 0 1 562,33 V 529 A 33,33 0 0 1 529,562 H 33
-           A 33,33 0 0 1 0,529 V 33 A 33,33 0 0 1 33,0 Z
-           M 41,41 H 521 V 521 H 41 Z" />
+        d="M 33,0 H 534 A 33,33 0 0 1 567,33 V 542 A 33,33 0 0 1 534,575 H 33
+           A 33,33 0 0 1 0,542 V 33 A 33,33 0 0 1 33,0 Z
+           M 43,47 H 523 V 527 H 43 Z" />
 
   <path id="case-rim"
         fill="none"
         stroke="url(#rim-light)"
         stroke-width="3"
-        d="M 33,1.5 H 529 A 31.5,31.5 0 0 1 560.5,33 V 529 A 31.5,31.5 0 0 1 529,560.5 H 33
-           A 31.5,31.5 0 0 1 1.5,529 V 33 A 31.5,31.5 0 0 1 33,1.5 Z" />
+        d="M 33,1.5 H 534 A 31.5,31.5 0 0 1 565.5,33 V 542 A 31.5,31.5 0 0 1 534,573.5 H 33
+           A 31.5,31.5 0 0 1 1.5,542 V 33 A 31.5,31.5 0 0 1 33,1.5 Z" />
 
   <!-- The cover glass's black border, 14px around the active area. -->
   <path id="glass-border"
         fill-rule="evenodd"
         fill="url(#glass-sheen)"
-        d="M 33,27 H 529 A 6,6 0 0 1 535,33 V 529 A 6,6 0 0 1 529,535 H 33
-           A 6,6 0 0 1 27,529 V 33 A 6,6 0 0 1 33,27 Z
-           M 41,41 H 521 V 521 H 41 Z" />
+        d="M 35,33 H 531 A 6,6 0 0 1 537,39 V 535 A 6,6 0 0 1 531,541 H 35
+           A 6,6 0 0 1 29,535 V 39 A 6,6 0 0 1 35,33 Z
+           M 43,47 H 523 V 527 H 43 Z" />
   <path fill="none" stroke="#ffffff" stroke-opacity="0.10" stroke-width="1"
-        d="M 33,26.5 H 529" />
+        d="M 35,32.5 H 531" />
 
-  <rect id="screen" x="41" y="41" width="480" height="480"
+  <rect id="screen" x="43" y="47" width="480" height="480"
         fill="none" stroke="none"
         inkscape:label="screen" />
 </svg>
