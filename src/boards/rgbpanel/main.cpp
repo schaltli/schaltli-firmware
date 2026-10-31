@@ -282,6 +282,20 @@ static bool topicRenderEnabled = true;
 // on the glass is exactly the situation it exists for.
 static bool measuringPattern = false;
 
+// Puts the panel under a measuring pattern, lit. The loop reads no touch
+// while one is up, so a panel that had gone dark before could not be woken
+// - a black screen to hold a ruler against (the 4", 2026-10-31).
+static void holdMeasuringPattern()
+{
+  measuringPattern = true;
+  lastHumanInputMs = millis();
+  if (displayIsOff)
+  {
+    displayIsOff = false;
+    expander.setBacklight(true);
+  }
+}
+
 // Where a turn of the loop goes. Twelve of twenty gestures never produced a
 // contact at all while the board was rendering nothing, so something else
 // is holding the loop for longer than a finger stays on the glass. Guessing
@@ -317,6 +331,13 @@ static bool pinchShow = false;
 // than anywhere shareable - which is why DeviceProtocol.h exists.
 static NvsConfigStorage configStorage;
 static PanelDisplayAdapter *displayAdapter = nullptr;
+
+// What a finger held for the setup gesture sees once it has held long enough
+// to be asking: the seconds left, and how to back out.
+static void showHoldCountdown(int secondsLeft)
+{
+  if (displayAdapter) displayAdapter->showLines({"Setup in " + String(secondsLeft) + "s", "loslassen zum Abbrechen"});
+}
 static WiFiSetupServer *wifiSetupServer = nullptr;
 static MqttClient mqttClient;
 static DeployManager deployManager;
@@ -1375,7 +1396,7 @@ static void setupNetworking()
       // 400x400 with a cross through the middle: the block is easy to lay a
       // ruler along, and the arms say where its edges are if the corners
       // fall under a rounded bezel.
-      measuringPattern = true;
+      holdMeasuringPattern();
       const int16_t side = 400;
       const int16_t x0 = (int16_t)((PANEL_W - side) / 2);
       const int16_t y0 = (int16_t)((PANEL_H - side) / 2);
@@ -1402,7 +1423,7 @@ static void setupNetworking()
       // A closed ring can be laid a ruler against, and it exercises
       // ArcRaster on the way, so a bug in the rasterizer could not hide
       // behind a hand-drawn circle either.
-      measuringPattern = true;
+      holdMeasuringPattern();
       const int32_t side = 400;
       const int16_t x0 = (int16_t)((PANEL_W - side) / 2);
       const int16_t y0 = (int16_t)((PANEL_H - side) / 2);
@@ -1465,9 +1486,18 @@ static void setupNetworking()
       // hil/waveshare4v3b/setup-screen.js reads the QR code back out of it.
       // Held like the measuring square, so an arriving value cannot paint
       // the project back over it before the snapshot is taken.
-      measuringPattern = true;
+      holdMeasuringPattern();
       wifiSetupServer->showSetupScreenAP(setArg.substring(12).toInt(), false);
       out += "\nsetup screen drawn, ?set=aspect=0 puts the project back\n";
+    }
+    else if (setArg.startsWith("holdcountdown=") && displayAdapter)
+    {
+      // The setup hold's countdown as a held finger shows it, without the
+      // finger - a snapshot taken during a hold would lift it. The PaperS3's
+      // has the same name; setup-screen.js reads this one for its edges.
+      holdMeasuringPattern();
+      showHoldCountdown(setArg.substring(14).toInt());
+      out += "\nhold countdown drawn, ?set=aspect=0 puts the project back\n";
     }
     else if (setArg == "arcselftest=1")
     {
@@ -1484,7 +1514,7 @@ static void setupNetworking()
       out += "?set=pinches=1 for the pinch log (?set=pinches=clear to reset it, ?set=pinches=show|hide to see each on the panel), ";
       out += "?set=topicrender=off to judge a gesture with nothing else drawing, ";
       out += "?set=aspect=1 for a 400x400 measuring square, ?set=circle=1 for a closed 400px ring, ";
-      out += "?set=setupscreen=<seconds> for the AP setup screen ";
+      out += "?set=setupscreen=<seconds> for the AP setup screen, ?set=holdcountdown=<seconds> for the setup hold's countdown ";
       out += "(?set=aspect=0 puts the project back)\n";
     }
     return out;
@@ -3305,6 +3335,11 @@ void loop()
   }
   if (touchStatus == Gt911::Touched)
   {
+    // Where each contact starts and ends, as the controller reports it: a
+    // tap that hits nothing leaves no other trace, and whether the touch
+    // panel's coordinates are the display's is a question only a finger
+    // can ask (hil/touch-corners.js, the 4" on 2026-10-30).
+    if (!fingerDown) Serial.printf("[touch] down %d,%d\n", sampleX, sampleY);
     fingerDown = true;
     touchX = sampleX;
     touchY = sampleY;
@@ -3312,6 +3347,7 @@ void loop()
   }
   else if (touchStatus == Gt911::Lifted)
   {
+    if (fingerDown) Serial.printf("[touch] up %d,%d\n", touchX, touchY);
     fingerDown = false;
   }
   else if (fingerDown && (millis() - lastTouchReportMs) >= TOUCH_LOST_MS)
@@ -3555,9 +3591,7 @@ void loop()
         if (secondsLeft != holdLastSecondShown)
         {
           holdLastSecondShown = secondsLeft;
-          if (displayAdapter)
-            displayAdapter->showLines({"Setup in " + String(secondsLeft) + "s",
-                                       "loslassen zum Abbrechen"});
+          showHoldCountdown(secondsLeft);
         }
       }
     }

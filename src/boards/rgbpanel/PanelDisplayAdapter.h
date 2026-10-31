@@ -58,9 +58,28 @@ public:
 
     // Vertically centred as a block, so one line does not sit at the top of
     // an empty panel and four lines do not run off the bottom.
-    const int16_t lineHeight = 52;
+    int16_t lineHeight = 52;
+    int16_t ascent = 37;
+    // A line wider than the panel takes the next smaller font for all of
+    // them: on the 4"'s 480 «loslassen zum Abbrechen» under the setup hold's
+    // countdown lost both ends at fur35 (2026-10-31). Where fur35 fits - the
+    // 4.3B, every line it shows - nothing here changes.
+    int16_t widest = 0;
+    for (const String &line : lines) widest = (int16_t)max((int)widest, (int)u8g2_.getUTF8Width(line.c_str()));
+    if (widest > width_ - 2 * MARGIN)
+    {
+      for (int i = 1; i < FONT_COUNT_STACKED; i++)
+      {
+        selectFont(i);
+        widest = 0;
+        for (const String &line : lines) widest = (int16_t)max((int)widest, (int)u8g2_.getUTF8Width(line.c_str()));
+        if (widest <= width_ - 2 * MARGIN) break;
+      }
+      lineHeight = currentLineHeight();
+      ascent = (int16_t)u8g2_.getFontAscent();
+    }
     const int16_t total = (int16_t)(lines.size() * lineHeight);
-    int16_t y = (int16_t)((height_ - total) / 2 + 37); // +ascent to baseline
+    int16_t y = (int16_t)((height_ - total) / 2 + ascent); // +ascent to baseline
 
     for (const String &line : lines)
     {
@@ -108,8 +127,14 @@ public:
 
     const int16_t modulesWithQuiet = (int16_t)(qrSize_ + 2 * QUIET_ZONE);
     const int16_t qrPixels = (int16_t)(modulesWithQuiet * scale_);
-    const int16_t qrX = MARGIN;
-    const int16_t qrY = (int16_t)((height_ - qrPixels) / 2);
+    selectFont(fontIndex_);
+    const int16_t lineHeight = currentLineHeight();
+    const int16_t textHeight = (int16_t)((int16_t)text.size() * lineHeight);
+    // Beside the code, or under it when the panel is too narrow for that
+    // (fitLayout); the block centred either way.
+    const int16_t qrX = stacked_ ? (int16_t)((width_ - qrPixels) / 2) : MARGIN;
+    const int16_t qrY = stacked_ ? (int16_t)((height_ - qrPixels - MARGIN - textHeight) / 2)
+                                 : (int16_t)((height_ - qrPixels) / 2);
     canvas_->fillRect(qrX, qrY, qrPixels, qrPixels, FOREGROUND);
     for (int my = 0; my < qrSize_; my++)
       for (int mx = 0; mx < qrSize_; mx++)
@@ -117,10 +142,16 @@ public:
           canvas_->fillRect((int16_t)(qrX + (QUIET_ZONE + mx) * scale_),
                             (int16_t)(qrY + (QUIET_ZONE + my) * scale_), scale_, scale_, BACKGROUND);
 
-    selectFont(fontIndex_);
-    const int16_t textX = (int16_t)(qrX + qrPixels + MARGIN);
-    const int16_t lineHeight = currentLineHeight();
-    int16_t baseline = (int16_t)((height_ - (int16_t)text.size() * lineHeight) / 2 + u8g2_.getFontAscent());
+    int16_t textX = (int16_t)(qrX + qrPixels + MARGIN);
+    int16_t baseline = (int16_t)((height_ - textHeight) / 2 + u8g2_.getFontAscent());
+    if (stacked_)
+    {
+      // One left edge for the whole block, so the lines read as a list.
+      int16_t widest = 0;
+      for (const String &line : text) widest = (int16_t)max((int)widest, (int)u8g2_.getUTF8Width(line.c_str()));
+      textX = (int16_t)((width_ - widest) / 2);
+      baseline = (int16_t)(qrY + qrPixels + MARGIN + u8g2_.getFontAscent());
+    }
     for (const String &line : text)
     {
       u8g2_.setCursor(textX, baseline);
@@ -185,6 +216,7 @@ private:
   // is still far larger than the knob's, and that one scans.
   void fitLayout(const std::vector<String> &text)
   {
+    stacked_ = false;
     if (qrSize_ == 0) return;
     const int16_t modulesWithQuiet = (int16_t)(qrSize_ + 2 * QUIET_ZONE);
     const int16_t tallest = (int16_t)((height_ - 2 * MARGIN) / modulesWithQuiet);
@@ -204,15 +236,43 @@ private:
         return;
       }
     }
+    // Nothing fits beside it: the panel is too narrow, as the 4"'s square
+    // 480 is (2026-10-30 - the SSID ran off the right edge). The code goes
+    // above the text instead, from the largest font down, and may come down
+    // to MIN_STACKED_MODULE_PX: 4px is 0.6mm a module there, 25mm for the
+    // whole code, which a phone reads. Only reached when the side-by-side
+    // search above found nothing, so a board that fit before draws as before.
+    stacked_ = true;
+    for (int i = 0; i < FONT_COUNT_STACKED; i++)
+    {
+      selectFont(i);
+      int16_t widest = 0;
+      for (const String &line : text)
+        widest = (int16_t)max((int)widest, (int)u8g2_.getUTF8Width(line.c_str()));
+      if (widest > width_ - 2 * MARGIN) continue;
+      const int16_t textHeight = (int16_t)((int16_t)text.size() * currentLineHeight());
+      const int16_t byHeight = (int16_t)((height_ - 3 * MARGIN - textHeight) / modulesWithQuiet);
+      const int16_t byWidth = (int16_t)((width_ - 2 * MARGIN) / modulesWithQuiet);
+      const int16_t scale = (int16_t)min(byHeight, byWidth);
+      if (scale >= MIN_STACKED_MODULE_PX)
+      {
+        fontIndex_ = i;
+        scale_ = scale;
+        return;
+      }
+    }
+    stacked_ = false;
     fontIndex_ = FONT_COUNT - 1;
     scale_ = (int16_t)max(1, min((int)tallest, (int)MIN_MODULE_PX));
   }
 
   void selectFont(int index)
   {
-    static const uint8_t *const FONTS[FONT_COUNT] = {u8g2_font_fur35_tf, u8g2_font_fur30_tf,
-                                                     u8g2_font_fur25_tf, u8g2_font_fur20_tf,
-                                                     u8g2_font_fur17_tf};
+    // The last two only for the stacked layout (FONT_COUNT_STACKED).
+    static const uint8_t *const FONTS[FONT_COUNT_STACKED] = {u8g2_font_fur35_tf, u8g2_font_fur30_tf,
+                                                             u8g2_font_fur25_tf, u8g2_font_fur20_tf,
+                                                             u8g2_font_fur17_tf, u8g2_font_fur14_tf,
+                                                             u8g2_font_fur11_tf};
     u8g2_.setFont(FONTS[index]);
     // After setFont(), for the reason showLines() gives.
     u8g2_.setFontMode(1);
@@ -224,15 +284,18 @@ private:
 
   static inline PanelDisplayAdapter *encoding_ = nullptr;
   static const int FONT_COUNT = 5;
+  static const int FONT_COUNT_STACKED = 7;
   static const int16_t MARGIN = 32;
   static const int16_t QUIET_ZONE = 4;
   static const int16_t MIN_MODULE_PX = 5;
+  static const int16_t MIN_STACKED_MODULE_PX = 4;
   String qrData_;
   String caption_;
   std::vector<uint8_t> qrModules_;
   int qrSize_ = 0;
   int16_t scale_ = 1;
   int fontIndex_ = 0;
+  bool stacked_ = false;
 
   static const uint16_t BACKGROUND = 0x0000;
   static const uint16_t FOREGROUND = 0xFFFF;
