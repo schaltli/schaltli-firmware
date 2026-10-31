@@ -23,20 +23,24 @@ static const int16_t PANEL_H = 480;
 
 // --- RGB timings (ST7701, 480x480) ----------------------------------------
 //
-// 12 MHz, not the BSP's 16, for the 4.3B's reason (waveshare4v3b/BoardProfile.h):
-// at 16 the parallel bus slows this board's own WiFi. Seen on 2026-10-30, on
-// channel 6 at -60 dBm: at 16 MHz pings took 276-581 ms with losses, a
-// firmware upload 42-45 s against the 4.3B's 20, and a refused upload ended
-// in a reset connection instead of its answer; switched live to 12 with
-// ?set=pclk=, pings fell to 2-8 ms. The picture at 12 is steady, colours and
-// edges right (judged on the glass). 12 MHz / (520 x 500) = 46 Hz.
+// 8 MHz, not the BSP's 16, for the 4.3B's reason (waveshare4v3b/BoardProfile.h)
+// and harder: the parallel bus slows this board's own WiFi, and this board's
+// WiFi has less to give - its link is weaker than the 4.3B's beside it and
+// touchy about how the board lies.
 //
-// hil/waveshare4v3b/pixel-clock-radio.js on this board: 12 MHz 350 KB/s,
-// 16 MHz 201. Snapshots by hand, same evening: 10 MHz 64 KB/s, 11 389,
-// 12 399-407, 14 442 - not monotonic, so lower is not safer; which harmonics
-// fall inside the channel decides, as on the 4.3B. 12 stays, with margin to
-// both of the bad ones.
-static const int32_t PCLK_HZ = 12 * 1000 * 1000;
+// Seen on 2026-10-30, on channel 6 at -60 dBm: at 16 MHz pings took 276-581 ms
+// with losses, a firmware upload 42-45 s against the 4.3B's 20, and a refused
+// upload ended in a reset connection instead of its answer. 12 MHz then
+// looked right (pixel-clock-radio.js 350 against 201 KB/s), until on
+// 2026-10-31, at -75 dBm, the loop hung in MQTT for up to 57 s at 12. A sweep
+// with ?set=pclk=, two interleaved passes, three snapshots each: 8 MHz 534
+// KB/s, 9 496, 11 503 (but 0-75 in its first pass), 12 309, and from 13 on
+// nothing got through at all. 10 had been 64 the evening before - not
+// monotonic, which harmonics fall inside the channel decides. 8 was the
+// steadiest; the picture at 8 is steady and flicker-free (judged on the
+// glass, 2026-10-31), where the 4.3B's panel showed only white.
+// 8 MHz / (520 x 500) = 31 Hz.
+static const int32_t PCLK_HZ = 8 * 1000 * 1000;
 static const uint16_t HSYNC_PULSE_WIDTH = 10;
 static const uint16_t HSYNC_BACK_PORCH = 10;
 static const uint16_t HSYNC_FRONT_PORCH = 20;
