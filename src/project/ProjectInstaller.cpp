@@ -317,9 +317,18 @@ uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const
   return data;
 }
 
-String peekProjectDeviceId(const String& zipPath) {
+// Why a project's deviceId could not be read, said once on the serial line:
+// under memory pressure on the 4.3B this failed and, read as "no deviceId",
+// let a project for another device install (2026-11-01). Always false.
+static bool unreadable(const String& zipPath, const char* why) {
+  Serial.printf("[zip] %s: %s - its deviceId is unknown\n", zipPath.c_str(), why);
+  return false;
+}
+
+bool readProjectDeviceId(const String& zipPath, String& deviceIdOut) {
+  deviceIdOut = "";
   File zipFile = LittleFS.open(zipPath, "r");
-  if (!zipFile) return "";
+  if (!zipFile) return unreadable(zipPath, "could not open the zip");
 
   size_t zipSize = zipFile.size();
   ZipFileReadContext readCtx{&zipFile};
@@ -330,14 +339,14 @@ String peekProjectDeviceId(const String& zipPath) {
   useStreamingReader(zip, readCtx);
   if (!mz_zip_reader_init(&zip, zipSize, 0)) {
     zipFile.close();
-    return "";
+    return unreadable(zipPath, "not a zip it can read");
   }
 
   mz_uint32 fileIndex = 0;
   if (!mz_zip_reader_locate_file_v2(&zip, "project.json", nullptr, 0, &fileIndex)) {
     mz_zip_reader_end(&zip);
     zipFile.close();
-    return "";
+    return unreadable(zipPath, "no project.json in it");
   }
 
   mz_zip_archive_file_stat fileStat;
@@ -345,7 +354,7 @@ String peekProjectDeviceId(const String& zipPath) {
   if (!mz_zip_reader_file_stat(&zip, fileIndex, &fileStat)) {
     mz_zip_reader_end(&zip);
     zipFile.close();
-    return "";
+    return unreadable(zipPath, "project.json's entry unreadable");
   }
 
   // See useDictReservingAllocator() above for why the zip's allocator is
@@ -359,7 +368,7 @@ String peekProjectDeviceId(const String& zipPath) {
   if (!jsonData) {
     mz_zip_reader_end(&zip);
     zipFile.close();
-    return "";
+    return unreadable(zipPath, "no memory for project.json");
   }
 
   bool extractOk = false;
@@ -380,7 +389,7 @@ String peekProjectDeviceId(const String& zipPath) {
 
   if (!extractOk) {
     free(jsonData);
-    return "";
+    return unreadable(zipPath, "project.json did not extract cleanly");
   }
 
   // Matches ProjectLoader.cpp's own NestingLimit(30) exactly - see the
@@ -397,10 +406,16 @@ String peekProjectDeviceId(const String& zipPath) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
   free(jsonData);
-  if (err) return "";
+  if (err) return unreadable(zipPath, "project.json is not JSON");
 
   const char* deviceId = doc["deviceId"] | "";
-  return String(deviceId);
+  deviceIdOut = String(deviceId);
+  return true;
+}
+
+String peekProjectDeviceId(const String& zipPath) {
+  String deviceId;
+  return readProjectDeviceId(zipPath, deviceId) ? deviceId : String();
 }
 
 // Mirrors peekProjectDeviceId() above almost verbatim (same zip-open,

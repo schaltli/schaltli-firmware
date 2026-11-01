@@ -599,10 +599,15 @@ bool TestInterfaceServer::validateAndInstallZip() {
     return false;
   }
 
-  // Empty means the zip's project.json has no deviceId at all (older export,
-  // or a non-project zip) - not proof it is wrong, so it is not rejected on
-  // that basis alone.
-  String uploadedDeviceId = ProjectInstaller::peekProjectDeviceId("/temp_upload.zip");
+  // Unreadable is refused (ProjectInstaller.h, readProjectDeviceId). Empty
+  // means the zip's project.json has no deviceId at all (older export) - not
+  // proof it is wrong, so it is not rejected on that basis alone.
+  String uploadedDeviceId;
+  if (!ProjectInstaller::readProjectDeviceId("/temp_upload.zip", uploadedDeviceId)) {
+    lastInstallError_ = "could not read the project's deviceId - refusing rather than installing it unchecked";
+    Serial.printf("[TestInterface] %s\n", lastInstallError_.c_str());
+    return false;
+  }
   if (!uploadedDeviceId.isEmpty() && uploadedDeviceId != DEVICE_ID) {
     lastInstallError_ = "deviceId mismatch: zip says \"" + uploadedDeviceId +
                         "\", this is \"" + String(DEVICE_ID) + "\"";

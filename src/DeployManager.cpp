@@ -110,7 +110,16 @@ void DeployManager::handleDeployMessage(const String& payload) {
     return;
   }
 
-  String uploadedDeviceId = ProjectInstaller::peekProjectDeviceId(DEPLOY_DOWNLOAD_PATH);
+  // Unreadable is refused (ProjectInstaller.h, readProjectDeviceId); no
+  // deviceId at all (an older export) still installs.
+  String uploadedDeviceId;
+  if (!ProjectInstaller::readProjectDeviceId(DEPLOY_DOWNLOAD_PATH, uploadedDeviceId)) {
+    Serial.println("[DeployManager] could not read the project's deviceId - not touching /PROJECT");
+    publishStatus_(deployId, "error", "Could not read the project's device - not installed", -1);
+    LittleFS.remove(DEPLOY_DOWNLOAD_PATH);
+    busy_ = false;
+    return;
+  }
   if (!uploadedDeviceId.isEmpty() && uploadedDeviceId != DEVICE_ID) {
     Serial.printf("[DeployManager] deviceId mismatch (\"%s\" != \"%s\") - not touching /PROJECT\n",
                    uploadedDeviceId.c_str(), DEVICE_ID);

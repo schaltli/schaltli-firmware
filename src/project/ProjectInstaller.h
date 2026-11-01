@@ -30,11 +30,18 @@ uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const
                                    size_t* outSize);
 
 // Reads just project.json out of the zip at zipPath (without touching
-// /PROJECT at all) and returns its top-level "deviceId" field, or an empty
-// string if the zip/entry/field is missing or unparsable. Callers should
-// treat an empty result as "unknown, don't trust it" rather than
-// "compatible" - see DEVICE_ID in DeviceInfo.h for what this gets compared
-// against.
+// /PROJECT at all). Returns false when it cannot - no zip, no project.json,
+// no memory, a bad CRC, not JSON - and the caller must refuse the project:
+// until 2026-11-01 that case and "the project names no device" were the same
+// empty string, which the gates let through, and the 4.3B under load
+// installed a project for another device. Returns true with deviceIdOut set
+// to the top-level "deviceId", empty when the project has none (an older
+// export, which may install). See DEVICE_ID in DeviceInfo.h for what it gets
+// compared against.
+bool readProjectDeviceId(const String& zipPath, String& deviceIdOut);
+
+// The deviceId, or "" for "none" and "could not read" alike. Kept for
+// callers that only log it; a gate uses readProjectDeviceId().
 String peekProjectDeviceId(const String& zipPath);
 
 // Same idea as peekProjectDeviceId() above, but for the export's system
