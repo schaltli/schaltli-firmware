@@ -78,6 +78,10 @@ public:
   // field's bullet, which the number fonts lack.
   bool hasGlyph(uint16_t codepoint) const { return find(codepoint) != nullptr; }
 
+  // 1 for every font until 2026-11-01; 4 for a font with BITS_PER_PIXEL 4,
+  // whose rows hold one pixel's coverage per hex digit.
+  uint8_t bitsPerPixel() const { return bitsPerPixel_; }
+
   // Cursor advance for one codepoint (BDF DWIDTH), 0 if absent.
   int16_t advance(uint16_t codepoint) const;
 
@@ -115,6 +119,8 @@ private:
 
   const Glyph* find(uint16_t codepoint) const;
   void release();
+  void drawCoverageRow(ClippedCanvas16& canvas, const uint32_t* words, uint16_t wordsPerRow, uint16_t digits,
+                       int16_t ox, int16_t y, uint16_t color) const;
 
   Glyph* glyphs_ = nullptr;   // PSRAM, ascending by codepoint when sorted_
   // BDF files list glyphs in ascending ENCODING order and find() binary
@@ -130,4 +136,5 @@ private:
   int16_t fontAscent_ = 0;
   int16_t fontDescent_ = 0;
   int16_t capHeight_ = 0;
+  uint8_t bitsPerPixel_ = 1;
 };

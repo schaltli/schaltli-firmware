@@ -3,6 +3,13 @@
 #include <esp_heap_caps.h>
 #include <string.h>
 
+#include "GlyphPixels.h"
+
+using glyphpixels::parseHexRow;
+using glyphpixels::rowBit;
+using glyphpixels::rowCoverage;
+using glyphpixels::wordsFor;
+
 namespace {
 
 // Walks the source line by line without copying it - these files are
@@ -65,36 +72,6 @@ bool isHexLine(const char* s, size_t len) {
   return true;
 }
 
-// The 32-bit words a row of `len` hex digits takes.
-uint16_t wordsFor(size_t len) {
-  return (uint16_t)((len + 7) / 8);
-}
-
-// Parses a hex row into `words`, word 0 holding its rightmost 32 bits.
-// Until 2026-09-30 a row was one uint32_t, and a glyph wider than 32 px -
-// FreeUniversal 42's "D", every digit of DSEG7 - lost its left part: the
-// designer's lib/bdffont.ts had the same limit and the same fix.
-void parseHexRow(const char* s, size_t len, uint32_t* words) {
-  const uint16_t n = wordsFor(len);
-  for (uint16_t w = 0; w < n; w++) words[w] = 0;
-  for (size_t j = 0; j < len; j++) {
-    // j counts hex digits from the right end of the row.
-    const char c = s[len - 1 - j];
-    uint32_t d;
-    if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
-    else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
-    else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
-    else d = 0;
-    words[j / 8] |= d << ((j % 8) * 4);
-  }
-}
-
-// Bit `bit` of a row counted from its right end; 0 beyond the row.
-bool rowBit(const uint32_t* words, uint16_t wordsPerRow, int bit) {
-  if (bit < 0 || (bit >> 5) >= (int)wordsPerRow) return false;
-  return ((words[bit >> 5] >> (bit & 31)) & 0x01) != 0;
-}
-
 }  // namespace
 
 BdfFont::~BdfFont() { release(); }
@@ -112,6 +89,8 @@ bool BdfFont::parse(const char* text, size_t length) {
   release();
   fontAscent_ = 0;
   fontDescent_ = 0;
+  capHeight_ = 0;
+  bitsPerPixel_ = 1;
 
   // Pass 1: how many glyphs, how many bitmap rows. Counting first means one
   // allocation of the right size for each, instead of growth that would
@@ -188,6 +167,12 @@ bool BdfFont::parse(const char* text, size_t length) {
         // bitmap height, so a reader of glyph boxes gets the same number.
         long v[1];
         if (readInts(line + 10, len - 10, v, 1) == 1) capHeight_ = (int16_t)v[0];
+      } else if (startsWith(line, len, "BITS_PER_PIXEL")) {
+        // A 4-bit font: each hex digit of a row is one pixel's coverage
+        // (designer docs/device-contract.md, «Font depth»). Anything but 4
+        // reads as 1 bit, as every font before it did.
+        long v[1];
+        if (readInts(line + 14, len - 14, v, 1) == 1 && v[0] == 4) bitsPerPixel_ = 4;
       }
       continue;
     }
@@ -363,6 +348,10 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
     if (blank) continue;
 
     const int16_t y = (int16_t)(oy + (int16_t)row);
+    if (bitsPerPixel_ == 4) {
+      drawCoverageRow(canvas, words, g->wordsPerRow, (uint16_t)(g->bitsPerRow / 4), ox, y, color);
+      continue;
+    }
     // Emitted as horizontal runs rather than one drawPixel per lit pixel.
     // Both are correct; a run is one clip test and one tight write loop
     // inside GFXcanvas16 instead of a virtual call and a bounds check per
@@ -393,6 +382,32 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
     }
   }
   return g->dwidth;
+}
+
+// One row of a 4-bit glyph. Pixel i of the row lands at ox + 1 + i - the
+// same one-to-the-right as the 1-bit loop above, whose first iteration tests
+// a bit beyond the row, so both kinds of font sit on the same pixel and the
+// designer (lib/bdffont.ts) reproduces it for both. Full coverage is written
+// as runs, as the 1-bit path does; an edge pixel is mixed into what is
+// already on the canvas there - objects are drawn back to front, and a
+// region redrawn under text redraws the text too, as the level glow relies on.
+void BdfFont::drawCoverageRow(ClippedCanvas16& canvas, const uint32_t* words, uint16_t wordsPerRow,
+                              uint16_t digits, int16_t ox, int16_t y, uint16_t color) const {
+  int runStart = -1;
+  for (int i = 0; i <= (int)digits; i++) {
+    const uint8_t a = rowCoverage(words, wordsPerRow, digits, i);
+    if (a == 15) {
+      if (runStart < 0) runStart = i;
+      continue;
+    }
+    if (runStart >= 0) {
+      canvas.drawFastHLine((int16_t)(ox + 1 + runStart), y, (int16_t)(i - runStart), color);
+      runStart = -1;
+    }
+    if (a == 0) continue;
+    const int16_t x = (int16_t)(ox + 1 + i);
+    canvas.drawPixel(x, y, glyphpixels::blendCoverage565(canvas.getPixel(x, y), color, a));
+  }
 }
 
 void BdfFont::drawText(ClippedCanvas16& canvas, const String& utf8, int16_t bx, int16_t by,
