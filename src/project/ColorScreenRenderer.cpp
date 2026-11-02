@@ -103,6 +103,20 @@ void collectFontIds(const std::vector<ScreenObject>& objects, std::vector<String
 
 }  // namespace
 
+std::vector<String> ColorScreenRenderer::fontIdsOf(int screenIndex) const {
+  std::vector<String> ids;
+  if (!projectLoader_.isLoaded()) return ids;
+  const Screen* screen = screenOrPopupAt(projectLoader_.getProject(), screenIndex);
+  if (screen != nullptr) collectFontIds(screen->objects, ids);
+  return ids;
+}
+
+String ColorScreenRenderer::fontReport() const {
+  return String(fontStore_.parsedCount()) + " parsed, " + String(fontStore_.letGo()) + " let go since boot, " +
+         String(DdfFontStore::freePsram() / 1024) + " KB PSRAM free, reserve " +
+         String(DdfFontStore::reserveBytes() / 1024) + " KB";
+}
+
 void ColorScreenRenderer::preloadFonts() {
   if (!projectLoader_.isLoaded()) return;
   const ProjectConfig& project = projectLoader_.getProject();
@@ -131,10 +145,19 @@ void ColorScreenRenderer::preloadFonts() {
     if (!seen) used.push_back(fallback);
   }
 
+  // In the screens' order, the fallback last, until free PSRAM is down to
+  // the reserve (DdfFontStore::kReserveBytes); the rest load at their first
+  // draw, and trim() makes room for them as screens change.
   const uint32_t start = millis();
-  for (const String& id : used) fontStore_.get(id);
-  Serial.printf("[ddf-fonts] preloaded %u of %u declared font(s) in %ums\n", (unsigned)used.size(),
-                (unsigned)project.fonts.size(), (unsigned)(millis() - start));
+  size_t loaded = 0;
+  for (const String& id : used) {
+    if (DdfFontStore::freePsram() < DdfFontStore::reserveBytes() && id != fallback) continue;
+    fontStore_.get(id);
+    loaded++;
+  }
+  Serial.printf("[ddf-fonts] preloaded %u of %u font(s) the project names (%u declared) in %ums, %u KB PSRAM free\n",
+                (unsigned)loaded, (unsigned)used.size(), (unsigned)project.fonts.size(), (unsigned)(millis() - start),
+                (unsigned)(DdfFontStore::freePsram() / 1024));
 }
 
 const BdfFont* ColorScreenRenderer::fontFor(const String& fontId) {
@@ -3161,6 +3184,13 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
   const ProjectConfig& project = projectLoader_.getProject();
   const Screen* screenPtr = screenOrPopupAt(project, screenIndex);
   if (!screenPtr) return false;
+
+  // Another screen: before anything of it is drawn - no font pointer is
+  // held yet - let go of fonts it does not name if PSRAM is short.
+  if (screenIndex != fontsKeptFor_) {
+    fontsKeptFor_ = screenIndex;
+    fontStore_.trim(fontIdsOf(screenIndex));
+  }
 
   const Screen& screen = *screenPtr;
 

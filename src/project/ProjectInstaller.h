@@ -29,6 +29,39 @@ namespace ProjectInstaller {
 uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const char* entryName,
                                    size_t* outSize);
 
+// One entry of an in-memory zip read in pieces, never held whole - with the
+// same padded dictionary and allocator as extractEntryFromMemoryZip(), and
+// one entry at a time like it (the dictionary is a single static buffer).
+//
+// For the 4-bit fonts (designer docs/2026-11-01-4bit-fonts.md): a Display
+// face's BDF is over a megabyte of text, and extracting it whole needed that
+// much contiguous PSRAM on top of the parsed font. On the 4.3B with three
+// typographies loaded it was not there - «no room for fonts/inter-c42.bdf»,
+// and Humanist's Display drew in the fallback font (2026-11-02).
+class MemoryZipEntryReader {
+public:
+  ~MemoryZipEntryReader();
+  // False when the zip cannot be opened or holds no such entry.
+  bool open(const uint8_t* zipData, size_t zipSize, const char* entryName);
+  // Up to n bytes into buf; 0 at the end, or after a failure.
+  size_t read(uint8_t* buf, size_t n);
+  // Back to the entry's first byte, for a second pass.
+  bool rewind();
+  // Whether everything read so far is the whole entry with its CRC - ask at
+  // the end of a pass.
+  bool intact() const;
+  void close();
+
+private:
+  void* zip_ = nullptr;    // mz_zip_archive, opaque so miniz stays out of this header
+  void* state_ = nullptr;  // mz_zip_reader_extract_iter_state
+  uint32_t index_ = 0;
+  uint32_t crc_ = 0;
+  uint32_t expectedCrc_ = 0;
+  size_t done_ = 0;
+  size_t size_ = 0;
+};
+
 // Reads just project.json out of the zip at zipPath (without touching
 // /PROJECT at all). Returns false when it cannot - no zip, no project.json,
 // no memory, a bad CRC, not JSON - and the caller must refuse the project:

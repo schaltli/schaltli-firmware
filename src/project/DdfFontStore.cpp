@@ -30,6 +30,72 @@ uint8_t* extractFromDdf(const char* name, size_t* outSize) {
   return data;
 }
 
+// A font's BDF read out of the DDF zip in pieces, line by line (BdfFont's
+// BdfLineSource): a 4 KB window instead of the whole file, which for a 4-bit
+// Display face is over a megabyte (ProjectInstaller.h, MemoryZipEntryReader).
+class ZipLineSource : public BdfLineSource {
+public:
+  bool open(const char* name) {
+    buf_ = (char*)heap_caps_malloc(kSize, MALLOC_CAP_SPIRAM);
+    if (buf_ == nullptr) return false;
+    if (!entry_.open(ddfZipBytes(), ddfZipSize(), name)) return false;
+    start_ = end_ = 0;
+    eof_ = false;
+    return true;
+  }
+  ~ZipLineSource() override {
+    entry_.close();
+    if (buf_ != nullptr) free(buf_);
+  }
+  bool rewind() override {
+    if (!eof_ || !entry_.intact()) {
+      // A pass that ended before the entry did, or on a bad CRC.
+      failed_ = true;
+      return false;
+    }
+    start_ = end_ = 0;
+    eof_ = false;
+    return entry_.rewind();
+  }
+  bool next(const char*& line, size_t& length) override {
+    for (;;) {
+      // Skip line breaks left from the last line.
+      while (start_ < end_ && (buf_[start_] == '\n' || buf_[start_] == '\r')) start_++;
+      size_t nl = start_;
+      while (nl < end_ && buf_[nl] != '\n' && buf_[nl] != '\r') nl++;
+      if (nl < end_ || (eof_ && start_ < end_)) {
+        line = buf_ + start_;
+        length = nl - start_;
+        start_ = nl;
+        while (length > 0 && (line[length - 1] == ' ' || line[length - 1] == '\t')) length--;
+        return true;
+      }
+      if (eof_) return false;
+      // Keep the partial line, fill the rest.
+      memmove(buf_, buf_ + start_, end_ - start_);
+      end_ -= start_;
+      start_ = 0;
+      if (end_ == kSize) {
+        failed_ = true;  // a line longer than the window: no BDF has one
+        return false;
+      }
+      const size_t got = entry_.read((uint8_t*)buf_ + end_, kSize - end_);
+      if (got == 0) eof_ = true;
+      end_ += got;
+    }
+  }
+  bool ok() const { return !failed_ && eof_ && entry_.intact(); }
+
+private:
+  static constexpr size_t kSize = 4096;
+  ProjectInstaller::MemoryZipEntryReader entry_;
+  char* buf_ = nullptr;
+  size_t start_ = 0;
+  size_t end_ = 0;
+  bool eof_ = false;
+  bool failed_ = false;
+};
+
 }  // namespace
 
 bool DdfFontStore::ensureIndex() {
@@ -64,11 +130,74 @@ String DdfFontStore::drawnId(const String& fontId) {
   return fontindex::resolve(index_, fontId);
 }
 
+size_t DdfFontStore::reserveBytes_ = 1024 * 1024;
+
+size_t DdfFontStore::freePsram() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
+
+size_t DdfFontStore::parsedCount() const {
+  std::vector<const BdfFont*> seen;
+  for (const auto& entry : cache_) {
+    if (entry.second == nullptr) continue;
+    bool known = false;
+    for (const BdfFont* f : seen) known = known || f == entry.second;
+    if (!known) seen.push_back(entry.second);
+  }
+  return seen.size();
+}
+
+size_t DdfFontStore::trim(const std::vector<String>& keep) {
+  if (!indexed_) return 0;
+  // What must stay, as the ids the fonts are parsed under.
+  std::vector<String> stay;
+  for (const String& id : keep) {
+    const String drawn = fontindex::resolve(index_, id);
+    if (!drawn.isEmpty()) stay.push_back(drawn);
+  }
+  stay.push_back(index_.firstId);
+  size_t freed = 0;
+  while (freePsram() < reserveBytes_) {
+    String oldest;
+    uint32_t oldestUse = UINT32_MAX;
+    for (const auto& entry : cache_) {
+      if (entry.second == nullptr || fontindex::resolve(index_, entry.first) != entry.first) continue;
+      bool kept = false;
+      for (const String& id : stay) kept = kept || id == entry.first;
+      if (kept) continue;
+      const auto use = lastUse_.find(entry.first);
+      const uint32_t when = use == lastUse_.end() ? 0 : use->second;
+      if (when < oldestUse) {
+        oldestUse = when;
+        oldest = entry.first;
+      }
+    }
+    if (oldest.isEmpty()) break;
+    BdfFont* font = cache_[oldest];
+    // Every id cached as this font - its own and the replaced ones it
+    // stands in for - goes with it, to be loaded again when asked.
+    for (auto it = cache_.begin(); it != cache_.end();) {
+      if (it->second == font) {
+        lastUse_.erase(it->first);
+        it = cache_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    delete font;
+    freed++;
+    letGo_++;
+    Serial.printf("[ddf-fonts] let go of %s, %u KB PSRAM free\n", oldest.c_str(), (unsigned)(freePsram() / 1024));
+  }
+  return freed;
+}
+
 const BdfFont* DdfFontStore::get(const String& fontId) {
   if (!ensureIndex()) return nullptr;
 
   const auto cached = cache_.find(fontId);
-  if (cached != cache_.end()) return cached->second;
+  if (cached != cache_.end()) {
+    if (cached->second != nullptr) lastUse_[fontId] = ++uses_;
+    return cached->second;
+  }
 
   // A replaced id the DDF dropped: the font standing in for it, cached
   // under both ids (FontIndex.h).
@@ -90,16 +219,16 @@ const BdfFont* DdfFontStore::get(const String& fontId) {
     return nullptr;
   }
 
-  size_t size = 0;
-  uint8_t* text = extractFromDdf(entry->second.c_str(), &size);
-  if (text == nullptr) {
+  // Read in pieces, never whole (ZipLineSource): a 4-bit Display face is
+  // over a megabyte of text.
+  ZipLineSource source;
+  if (!source.open(entry->second.c_str())) {
+    Serial.printf("[ddf-fonts] could not open %s in the DDF\n", entry->second.c_str());
     cache_[fontId] = nullptr;
     return nullptr;
   }
-
   BdfFont* font = new BdfFont();
-  const bool ok = font->parse((const char*)text, size);
-  free(text);
+  const bool ok = font->parse(source) && source.ok();
   if (!ok) {
     Serial.printf("[ddf-fonts] %s did not parse\n", entry->second.c_str());
     delete font;
@@ -110,5 +239,6 @@ const BdfFont* DdfFontStore::get(const String& fontId) {
   Serial.printf("[ddf-fonts] %s: %u glyphs, ascent %d, descent %d\n", entry->second.c_str(),
                 (unsigned)font->glyphCount(), font->fontAscent(), font->fontDescent());
   cache_[fontId] = font;
+  lastUse_[fontId] = ++uses_;
   return font;
 }

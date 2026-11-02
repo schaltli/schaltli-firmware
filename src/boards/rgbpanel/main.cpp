@@ -1188,6 +1188,9 @@ static void setupNetworking()
     out += "  tap latency: " + tapLatencyReport() + "\n";
     out += "  energy motion: " + energyReport() + "\n";
     if (renderer) out += "  energy draw: " + renderer->energyProfile() + "\n";
+    // The font cache (DdfFontStore): what is parsed, what was let go to keep
+    // PSRAM free (designer docs/2026-11-01-4bit-fonts.md).
+    if (renderer) out += "  fonts: " + renderer->fontReport() + " (?set=fontreserve=<KB>)\n";
     // Where a swipe leads from here, each way (pagingTargetFor): -1 is
     // nowhere - what a swipe that never follows the finger comes down to.
     out += "  swipes lead: finger left " + String(pagingTargetFor(-1)) + ", right " + String(pagingTargetFor(1)) +
@@ -1375,6 +1378,11 @@ static void setupNetworking()
         out += "\npinches: " + String(pinchIns) + " in, " + String(pinchOuts) + " out, " + String(pinchNones) + " neither\n";
         out += "pinch log\n" + pinchLog;
       }
+    }
+    else if (setArg.startsWith("fontreserve="))
+    {
+      DdfFontStore::setReserveBytes((size_t)setArg.substring(12).toInt() * 1024);
+      out += "\nfont reserve now " + String(DdfFontStore::reserveBytes() / 1024) + " KB\n";
     }
     else if (setArg == "partialcheck=on" || setArg == "partialcheck=off")
     {

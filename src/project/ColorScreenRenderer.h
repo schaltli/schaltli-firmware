@@ -293,6 +293,10 @@ public:
   // of a gesture, which is the exact fault the neighbour pre-render exists
   // to remove.
   void preloadFonts();
+  // The font ids one screen's objects name (masters come merged in).
+  std::vector<String> fontIdsOf(int screenIndex) const;
+  // For /api/debug: fonts parsed, let go since boot, PSRAM free, the reserve.
+  String fontReport() const;
   ClippedCanvas16* canvas() const { return canvas_; }
 
   // Renders every object on the given screen index into the canvas
@@ -399,6 +403,9 @@ private:
   // Mutable: a const metric lookup may parse the font that stands in for a
   // replaced one (standIn).
   mutable DdfFontStore fontStore_;
+  // The screen whose fonts trim() last kept, so a redraw of the same screen
+  // does not look again.
+  int fontsKeptFor_ = -1;
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
                      int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);

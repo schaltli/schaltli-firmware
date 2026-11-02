@@ -39,6 +39,17 @@
 // that +1, keeps every existing project pixel-identical. Correcting it
 // would move the text in every label of every project by one pixel, which
 // is a decision about the product, not a rendering fix - see drawGlyph().
+// Where a BDF's lines come from, read twice: once to count, once to fill.
+// A line is valid until the next call. Text in memory (parse(text, length))
+// or an entry of the DDF zip read in pieces (DdfFontStore), so a font of a
+// megabyte of text need not be held whole while it is parsed.
+class BdfLineSource {
+public:
+  virtual ~BdfLineSource() {}
+  virtual bool next(const char*& line, size_t& length) = 0;
+  virtual bool rewind() = 0;
+};
+
 class BdfFont {
 public:
   ~BdfFont();
@@ -47,6 +58,7 @@ public:
   // afterwards. Returns false and leaves the font empty - never
   // half-built - if anything is missing or does not fit.
   bool parse(const char* text, size_t length);
+  bool parse(BdfLineSource& source);
 
   bool isLoaded() const { return glyphCount_ > 0; }
   size_t glyphCount() const { return glyphCount_; }

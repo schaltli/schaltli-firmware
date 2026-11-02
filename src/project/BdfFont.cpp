@@ -14,11 +14,18 @@ namespace {
 
 // Walks the source line by line without copying it - these files are
 // 100-200KB and there are four of them.
-struct LineReader {
+struct LineReader : BdfLineSource {
+  const char* begin;
   const char* p;
   const char* end;
+  LineReader(const char* text, const char* stop) : begin(text), p(text), end(stop) {}
 
-  bool next(const char*& lineStart, size_t& lineLen) {
+  bool rewind() override {
+    p = begin;
+    return true;
+  }
+
+  bool next(const char*& lineStart, size_t& lineLen) override {
     if (p >= end) return false;
     lineStart = p;
     const char* nl = p;
@@ -86,6 +93,11 @@ void BdfFont::release() {
 }
 
 bool BdfFont::parse(const char* text, size_t length) {
+  LineReader reader(text, text + length);
+  return parse(reader);
+}
+
+bool BdfFont::parse(BdfLineSource& source) {
   release();
   fontAscent_ = 0;
   fontDescent_ = 0;
@@ -98,12 +110,11 @@ bool BdfFont::parse(const char* text, size_t length) {
   uint32_t glyphs = 0;
   uint32_t rows = 0;
   {
-    LineReader reader{text, text + length};
     const char* line;
     size_t len;
     bool inChar = false;
     bool inBitmap = false;
-    while (reader.next(line, len)) {
+    while (source.next(line, len)) {
       if (len == 0) continue;
       if (!inChar) {
         if (startsWith(line, len, "STARTCHAR")) {
@@ -134,7 +145,10 @@ bool BdfFont::parse(const char* text, size_t length) {
   }
 
   // Pass 2: fill.
-  LineReader reader{text, text + length};
+  if (!source.rewind()) {
+    release();
+    return false;
+  }
   const char* line;
   size_t len;
   bool inChar = false;
@@ -144,7 +158,7 @@ bool BdfFont::parse(const char* text, size_t length) {
   uint32_t glyphIndex = 0;
   uint32_t rowIndex = 0;
 
-  while (reader.next(line, len)) {
+  while (source.next(line, len)) {
     if (len == 0) continue;
 
     if (!inChar) {

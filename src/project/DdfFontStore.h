@@ -1,6 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <map>
+#include <vector>
 
 #include "BdfFont.h"
 #include "FontIndex.h"
@@ -31,6 +32,27 @@ public:
   // old project's own entry for a replaced font carries the old font's.
   String drawnId(const String& fontId);
 
+  // Free PSRAM below which no more fonts are loaded ahead (preload) and
+  // fonts not wanted now are let go (trim). A 4-bit face takes 50-370 KB,
+  // and a project mixing typographies once used all of the 4.3B's PSRAM
+  // (2026-11-02, designer docs/2026-11-01-4bit-fonts.md); what else lives
+  // there - chart history, a popup's pixels - needs room beside them.
+  static size_t reserveBytes() { return reserveBytes_; }
+  // For the HIL (?set=fontreserve=<KB>): a reserve larger than the PSRAM
+  // makes every screen change let go of every font it does not name.
+  static void setReserveBytes(size_t bytes) { reserveBytes_ = bytes; }
+  static size_t freePsram();
+
+  // How many fonts are parsed now, and how many were let go since boot.
+  size_t parsedCount() const;
+  uint32_t letGo() const { return letGo_; }
+
+  // Lets go of the least recently used fonts, none of `keep` (ids as a
+  // project names them) and never the fallback, until free PSRAM is back
+  // above kReserveBytes or nothing more may go. Only between draws - a
+  // pointer from get() is good until then. Returns how many went.
+  size_t trim(const std::vector<String>& keep);
+
   // The id of the first font the DDF declares - what to fall back to when a
   // project names a font this device does not publish. Deliberately
   // explicit rather than silently substituting inside get(): a caller that
@@ -45,5 +67,10 @@ private:
   // device.json.
   fontindex::Index<String> index_;
   std::map<String, BdfFont*> cache_;
+  // When each parsed font was last handed out, by the id it is cached under.
+  std::map<String, uint32_t> lastUse_;
+  uint32_t uses_ = 0;
+  uint32_t letGo_ = 0;
+  static size_t reserveBytes_;
   bool indexed_ = false;
 };

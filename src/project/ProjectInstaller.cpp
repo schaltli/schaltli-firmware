@@ -317,6 +317,62 @@ uint8_t* extractEntryFromMemoryZip(const uint8_t* zipData, size_t zipSize, const
   return data;
 }
 
+MemoryZipEntryReader::~MemoryZipEntryReader() { close(); }
+
+bool MemoryZipEntryReader::open(const uint8_t* zipData, size_t zipSize, const char* entryName) {
+  close();
+  mz_zip_archive* zip = (mz_zip_archive*)calloc(1, sizeof(mz_zip_archive));
+  if (zip == nullptr) return false;
+  useDictReservingAllocator(*zip);
+  if (!mz_zip_reader_init_mem(zip, zipData, zipSize, 0)) {
+    free(zip);
+    Serial.printf("[zip] could not open the in-memory archive for %s\n", entryName);
+    return false;
+  }
+  zip_ = zip;
+  mz_uint32 fileIndex = 0;
+  mz_zip_archive_file_stat fileStat;
+  if (!mz_zip_reader_locate_file_v2(zip, entryName, nullptr, 0, &fileIndex) ||
+      !mz_zip_reader_file_stat(zip, fileIndex, &fileStat)) {
+    Serial.printf("[zip] %s is not in the archive\n", entryName);
+    close();
+    return false;
+  }
+  index_ = fileIndex;
+  size_ = (size_t)fileStat.m_uncomp_size;
+  expectedCrc_ = fileStat.m_crc32;
+  return rewind();
+}
+
+bool MemoryZipEntryReader::rewind() {
+  if (zip_ == nullptr) return false;
+  if (state_ != nullptr) mz_zip_reader_extract_iter_free((mz_zip_reader_extract_iter_state*)state_);
+  state_ = mz_zip_reader_extract_iter_new((mz_zip_archive*)zip_, index_, 0);
+  crc_ = MZ_CRC32_INIT;
+  done_ = 0;
+  return state_ != nullptr;
+}
+
+size_t MemoryZipEntryReader::read(uint8_t* buf, size_t n) {
+  if (state_ == nullptr || done_ >= size_) return 0;
+  const size_t got = mz_zip_reader_extract_iter_read((mz_zip_reader_extract_iter_state*)state_, buf, n);
+  crc_ = (uint32_t)mz_crc32(crc_, buf, got);
+  done_ += got;
+  return got;
+}
+
+bool MemoryZipEntryReader::intact() const { return state_ != nullptr && done_ == size_ && crc_ == expectedCrc_; }
+
+void MemoryZipEntryReader::close() {
+  if (state_ != nullptr) mz_zip_reader_extract_iter_free((mz_zip_reader_extract_iter_state*)state_);
+  state_ = nullptr;
+  if (zip_ != nullptr) {
+    mz_zip_reader_end((mz_zip_archive*)zip_);
+    free(zip_);
+  }
+  zip_ = nullptr;
+}
+
 // Why a project's deviceId could not be read, said once on the serial line:
 // under memory pressure on the 4.3B this failed and, read as "no deviceId",
 // let a project for another device install (2026-11-01). Always false.
