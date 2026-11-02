@@ -396,7 +396,9 @@ private:
   ClippedCanvas16* canvas_;
   String deviceId_;
   int popupCloseBadgeRadius_ = 0;
-  DdfFontStore fontStore_;
+  // Mutable: a const metric lookup may parse the font that stands in for a
+  // replaced one (standIn).
+  mutable DdfFontStore fontStore_;
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
                      int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);
@@ -604,6 +606,10 @@ private:
   // project names one this device does not declare; nullptr only if the
   // DDF itself is unreadable, which is a broken build.
   const BdfFont* fontFor(const String& fontId);
+  // The font drawing a replaced id the DDF dropped, or nullptr when the id
+  // draws as itself (FontIndex.h). Its metrics then count, not those the
+  // project's own entry carries for the old font.
+  const BdfFont* standIn(const String& fontId) const;
 
   // How far the clip box has to grow upward so this text's ink survives.
   // The baseline sits at y + ascent, but ink can reach above the nominal

@@ -33,7 +33,7 @@ uint8_t* extractFromDdf(const char* name, size_t* outSize) {
 }  // namespace
 
 bool DdfFontStore::ensureIndex() {
-  if (indexed_) return !fileByFontId_.empty();
+  if (indexed_) return !index_.fileById.empty();
   indexed_ = true;
 
   size_t size = 0;
@@ -48,20 +48,20 @@ bool DdfFontStore::ensureIndex() {
     return false;
   }
 
-  for (JsonObject font : doc["fonts"].as<JsonArray>()) {
-    const String id = font["id"] | "";
-    const String file = font["file"] | "";
-    if (id.isEmpty() || file.isEmpty()) continue;
-    fileByFontId_[id] = file;
-    if (defaultFontId_.isEmpty()) defaultFontId_ = id;
-  }
-  Serial.printf("[ddf-fonts] DDF declares %u font(s)\n", (unsigned)fileByFontId_.size());
-  return !fileByFontId_.empty();
+  fontindex::read(doc["fonts"].as<JsonArrayConst>(), index_);
+  Serial.printf("[ddf-fonts] DDF declares %u font(s), %u replaced id(s)\n", (unsigned)index_.fileById.size(),
+                (unsigned)index_.replacedBy.size());
+  return !index_.fileById.empty();
 }
 
 String DdfFontStore::defaultFontId() {
   ensureIndex();
-  return defaultFontId_;
+  return index_.firstId;
+}
+
+String DdfFontStore::drawnId(const String& fontId) {
+  if (!ensureIndex()) return String();
+  return fontindex::resolve(index_, fontId);
 }
 
 const BdfFont* DdfFontStore::get(const String& fontId) {
@@ -70,8 +70,19 @@ const BdfFont* DdfFontStore::get(const String& fontId) {
   const auto cached = cache_.find(fontId);
   if (cached != cache_.end()) return cached->second;
 
-  const auto entry = fileByFontId_.find(fontId);
-  if (entry == fileByFontId_.end()) {
+  // A replaced id the DDF dropped: the font standing in for it, cached
+  // under both ids (FontIndex.h).
+  const String drawn = fontindex::resolve(index_, fontId);
+  if (!drawn.isEmpty() && drawn != fontId) {
+    const BdfFont* stand = get(drawn);
+    cache_[fontId] = const_cast<BdfFont*>(stand);
+    Serial.printf("[ddf-fonts] project wants font \"%s\", drawn with \"%s\", which replaces it\n", fontId.c_str(),
+                  drawn.c_str());
+    return stand;
+  }
+
+  const auto entry = index_.fileById.find(fontId);
+  if (entry == index_.fileById.end()) {
     // Cached as a miss too, so a project referencing a font this device
     // does not publish costs one lookup rather than one per redraw.
     cache_[fontId] = nullptr;

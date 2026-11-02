@@ -150,7 +150,14 @@ int16_t ColorScreenRenderer::inkOverhang(const BdfFont* font, const String& text
   return over > 0 ? over : 0;
 }
 
+const BdfFont* ColorScreenRenderer::standIn(const String& fontId) const {
+  const String drawn = fontStore_.drawnId(fontId);
+  if (drawn.isEmpty() || drawn == fontId) return nullptr;
+  return fontStore_.get(fontId);
+}
+
 int ColorScreenRenderer::getFontAscentById(const String& fontId) const {
+  if (const BdfFont* stand = standIn(fontId)) return stand->fontAscent();
   const ProjectConfig& project = projectLoader_.getProject();
   for (const Font& font : project.fonts) {
     if (font.id == fontId) return font.ascent;
@@ -159,6 +166,7 @@ int ColorScreenRenderer::getFontAscentById(const String& fontId) const {
 }
 
 int ColorScreenRenderer::getFontDescentById(const String& fontId) const {
+  if (const BdfFont* stand = standIn(fontId)) return stand->fontDescent();
   const ProjectConfig& project = projectLoader_.getProject();
   for (const Font& font : project.fonts) {
     if (font.id == fontId) return font.descent;
@@ -167,6 +175,7 @@ int ColorScreenRenderer::getFontDescentById(const String& fontId) const {
 }
 
 int ColorScreenRenderer::getFontSizeById(const String& fontId) const {
+  if (const BdfFont* stand = standIn(fontId)) return stand->fontAscent() + stand->fontDescent();
   const ProjectConfig& project = projectLoader_.getProject();
   for (const Font& font : project.fonts) {
     if (font.id == fontId) return font.size;
@@ -684,14 +693,17 @@ const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& d
     const BdfFont* candidate = fontFor(f.id);
     if (candidate == nullptr || !hasAll(candidate)) continue;
     if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) continue;
-    const int line = f.ascent + f.descent;
-    if (smallest == nullptr || line < smallest->ascent + smallest->descent) smallest = &f;
-    if (line * 10 <= height * 6 && (best == nullptr || line > best->ascent + best->descent)) best = &f;
+    // Through the getters: a replaced font the DDF dropped measures as the
+    // font drawing it (standIn).
+    const auto lineOf = [this](const Font* font) { return getFontAscentById(font->id) + getFontDescentById(font->id); };
+    const int line = lineOf(&f);
+    if (smallest == nullptr || line < lineOf(smallest)) smallest = &f;
+    if (line * 10 <= height * 6 && (best == nullptr || line > lineOf(best))) best = &f;
   }
   const Font* chosen = best != nullptr ? best : smallest;
   if (chosen == nullptr) return nullptr;
-  ascent = chosen->ascent;
-  descent = chosen->descent;
+  ascent = getFontAscentById(chosen->id);
+  descent = getFontDescentById(chosen->id);
   return fontFor(chosen->id);
 }
 

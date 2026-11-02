@@ -3,6 +3,7 @@
 #include <map>
 
 #include "BdfFont.h"
+#include "FontIndex.h"
 
 // Hands out the fonts this device publishes in its own DDF, parsed from the
 // .bdf files inside the compiled-in DDF_ZIP.
@@ -21,8 +22,14 @@
 class DdfFontStore {
 public:
   // Parsed font for a DDF font id ("font-helvR18"), or nullptr if the DDF
-  // has no such font or it could not be read.
+  // has no such font or it could not be read. An id the DDF no longer
+  // declares but lists in a font's `replaces` gets that font (FontIndex.h).
   const BdfFont* get(const String& fontId);
+
+  // The declared id that draws `fontId` - itself, or the font replacing it -
+  // or "" when there is none. For metrics that must be the drawn font's: an
+  // old project's own entry for a replaced font carries the old font's.
+  String drawnId(const String& fontId);
 
   // The id of the first font the DDF declares - what to fall back to when a
   // project names a font this device does not publish. Deliberately
@@ -34,9 +41,9 @@ public:
 private:
   bool ensureIndex();
 
-  // font id -> path inside the DDF zip, read once from device.json.
-  std::map<String, String> fileByFontId_;
+  // Declared ids, their files and what replaces what, read once from
+  // device.json.
+  fontindex::Index<String> index_;
   std::map<String, BdfFont*> cache_;
   bool indexed_ = false;
-  String defaultFontId_;
 };
