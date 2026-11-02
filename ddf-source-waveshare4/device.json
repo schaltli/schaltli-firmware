@@ -396,7 +396,10 @@
       "family": "Roboto",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 9
+      "capHeight": 9,
+      "replaces": [
+        "font-helvR08"
+      ]
     },
     {
       "id": "font-roboto-c14",
@@ -409,7 +412,10 @@
       "family": "Roboto",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 14
+      "capHeight": 14,
+      "replaces": [
+        "font-helvR12"
+      ]
     },
     {
       "id": "font-roboto-c21",
@@ -422,7 +428,11 @@
       "family": "Roboto",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 21
+      "capHeight": 21,
+      "replaces": [
+        "font-helvR18",
+        "font-helvR24"
+      ]
     },
     {
       "id": "font-roboto-c33",
@@ -435,7 +445,11 @@
       "family": "Roboto",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 33
+      "capHeight": 33,
+      "replaces": [
+        "font-fur35",
+        "font-fur42"
+      ]
     },
     {
       "id": "font-robotob-c9",
@@ -448,7 +462,10 @@
       "family": "Roboto",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 9
+      "capHeight": 9,
+      "replaces": [
+        "font-helvB08"
+      ]
     },
     {
       "id": "font-robotob-c14",
@@ -461,7 +478,10 @@
       "family": "Roboto",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 14
+      "capHeight": 14,
+      "replaces": [
+        "font-helvB12"
+      ]
     },
     {
       "id": "font-robotob-c21",
@@ -474,7 +494,11 @@
       "family": "Roboto",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 21
+      "capHeight": 21,
+      "replaces": [
+        "font-helvB18",
+        "font-helvB24"
+      ]
     },
     {
       "id": "font-robotob-c33",
@@ -487,7 +511,11 @@
       "family": "Roboto",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 33
+      "capHeight": 33,
+      "replaces": [
+        "font-fub35",
+        "font-fub42"
+      ]
     },
     {
       "id": "font-inter-c9",
@@ -500,7 +528,11 @@
       "family": "Inter",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 9
+      "capHeight": 9,
+      "replaces": [
+        "font-luRS10",
+        "font-luRS12"
+      ]
     },
     {
       "id": "font-inter-c14",
@@ -513,7 +545,12 @@
       "family": "Inter",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 14
+      "capHeight": 14,
+      "replaces": [
+        "font-luRS14",
+        "font-luRS18",
+        "font-luRS19"
+      ]
     },
     {
       "id": "font-inter-c21",
@@ -526,7 +563,10 @@
       "family": "Inter",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 21
+      "capHeight": 21,
+      "replaces": [
+        "font-luRS24"
+      ]
     },
     {
       "id": "font-inter-c33",
@@ -552,7 +592,11 @@
       "family": "Inter",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 9
+      "capHeight": 9,
+      "replaces": [
+        "font-luBS10",
+        "font-luBS12"
+      ]
     },
     {
       "id": "font-interb-c14",
@@ -565,7 +609,12 @@
       "family": "Inter",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 14
+      "capHeight": 14,
+      "replaces": [
+        "font-luBS14",
+        "font-luBS18",
+        "font-luBS19"
+      ]
     },
     {
       "id": "font-interb-c21",
@@ -578,7 +627,10 @@
       "family": "Inter",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 21
+      "capHeight": 21,
+      "replaces": [
+        "font-luBS24"
+      ]
     },
     {
       "id": "font-interb-c33",
@@ -630,7 +682,15 @@
       "family": "Roboto Condensed",
       "weight": "regular",
       "bpp": 4,
-      "capHeight": 21
+      "capHeight": 21,
+      "replaces": [
+        "font-logisoso62n",
+        "font-logisoso28",
+        "font-logisoso30",
+        "font-logisoso32",
+        "font-logisoso34",
+        "font-logisoso38"
+      ]
     },
     {
       "id": "font-robotocondb-c9",
@@ -681,7 +741,10 @@
       "descent": 0,
       "family": "Seven Segment",
       "weight": "regular",
-      "bpp": 4
+      "bpp": 4,
+      "replaces": [
+        "font-seg7-47"
+      ]
     },
     {
       "id": "font-seg7b-47-4bit",
@@ -693,34 +756,37 @@
       "descent": 0,
       "family": "Seven Segment",
       "weight": "bold",
-      "bpp": 4
+      "bpp": 4,
+      "replaces": [
+        "font-seg7b-47"
+      ]
     }
   ],
   "typography": [
     {
       "name": "Standard",
       "styles": {
-        "caption": "Helvetica",
-        "label": "Helvetica",
-        "title": "Helvetica",
-        "display": "FreeUniversal"
+        "caption": "Roboto",
+        "label": "Roboto",
+        "title": "Roboto",
+        "display": "Roboto"
       }
     },
     {
       "name": "Humanist",
       "styles": {
-        "caption": "Lucida Sans",
-        "label": "Lucida Sans",
-        "title": "Lucida Sans",
-        "display": "FreeUniversal"
+        "caption": "Inter",
+        "label": "Inter",
+        "title": "Inter",
+        "display": "Inter"
       }
     },
     {
       "name": "Technic",
       "styles": {
-        "caption": "Lucida Sans",
-        "label": "Lucida Sans",
-        "title": "Logisoso",
+        "caption": "Roboto Condensed",
+        "label": "Roboto Condensed",
+        "title": "Roboto Condensed",
         "display": "Seven Segment"
       }
     }

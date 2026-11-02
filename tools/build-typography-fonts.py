@@ -11,6 +11,16 @@ chosen on 2026-09-30 from previews on all three boards:
     Humanist   Lucida Sans               Display: FreeUniversal
     Technic    Lucida Sans, Title Logisoso, Display: Seven Segment
 
+On the colour boards (Knob, 4", 4.3B) they became 4-bit on 2026-11-02
+(schaltli-designer docs/2026-11-01-4bit-fonts.md), under the same names:
+
+    Standard   Roboto
+    Humanist   Inter
+    Technic    Roboto Condensed, Display: Seven Segment (4-bit)
+
+and each 4-bit font's `replaces` names the 1-bit fonts it stands in for
+(add_replaces). The PaperS3 keeps the 1-bit ones above.
+
 This writes their fonts into ddf-source*/fonts, adds them to device.json
 with their family and weight, and writes the three typographies. Run it
 again after changing the sizes below; it keeps fonts that are already
@@ -90,6 +100,32 @@ TYPOGRAPHIES = [
     {"name": "Humanist", "styles": {"caption": "Lucida Sans", "label": "Lucida Sans", "title": "Lucida Sans", "display": "FreeUniversal"}},
     {"name": "Technic", "styles": {"caption": "Lucida Sans", "label": "Lucida Sans", "title": "Logisoso", "display": "Seven Segment"}},
 ]
+
+# The colour boards' typographies once their fonts are 4-bit (decision 9):
+# replaced, not joined (decision 2), under the same names, so a project's
+# chosen typography carries over.
+TYPOGRAPHIES_4BIT = [
+    {"name": "Standard", "styles": {"caption": "Roboto", "label": "Roboto", "title": "Roboto", "display": "Roboto"}},
+    {"name": "Humanist", "styles": {"caption": "Inter", "label": "Inter", "title": "Inter", "display": "Inter"}},
+    {"name": "Technic", "styles": {"caption": "Roboto Condensed", "label": "Roboto Condensed", "title": "Roboto Condensed", "display": "Seven Segment"}},
+]
+
+# Which 4-bit family stands in for each 1-bit one (spec, «Firmware»: a
+# project still on a board names old ids, and the firmware draws them with
+# the font that `replaces` them; the designer rewrites them on opening). By
+# the role the old family had in the old typographies: Helvetica was
+# Standard, Lucida Sans Humanist, Logisoso Technic's Title, FreeUniversal the
+# Display of Standard (and Humanist - Standard taken, the default). Courier
+# has no monospaced successor and goes to Standard's face.
+REPLACED_BY_FAMILY = {
+    "Helvetica": "Roboto",
+    "Courier": "Roboto",
+    "FreeUniversal": "Roboto",
+    "Lucida Sans": "Inter",
+    "Logisoso": "Roboto Condensed",
+    "LogiSoSo": "Roboto Condensed",
+    "Seven Segment": "Seven Segment",
+}
 
 LICENSES = """# Font licences
 
@@ -225,6 +261,55 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
             check=True, capture_output=True))
 
 
+def cap_of(font):
+    """A 4-bit face's capital height; Seven Segment's digits fill its line."""
+    return font.get("capHeight") or font["ascent"]
+
+
+def add_replaces(device):
+    """Each 1-bit font in exactly one 4-bit font's `replaces`: the successor
+    family (REPLACED_BY_FAMILY), the same weight, and the face for the text
+    style the old font served. The designer took, for each style, the face of
+    a family whose line comes closest to the style's line; a font it took for
+    several styles counts for the smallest, one it took for none for the
+    style whose line is nearest its own. That style's 4-bit face is the one at
+    its capital height (decision 10), or the family's closest to it where the
+    family has none for that style (Roboto Condensed has no Display).
+    Only the styles the old typographies set in that family count: the
+    smallest FreeUniversal is not a Caption because it is FreeUniversal's
+    smallest, it was only ever a Display.
+
+    By the capitals alone, Lucida Sans 24px - Humanist's Title on the 4.3B,
+    a 32 px line against Title's 39 - went to Inter at Label size, and every
+    title would have shrunk."""
+    ppmm = pixels_per_mm(device)
+    style_line = {st: mm * ppmm for st, mm in TEXT_STYLE_MM.items()}
+    style_cap = {st: round(CAP_PER_LINE * line) for st, line in style_line.items()}
+    order = list(TEXT_STYLE_MM)
+    four = [f for f in device["fonts"] if f.get("bpp") == 4]
+    for f in four:
+        f.pop("replaces", None)
+    olds = [f for f in device["fonts"] if f.get("bpp") != 4]
+    for old in olds:
+        family = REPLACED_BY_FAMILY.get(old.get("family"))
+        if family is None:
+            sys.exit(f"{old['id']}: no 4-bit family replaces {old.get('family')!r} - add it to REPLACED_BY_FAMILY")
+        weight = old.get("weight", "regular")
+        siblings = [f for f in olds if f.get("family") == old.get("family") and f.get("weight", "regular") == weight]
+        used_for = {st for t in TYPOGRAPHIES for st, fam in t["styles"].items() if fam == old.get("family")}
+        served = [st for st in order if st in used_for
+                  and min(siblings, key=lambda f: (abs(f["size"] - style_line[st]), f["size"]))["id"] == old["id"]]
+        style = served[0] if served else min(order, key=lambda st: abs(style_line[st] - old["size"]))
+        faces = [f for f in four if f["family"] == family and f["weight"] == weight] or                 [f for f in four if f["family"] == family and f["weight"] == "regular"]
+        if not faces:
+            sys.exit(f"{old['id']}: no 4-bit {family} face")
+        if family == "Seven Segment":
+            best = faces[0]
+        else:
+            best = min(faces, key=lambda f: (abs(cap_of(f) - style_cap[style]), cap_of(f)))
+        best.setdefault("replaces", []).append(old["id"])
+
+
 def main():
     u8g2 = u8g2_source()
     for board, display_px in BOARDS.items():
@@ -263,8 +348,10 @@ def main():
 
         if board in COLOUR_BOARDS:
             add_four_bit_fonts(device, fonts_dir, display_px)
-
-        device["typography"] = TYPOGRAPHIES
+            add_replaces(device)
+            device["typography"] = TYPOGRAPHIES_4BIT
+        else:
+            device["typography"] = TYPOGRAPHIES
         # Written only when something changed, so a board this run adds
         # nothing to (the PaperS3) keeps its file as it is, formatting and all.
         if device != before:
@@ -276,7 +363,7 @@ def main():
         if current != licenses_for(board):
             with open(licenses_path, "w", encoding="utf-8", newline="\n") as f:
                 f.write(licenses_for(board))
-        print(f"{board}: {len(device['fonts'])} fonts, typographies {', '.join(t['name'] for t in TYPOGRAPHIES)}")
+        print(f"{board}: {len(device['fonts'])} fonts, typographies {', '.join(t['name'] + ' (' + t['styles']['label'] + ')' for t in device['typography'])}")
 
 
 main()
