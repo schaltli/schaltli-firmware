@@ -11,7 +11,10 @@
 //    digit per pixel of its box, every box trimmed to its ink, an «H» with a
 //    full stem;
 //  - the glyph set is what Roboto has of today's 753 (helvR18): «ä ß € — …»
-//    in, «Ɔ» (U+0186, which Roboto lacks) out, 468 in all.
+//    in, «Ɔ» (U+0186, which Roboto lacks) out, 468 in all;
+//  - --charset cp1250+cp1252, the colour boards' 4-bit fonts since
+//    2026-11-02: German, French, English, Czech, Polish and the euro sign,
+//    the chart's «→» and «−», and nothing from beyond (Cyrillic, Greek).
 //
 // Exit 0 on pass, 1 on a failure, 2 when there is no Python with Pillow -
 // the code the designer's hil/test-all.js reports as SKIPPED, loudly.
@@ -87,6 +90,21 @@ const has = (ch) => glyphs[ch.codePointAt(0)] !== undefined;
 check(["ä", "ß", "€", "—", "…", "°"].every(has), "glyphs: ä ß € — … ° are there");
 check(!has("Ɔ"), "glyphs: U+0186, which Roboto lacks, is not");
 check(Object.keys(glyphs).length === 468, `glyphs: 468 of helvR18's 753 (got ${Object.keys(glyphs).length})`);
+
+// The code pages the colour boards' 4-bit fonts are written with.
+const pages = path.join(OUT, "pages.bdf");
+tool([roboto, "14", pages, "Roboto-Regular-pages", "--bpp", "4", "--by", "cap", "--axes", "wght=400,wdth=100", "--charset", "cp1250+cp1252"]);
+const inPages = new Set([...fs.readFileSync(pages, "utf8").matchAll(/^ENCODING (\d+)$/gm)].map((m) => Number(m[1])));
+const paged = (ch) => inPages.has(ch.codePointAt(0));
+const french = ["à", "â", "ç", "è", "é", "ê", "ë", "î", "ï", "ô", "ù", "û", "ü", "ÿ", "œ", "Œ", "À", "È", "É"];
+const central = ["ä", "ö", "ü", "ß", "Č", "č", "ł", "Ł", "ő", "ž", "ř", "ą", "ę"];
+check([...french, ...central, "€", "—", "…", "°", "•", "−"].every(paged), "code pages: French, German, Czech, Polish, € — … ° • and the chart's − are there");
+// Roboto has no «→» of its own; Inter, which has, is written with it.
+const inter = path.join(OUT, "inter.bdf");
+tool([path.join(REPO, "tools", "fonts-src", "inter", "Inter[opsz,wght].ttf"), "14", inter, "Inter-check", "--bpp", "4", "--by", "cap", "--axes", "wght=400", "--charset", "cp1250+cp1252"]);
+check(/^ENCODING 8594$/m.test(fs.readFileSync(inter, "utf8")), "code pages: the chart's → is asked for (Inter has it)");
+check(!paged("Ж") && !paged("Ω") && !paged("Ɔ"), "code pages: nothing from beyond them (Ж, Ω, Ɔ)");
+check(inPages.size > 250 && inPages.size < 290, `code pages: ${inPages.size} glyphs, against 468 from helvR18's set`);
 
 fs.rmSync(OUT, { recursive: true, force: true });
 if (failures.length) {

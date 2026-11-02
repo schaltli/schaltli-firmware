@@ -81,9 +81,13 @@ COLOUR_BOARDS = ["ddf-source", "ddf-source-waveshare4v3b", "ddf-source-waveshare
 # today's Helvetica BDFs' own ratio (docs/device-contract.md, «Font depth»).
 TEXT_STYLE_MM = {"caption": 2.0, "label": 3.0, "title": 4.5, "display": 7.0}
 CAP_PER_LINE = 0.69
-# Today's helvR18 - the 753 glyphs the designer has offered since 2026-08-22;
-# each family is written with as many of them as it has.
-CHARSET_FROM = os.path.join(REPO, "ddf-source-waveshare4v3b", "fonts", "helvR18.bdf")
+# The characters of the Windows code pages for Central and Western Europe
+# and the chart's arrow and minus (tools/ttf-to-bdf.py --charset); each
+# family is written with as many of them as it has. helvR18's 753 until
+# 2026-11-02, when they made a 4-bit Display face half a megabyte of PSRAM
+# and three typographies on the 4.3B used it all up; the user chose the code
+# pages, French included.
+CHARSET = "cp1250+cp1252"
 FONTS_SRC = os.path.join(REPO, "tools", "fonts-src")
 # (family, file tag, TTF, axes per weight, styles it serves)
 FOUR_BIT_FAMILIES = [
@@ -243,7 +247,7 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
                     "capHeight": cap,
                 }, lambda path, ttf=ttf, cap=cap, name=name, axes_arg=axes_arg: subprocess.run(
                     [sys.executable, TTF_TO_BDF, os.path.join(FONTS_SRC, ttf), str(cap), path, name,
-                     "--bpp", "4", "--by", "cap", "--axes", axes_arg, "--charset-from", CHARSET_FROM],
+                     "--bpp", "4", "--by", "cap", "--axes", axes_arg, "--charset", CHARSET],
                     check=True, capture_output=True))
     for weight, ttf, tag in [("regular", "DSEG7Classic-Regular.ttf", "seg7"), ("bold", "DSEG7Classic-Bold.ttf", "seg7b")]:
         name = f"{tag}-{display_px}-4bit"
@@ -257,7 +261,7 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
             "bpp": 4,
         }, lambda path, ttf=ttf, name=name: subprocess.run(
             [sys.executable, TTF_TO_BDF, os.path.join(DSEG7, ttf), str(display_px), path, f"Seven-Segment-{name}",
-             "--bpp", "4"],
+             "--bpp", "4", "--charset", CHARSET],
             check=True, capture_output=True))
 
 

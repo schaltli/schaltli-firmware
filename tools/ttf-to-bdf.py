@@ -1,7 +1,8 @@
 """Rasterises a TrueType font to a BDF, 1 bit (default) or 4 bits per pixel.
 
     python tools/ttf-to-bdf.py <font.ttf> <px> <out.bdf> <bdf font name>
-        [--bpp 1|4] [--by line|cap] [--axes wght=700,wdth=100] [--charset-from <font.bdf>]
+        [--bpp 1|4] [--by line|cap] [--axes wght=700,wdth=100]
+        [--charset-from <font.bdf> | --charset cp1250+cp1252]
 
 --by line (default): <px> is a line height - ascent + descent as the TTF
 reports them at the chosen pixel size, the largest size whose line still
@@ -30,7 +31,13 @@ their default.
 Characters: Latin-1 (32-126, 160-255) like the u8g2 `_tf` fonts, or with
 --charset-from every ENCODING of that BDF - for the 4-bit fonts today's
 helvR18, whose 753 glyphs the designer has offered since 2026-08-22. With
---bpp 4 or --charset-from only characters the font's cmap maps are written:
+--charset cp1250+cp1252 the printable characters of the Windows code pages
+for Central and Western Europe, euro sign included, and the two the chart
+draws («→», «−»): German, French and English, Czech and Polish too - the
+colour boards' 4-bit fonts since 2026-11-02 (the user: helvR18's 753 cost a
+4-bit Display face over half a megabyte of PSRAM, and a few typographies
+used it all up). With
+--bpp 4 or a charset only characters the font's cmap maps are written:
 a font has what it has, so the designer's "does the device have this
 character?" keeps one answer.
 
@@ -202,7 +209,7 @@ def parse_args(argv):
     if len(argv) < 5:
         raise SystemExit(__doc__)
     args = {"path": argv[1], "px": int(argv[2]), "out": argv[3], "name": argv[4],
-            "bpp": 1, "by": "line", "axes": None, "charset": None}
+            "bpp": 1, "by": "line", "axes": None, "charset": None, "named": None}
     rest = argv[5:]
     while rest:
         if len(rest) < 2:
@@ -216,12 +223,36 @@ def parse_args(argv):
             args["axes"] = {k: float(v) for k, v in (p.split("=") for p in value.split(","))}
         elif flag == "--charset-from":
             args["charset"] = value
+        elif flag == "--charset":
+            if value not in NAMED_CHARSETS:
+                raise SystemExit(f"unknown charset {value}; known: {', '.join(NAMED_CHARSETS)}")
+            args["named"] = value
         else:
             raise SystemExit(f"unknown option {flag}")
         rest = rest[2:]
     if args["bpp"] not in (1, 4) or args["by"] not in ("line", "cap"):
         raise SystemExit(__doc__)
     return args
+
+
+def code_pages(*names):
+    """The printable characters of single-byte code pages, as code points."""
+    codes = set()
+    for name in names:
+        for byte in list(range(0x20, 0x7F)) + list(range(0x80, 0x100)):
+            try:
+                ch = bytes([byte]).decode(name)
+            except UnicodeDecodeError:
+                continue
+            if ch.isprintable() or ch == "\u00a0":
+                codes.add(ord(ch))
+    return codes
+
+
+# The chart's own: «→» past the window's end, «−» before a negative energy
+# (ChartCore.cpp, the designer's lib/chart-layout.ts).
+CHART_CHARACTERS = {0x2192, 0x2212}
+NAMED_CHARSETS = {"cp1250+cp1252": lambda: sorted(code_pages("cp1250", "cp1252") | CHART_CHARACTERS)}
 
 
 def charset_from(bdf):
@@ -249,9 +280,12 @@ def main():
             cap = round(cap_height * font.size / units_per_em)
     ascent, descent = font.getmetrics()
     line = ascent + descent
-    chars = charset_from(a["charset"]) if a["charset"] else LATIN1
+    if a["named"]:
+        chars = NAMED_CHARSETS[a["named"]]()
+    else:
+        chars = charset_from(a["charset"]) if a["charset"] else LATIN1
     mapped = None
-    if a["bpp"] == 4 or a["charset"]:
+    if a["bpp"] == 4 or a["charset"] or a["named"]:
         mapped = cmap_codes(tables)
         chars = [c for c in chars if c in mapped]
     rows_of = glyph_rows_4bit if a["bpp"] == 4 else glyph_rows
