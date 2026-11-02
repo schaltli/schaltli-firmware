@@ -405,8 +405,45 @@ int16_t BdfFont::drawGlyph(ClippedCanvas16& canvas, uint16_t codepoint, int16_t 
 // as runs, as the 1-bit path does; an edge pixel is mixed into what is
 // already on the canvas there - objects are drawn back to front, and a
 // region redrawn under text redraws the text too, as the level glow relies on.
+//
+// Written straight into the canvas's buffer where it can be (rotation 0, as
+// every board draws): the row clipped once, a word without ink skipped
+// whole, each pixel read and written in place. Through drawPixel/getPixel -
+// two virtual calls, a clip test and a bounds test for every edge pixel -
+// a screen of text in the 4-bit faces redrew 32 % slower on the 4.3B than
+// in the 1-bit ones (hil/redraw-time.js, 2026-11-02). The pixels are the
+// same either way: full coverage is `color`, an edge blendCoverage565.
 void BdfFont::drawCoverageRow(ClippedCanvas16& canvas, const uint32_t* words, uint16_t wordsPerRow,
                               uint16_t digits, int16_t ox, int16_t y, uint16_t color) const {
+  uint16_t* buffer = canvas.getRotation() == 0 ? canvas.getBuffer() : nullptr;
+  if (buffer != nullptr) {
+    const int width = canvas.width();
+    if (y < 0 || y >= canvas.height()) return;
+    int x0 = 0, x1 = width;
+    if (canvas.clipActive()) {
+      if (y < canvas.clipY() || y >= canvas.clipY() + canvas.clipH()) return;
+      if (canvas.clipX() > x0) x0 = canvas.clipX();
+      if (canvas.clipX() + canvas.clipW() < x1) x1 = canvas.clipX() + canvas.clipW();
+    }
+    uint16_t* line = buffer + (int32_t)y * width;
+    const int left = ox + 1;
+    int i = 0;
+    while (i < (int)digits) {
+      const int j = (int)digits - 1 - i;  // from the right end, as stored
+      const int nibble = j & 7;
+      const uint32_t word = (j >> 3) < (int)wordsPerRow ? words[j >> 3] : 0;
+      if (word == 0) {
+        i += nibble + 1;  // this word's digits down to its lowest
+        continue;
+      }
+      const uint8_t a = (uint8_t)((word >> (nibble * 4)) & 0x0F);
+      const int x = left + i;
+      i++;
+      if (a == 0 || x < x0 || x >= x1) continue;
+      line[x] = a == 15 ? color : glyphpixels::blendCoverage565(line[x], color, a);
+    }
+    return;
+  }
   int runStart = -1;
   for (int i = 0; i <= (int)digits; i++) {
     const uint8_t a = rowCoverage(words, wordsPerRow, digits, i);

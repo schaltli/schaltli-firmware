@@ -466,6 +466,10 @@ int16_t ColorScreenRenderer::measureTrueTextWidth(const String& text, const BdfF
 }
 
 void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& displayText, bool drawBorder) {
+  // Where a text's time goes, with the profiler on (?set=render=1): the
+  // 4-bit faces' redraw was measured against the 1-bit ones (T11).
+  const bool profiling = RenderProfile::enabled();
+  uint32_t probe = profiling ? micros() : 0;
   const BdfFont* font = fontFor(obj.properties.fontId);
 
   int fontAscent = getFontAscentById(obj.properties.fontId);
@@ -495,6 +499,10 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
     }
   }
 
+  if (profiling) {
+    RenderProfile::add("  text: font, box", micros() - probe);
+    probe = micros();
+  }
   int16_t baselineY = obj.y + fontAscent;
   int16_t textWidth = measureTrueTextWidth(displayText, font);
 
@@ -515,8 +523,13 @@ void ColorScreenRenderer::drawTextBox(const ScreenObject& obj, const String& dis
   // off. They land on the border, which is what the font says they do.
   const int16_t overhang = inkOverhang(font, displayText, (int16_t)fontAscent);
   canvas_->setClip(obj.x, obj.y - overhang, obj.width, boxHeight + overhang);
+  if (profiling) {
+    RenderProfile::add("  text: measure", micros() - probe);
+    probe = micros();
+  }
   if (font != nullptr) font->drawText(*canvas_, displayText, textX, baselineY, textColor);
   canvas_->clearClip();
+  if (profiling) RenderProfile::add("  text: glyphs", micros() - probe);
 }
 
 int16_t ColorScreenRenderer::textOverhangLimit(const ScreenObject& obj) {
