@@ -62,6 +62,29 @@ U8G2_FONTS = [
     ("Logisoso", "regular", "logisoso", ["28", "30", "32", "34", "38"], "Logisoso"),
 ]
 
+# 4-bit fonts for the colour boards (schaltli-designer docs/2026-11-01-4bit-fonts.md):
+# anti-aliased, rasterised from outline fonts by tools/ttf-to-bdf.py --bpp 4.
+# The PaperS3 keeps its 1-bit fonts (decision 4) and is not listed.
+COLOUR_BOARDS = ["ddf-source", "ddf-source-waveshare4v3b", "ddf-source-waveshare4"]
+# The designer's text styles in millimetres (lib/size-scale.ts, TEXT_STYLE_MM)
+# and the capital height a 4-bit face is picked by: 0.69 of a style's line,
+# today's Helvetica BDFs' own ratio (docs/device-contract.md, «Font depth»).
+TEXT_STYLE_MM = {"caption": 2.0, "label": 3.0, "title": 4.5, "display": 7.0}
+CAP_PER_LINE = 0.69
+# Today's helvR18 - the 753 glyphs the designer has offered since 2026-08-22;
+# each family is written with as many of them as it has.
+CHARSET_FROM = os.path.join(REPO, "ddf-source-waveshare4v3b", "fonts", "helvR18.bdf")
+FONTS_SRC = os.path.join(REPO, "tools", "fonts-src")
+# (family, file tag, TTF, axes per weight, styles it serves)
+FOUR_BIT_FAMILIES = [
+    ("Roboto", "roboto", "roboto/Roboto[wdth,wght].ttf",
+     {"regular": "wght=400,wdth=100", "bold": "wght=700,wdth=100"}, ["caption", "label", "title", "display"]),
+    ("Inter", "inter", "inter/Inter[opsz,wght].ttf",
+     {"regular": "wght=400", "bold": "wght=700"}, ["caption", "label", "title", "display"]),
+    ("Roboto Condensed", "robotocond", "roboto-condensed/RobotoCondensed[wght].ttf",
+     {"regular": "wght=400", "bold": "wght=700"}, ["caption", "label", "title"]),
+]
+
 TYPOGRAPHIES = [
     {"name": "Standard", "styles": {"caption": "Helvetica", "label": "Helvetica", "title": "Helvetica", "display": "FreeUniversal"}},
     {"name": "Humanist", "styles": {"caption": "Lucida Sans", "label": "Lucida Sans", "title": "Lucida Sans", "display": "FreeUniversal"}},
@@ -85,6 +108,20 @@ redistribution; the notes say what else each asks for.
 
 u8g2's font list with each group's licence: https://github.com/olikraus/u8g2/wiki/fntgrp
 """
+
+# The rows the colour boards' LICENSES.md adds to the table above, for the
+# 4-bit fonts only they carry.
+LICENSES_4BIT_ROWS = """| Roboto | roboto-*, robotob-* | Roboto (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits by tools/ttf-to-bdf.py | SIL Open Font License 1.1 (tools/fonts-src/roboto/OFL.txt) |
+| Roboto Condensed | robotocond-*, robotocondb-* | Roboto Condensed (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/roboto-condensed/OFL.txt) |
+| Inter | inter-*, interb-* | Inter (c) 2020 The Inter Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/inter/OFL.txt) |
+"""
+
+
+def licenses_for(board):
+    if board not in COLOUR_BOARDS:
+        return LICENSES
+    anchor = "\n\nu8g2's font list"
+    return LICENSES.replace(anchor, "\n" + LICENSES_4BIT_ROWS.rstrip("\n") + anchor, 1)
 
 
 def u8g2_source():
@@ -115,14 +152,16 @@ def add_font(device, fonts_dir, entry, make):
     if not os.path.exists(path):
         make(path)
     ascent, descent = metrics(path)
+    extra = {k: entry[k] for k in ("bpp", "capHeight") if k in entry}
     existing = next((f for f in device["fonts"] if f["id"] == entry["id"]), None)
     if existing:
         existing["family"] = entry["family"]
         existing["weight"] = entry["weight"]
+        existing.update(extra)
         return
     device["fonts"].append({
         "id": entry["id"],
-        "displayName": entry["displayName"],
+        "displayName": entry["displayName"].replace("{line}", str(ascent + descent)),
         "internalName": entry["internalName"],
         "file": entry["file"],
         "size": ascent + descent,
@@ -130,7 +169,60 @@ def add_font(device, fonts_dir, entry, make):
         "descent": descent,
         "family": entry["family"],
         "weight": entry["weight"],
+        **extra,
     })
+
+
+def pixels_per_mm(device):
+    """As the designer's pixelsPerMmOf: the mean of both axes."""
+    s = device["screen"]
+    return (s["width"] / s["widthMm"] + s["height"] / s["heightMm"]) / 2
+
+
+def add_four_bit_fonts(device, fonts_dir, display_px):
+    """Each family's faces for the styles it serves: the capital height a
+    style asks for, regular and bold (only that one: each face also travels in
+    the DDF the board sends over MQTT, 2026-11-01 - the user chose exact sizes
+    over 2.3-2.9 MB of description); Seven Segment
+    at the Display line."""
+    ppmm = pixels_per_mm(device)
+    for family, tag, ttf, axes, styles in FOUR_BIT_FAMILIES:
+        caps = sorted({round(CAP_PER_LINE * TEXT_STYLE_MM[st] * ppmm) for st in styles})
+        for weight, weight_axes in axes.items():
+            for cap in caps:
+                name = f"{tag}{'b' if weight == 'bold' else ''}-c{cap}"
+                axes_arg = weight_axes
+                if tag == "inter":
+                    # Inter's optical size follows the size it is set at:
+                    # its em is about cap / 0.728, between 14 and 32.
+                    axes_arg += f",opsz={min(32, max(14, round(cap / 0.728)))}"
+                add_font(device, fonts_dir, {
+                    "id": f"font-{name}",
+                    "displayName": f"{family}{' Bold' if weight == 'bold' else ''} {{line}}px",
+                    "internalName": name,
+                    "file": f"fonts/{name}.bdf",
+                    "family": family,
+                    "weight": weight,
+                    "bpp": 4,
+                    "capHeight": cap,
+                }, lambda path, ttf=ttf, cap=cap, name=name, axes_arg=axes_arg: subprocess.run(
+                    [sys.executable, TTF_TO_BDF, os.path.join(FONTS_SRC, ttf), str(cap), path, name,
+                     "--bpp", "4", "--by", "cap", "--axes", axes_arg, "--charset-from", CHARSET_FROM],
+                    check=True, capture_output=True))
+    for weight, ttf, tag in [("regular", "DSEG7Classic-Regular.ttf", "seg7"), ("bold", "DSEG7Classic-Bold.ttf", "seg7b")]:
+        name = f"{tag}-{display_px}-4bit"
+        add_font(device, fonts_dir, {
+            "id": f"font-{name}",
+            "displayName": f"Seven Segment{' Bold' if weight == 'bold' else ''} {display_px}px",
+            "internalName": name,
+            "file": f"fonts/{name}.bdf",
+            "family": "Seven Segment",
+            "weight": weight,
+            "bpp": 4,
+        }, lambda path, ttf=ttf, name=name: subprocess.run(
+            [sys.executable, TTF_TO_BDF, os.path.join(DSEG7, ttf), str(display_px), path, f"Seven-Segment-{name}",
+             "--bpp", "4"],
+            check=True, capture_output=True))
 
 
 def main():
@@ -140,6 +232,7 @@ def main():
         device_json = os.path.join(source, "device.json")
         with open(device_json, encoding="utf-8") as f:
             device = json.load(f)
+        before = json.loads(json.dumps(device))
         fonts_dir = os.path.join(source, "fonts")
 
         for family, weight, prefix, sizes, display in U8G2_FONTS:
@@ -168,11 +261,21 @@ def main():
                 [sys.executable, TTF_TO_BDF, os.path.join(DSEG7, ttf), str(display_px), path, f"Seven-Segment-{name}"],
                 check=True, capture_output=True))
 
+        if board in COLOUR_BOARDS:
+            add_four_bit_fonts(device, fonts_dir, display_px)
+
         device["typography"] = TYPOGRAPHIES
-        with open(device_json, "w", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(device, indent=2, ensure_ascii=False) + "\n")
-        with open(os.path.join(fonts_dir, "LICENSES.md"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(LICENSES)
+        # Written only when something changed, so a board this run adds
+        # nothing to (the PaperS3) keeps its file as it is, formatting and all.
+        if device != before:
+            with open(device_json, "w", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(device, indent=2, ensure_ascii=False) + "\n")
+        licenses_path = os.path.join(fonts_dir, "LICENSES.md")
+        with open(licenses_path, encoding="utf-8") as f:
+            current = f.read().replace("\r\n", "\n")
+        if current != licenses_for(board):
+            with open(licenses_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(licenses_for(board))
         print(f"{board}: {len(device['fonts'])} fonts, typographies {', '.join(t['name'] for t in TYPOGRAPHIES)}")
 
 
