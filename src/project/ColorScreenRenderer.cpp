@@ -77,18 +77,25 @@ namespace {
 // Every font id actually named by an object, children included - a
 // tab-control holds panels which hold ordinary objects, and a label three
 // levels down needs its font as much as one at the top.
+void addFontId(const String& id, std::vector<String>& out) {
+  if (id.isEmpty()) return;
+  for (const auto& existing : out)
+    if (existing == id) return;
+  out.push_back(id);
+}
+
 void collectFontIds(const std::vector<ScreenObject>& objects, std::vector<String>& out) {
   for (const auto& obj : objects) {
-    const String& id = obj.properties.fontId;
-    if (!id.isEmpty()) {
-      bool seen = false;
-      for (const auto& existing : out) {
-        if (existing == id) {
-          seen = true;
-          break;
-        }
-      }
-      if (!seen) out.push_back(id);
+    addFontId(obj.properties.fontId, out);
+    // An energy diagram's values and a chart's days have fonts of their own;
+    // left out, they were parsed at the diagram's or chart's first draw.
+    if (obj.properties.energy.p) {
+      addFontId(obj.properties.energy.p->fontId, out);
+      addFontId(obj.properties.energy.p->valueFontId, out);
+    }
+    if (obj.properties.chart.p) {
+      addFontId(obj.properties.chart.p->fontId, out);
+      addFontId(obj.properties.chart.p->dateFontId, out);
     }
     if (!obj.children.empty()) collectFontIds(obj.children, out);
   }

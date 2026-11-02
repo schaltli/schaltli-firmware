@@ -794,6 +794,12 @@ static void setupRenderStack()
     Serial.println(BOARD_LOG "spare canvas allocation failed - no transitions");
   }
 
+  // Every font the project uses, before the first render - as the knob has
+  // done since it had fonts to parse (src/main.cpp). Parsed on first use
+  // instead, a 4-bit font (150-250 KB of hex) cost the first draw of each
+  // new screen half a second: popups opened in 1.1 s, taps and swipes
+  // during it went by (2026-11-01, designer docs/2026-11-01-4bit-fonts.md).
+  renderer->preloadFonts();
   renderAndPresent("boot");
 }
 
