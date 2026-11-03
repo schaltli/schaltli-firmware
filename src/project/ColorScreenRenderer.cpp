@@ -3799,6 +3799,16 @@ int ColorScreenRenderer::barLevelDragRects(const ScreenObject& obj, const String
   const int pad = levelglow::glowPx(obj.properties.glow) + (vertical ? lay.track.w : lay.track.h) / 2 + 4;
   lo -= pad;
   hi += pad;
+  // Near an end of the track, the piece of it left between the setpoint's gap
+  // and that end is shorter than the track is thick, and its rounded end
+  // changes shape with its length. Dragging the setpoint away from there must
+  // repaint the whole end, or the old shape stays (conformance, slider after
+  // drag from 95 to 80, 2026-11-03).
+  const int thick = vertical ? lay.track.w : lay.track.h;
+  const int trackLo = vertical ? lay.track.y : lay.track.x;
+  const int trackHi = trackLo + (vertical ? lay.track.h : lay.track.w);
+  if (lo < trackLo + 2 * thick) lo = trackLo - 4;
+  if (hi > trackHi - 2 * thick) hi = trackHi + 4;
 
   int count = 0;
   if (vertical) {
