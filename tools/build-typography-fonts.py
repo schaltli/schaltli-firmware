@@ -21,6 +21,12 @@ On the colour boards (Knob, 4", 4.3B) they became 4-bit on 2026-11-02
 and each 4-bit font's `replaces` names the 1-bit fonts it stands in for
 (add_replaces). The PaperS3 keeps the 1-bit ones above.
 
+The colour boards no longer carry the 1-bit fonts (T14, the release after
+the one that moved projects off them). Their `replaces` lists stay as they
+were worked out from the 1-bit fonts, so a project still naming an old id
+draws in its successor. A run that finds 1-bit fonts on a colour board works
+the lists out once more and then drops those fonts and their files.
+
 This writes their fonts into ddf-source*/fonts, adds them to device.json
 with their family and weight, and writes the three typographies. Run it
 again after changing the sizes below; it keeps fonts that are already
@@ -160,8 +166,21 @@ LICENSES_4BIT_ROWS = """| Roboto | roboto-*, robotob-* | Roboto (c) 2011 The Rob
 def licenses_for(board):
     if board not in COLOUR_BOARDS:
         return LICENSES
-    anchor = "\n\nu8g2's font list"
-    return LICENSES.replace(anchor, "\n" + LICENSES_4BIT_ROWS.rstrip("\n") + anchor, 1)
+    # The colour boards: Seven Segment and the 4-bit families; the 1-bit
+    # fonts and the u8g2 note went with T14.
+    head, rest = LICENSES.split("|---|---|---|---|\n", 1)
+    seven = next(line for line in rest.splitlines() if line.startswith("| Seven Segment |"))
+    return head + "|---|---|---|---|\n" + seven + "\n" + LICENSES_4BIT_ROWS
+
+
+def drop_one_bit(device, fonts_dir):
+    """The colour boards' 1-bit fonts out of device.json and fonts/ (T14);
+    the 4-bit fonts' `replaces` keep naming them."""
+    for old in [f for f in device["fonts"] if f.get("bpp") != 4]:
+        path = os.path.join(fonts_dir, os.path.basename(old["file"]))
+        if os.path.exists(path):
+            os.remove(path)
+    device["fonts"] = [f for f in device["fonts"] if f.get("bpp") == 4]
 
 
 def u8g2_source():
@@ -324,7 +343,10 @@ def main():
         before = json.loads(json.dumps(device))
         fonts_dir = os.path.join(source, "fonts")
 
-        for family, weight, prefix, sizes, display in U8G2_FONTS:
+        # The 1-bit fonts: the PaperS3's. The colour boards' are gone
+        # (drop_one_bit) and not made again.
+        one_bit = board not in COLOUR_BOARDS
+        for family, weight, prefix, sizes, display in (U8G2_FONTS if one_bit else []):
             for size in sizes:
                 name = f"{prefix}{size}"
                 add_font(device, fonts_dir, {
@@ -337,7 +359,7 @@ def main():
                 }, lambda path, name=name: subprocess.run(
                     ["node", U8G2_TO_BDF, u8g2, f"u8g2_font_{name}_tf", path], check=True, capture_output=True))
 
-        for weight, ttf, tag in [("regular", "DSEG7Classic-Regular.ttf", "seg7"), ("bold", "DSEG7Classic-Bold.ttf", "seg7b")]:
+        for weight, ttf, tag in [("regular", "DSEG7Classic-Regular.ttf", "seg7"), ("bold", "DSEG7Classic-Bold.ttf", "seg7b")] if one_bit else []:
             name = f"{tag}-{display_px}"
             add_font(device, fonts_dir, {
                 "id": f"font-{name}",
@@ -352,7 +374,11 @@ def main():
 
         if board in COLOUR_BOARDS:
             add_four_bit_fonts(device, fonts_dir, display_px)
-            add_replaces(device)
+            # Worked out while the 1-bit fonts are there to work from, then
+            # kept as they are once they are gone.
+            if any(f.get("bpp") != 4 for f in device["fonts"]):
+                add_replaces(device)
+                drop_one_bit(device, fonts_dir)
             device["typography"] = TYPOGRAPHIES_4BIT
         else:
             device["typography"] = TYPOGRAPHIES

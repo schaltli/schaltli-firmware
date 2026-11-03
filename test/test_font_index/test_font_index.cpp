@@ -43,10 +43,12 @@ void test_dropped_draws_as_its_replacement_the_first_claim_wins() {
   TEST_ASSERT_EQUAL_STRING("", fontindex::resolve(index, std::string("font-never")).c_str());
 }
 
-// The boards' own device.json, as the build tool writes it: every 1-bit font
-// draws as itself; with the 1-bit fonts dropped, as T14 will, each draws as
-// a 4-bit font of its own weight.
-static void board(const char* path) {
+// The boards' own device.json, as the build tool writes it since T14: no
+// 1-bit font left, and every id the 4-bit fonts' `replaces` name - 30 and
+// more, the 1-bit fonts the board carried - draws as the 4-bit font that
+// names it first. Where the PaperS3, which keeps its 1-bit fonts, declares
+// the same id, the replacement has that font's weight.
+static std::string readFile(const char* path) {
   FILE* f = fopen(path, "rb");
   TEST_ASSERT_NOT_NULL_MESSAGE(f, path);
   std::string json;
@@ -54,34 +56,34 @@ static void board(const char* path) {
   size_t n;
   while ((n = fread(buf, 1, sizeof buf, f)) > 0) json.append(buf, n);
   fclose(f);
+  return json;
+}
+
+static void board(const char* path) {
   JsonDocument doc;
-  TEST_ASSERT_FALSE(deserializeJson(doc, json));
+  TEST_ASSERT_FALSE(deserializeJson(doc, readFile(path)));
   JsonArrayConst fonts = doc["fonts"].as<JsonArrayConst>();
+  JsonDocument paper;
+  TEST_ASSERT_FALSE(deserializeJson(paper, readFile("ddf-source-papers3/device.json")));
 
-  Index all;
-  fontindex::read(fonts, all);
-  JsonDocument fourOnly;
-  JsonArray kept = fourOnly["fonts"].to<JsonArray>();
-  int old = 0;
+  Index index;
+  fontindex::read(fonts, index);
+  int replaced = 0;
   for (JsonObjectConst font : fonts) {
-    if ((font["bpp"] | 1) == 4) kept.add(font);
-  }
-  Index dropped;
-  fontindex::read(fourOnly["fonts"].as<JsonArrayConst>(), dropped);
-
-  for (JsonObjectConst font : fonts) {
-    if ((font["bpp"] | 1) == 4) continue;
-    old++;
-    const std::string id = font["id"] | "";
-    TEST_ASSERT_EQUAL_STRING_MESSAGE(id.c_str(), fontindex::resolve(all, id).c_str(), path);
-    const std::string by = fontindex::resolve(dropped, id);
-    TEST_ASSERT_FALSE_MESSAGE(by.empty(), (std::string(path) + ": " + id + " has no replacement").c_str());
-    for (JsonObjectConst f4 : fonts) {
-      if (by != (f4["id"] | "")) continue;
-      TEST_ASSERT_EQUAL_STRING_MESSAGE(font["weight"] | "regular", f4["weight"] | "regular", id.c_str());
+    TEST_ASSERT_EQUAL_INT_MESSAGE(4, font["bpp"] | 1, (std::string(path) + ": " + (font["id"] | "") + " is not 4-bit").c_str());
+    for (JsonVariantConst old : font["replaces"].as<JsonArrayConst>()) {
+      const std::string id = old | "";
+      replaced++;
+      const std::string by = fontindex::resolve(index, id);
+      TEST_ASSERT_FALSE_MESSAGE(by.empty(), (std::string(path) + ": " + id + " has no replacement").c_str());
+      std::string byWeight;
+      for (JsonObjectConst f4 : fonts)
+        if (by == (f4["id"] | "")) byWeight = f4["weight"] | "regular";
+      for (JsonObjectConst f1 : paper["fonts"].as<JsonArrayConst>())
+        if (id == (f1["id"] | "")) TEST_ASSERT_EQUAL_STRING_MESSAGE(f1["weight"] | "regular", byWeight.c_str(), id.c_str());
     }
   }
-  TEST_ASSERT_TRUE_MESSAGE(old >= 30, path);
+  TEST_ASSERT_TRUE_MESSAGE(replaced >= 30, path);
 }
 
 void test_the_knob() { board("ddf-source/device.json"); }

@@ -2,9 +2,10 @@
 //
 //   node tools/ttf-to-bdf-check/run.js
 //
-//  - 1 bit as before: DSEG7 at the 4.3B's Display line comes out byte for
-//    byte as the seg7-61.bdf in its DDF, so --bpp 4 changed nothing for the
-//    fonts that are already there;
+//  - 1 bit as before: DSEG7 at the PaperS3's Display line comes out byte for
+//    byte as the seg7-65.bdf in its DDF, so --bpp 4 changed nothing for the
+//    fonts that are already there (the PaperS3's: the colour boards carry no
+//    1-bit fonts since T14);
 //  - 4 bits reproducible: Roboto twice, the same bytes;
 //  - 4 bits well formed (schaltli-designer docs/device-contract.md, «Font
 //    depth»): BITS_PER_PIXEL 4, the CAP_HEIGHT asked for, every row one hex
@@ -47,14 +48,14 @@ function tool(args) {
 }
 
 // 1 bit, unchanged.
-const seg7 = path.join(OUT, "seg7-61.bdf");
-tool([path.join(REPO, "tools", "fonts-src", "dseg7", "DSEG7Classic-Regular.ttf"), "61", seg7, "Seven-Segment-seg7-61"]);
-const shipped = fs.readFileSync(path.join(REPO, "ddf-source-waveshare4v3b", "fonts", "seg7-61.bdf"));
-check(Buffer.compare(fs.readFileSync(seg7), shipped) === 0, "1 bit: DSEG7 at line 61 is byte for byte the 4.3B's seg7-61.bdf");
+const seg7 = path.join(OUT, "seg7-65.bdf");
+tool([path.join(REPO, "tools", "fonts-src", "dseg7", "DSEG7Classic-Regular.ttf"), "65", seg7, "Seven-Segment-seg7-65"]);
+const shipped = fs.readFileSync(path.join(REPO, "ddf-source-papers3", "fonts", "seg7-65.bdf"));
+check(Buffer.compare(fs.readFileSync(seg7), shipped) === 0, "1 bit: DSEG7 at line 65 is byte for byte the PaperS3's seg7-65.bdf");
 
 // 4 bits, twice.
 const roboto = path.join(REPO, "tools", "fonts-src", "roboto", "Roboto[wdth,wght].ttf");
-const charset = path.join(REPO, "ddf-source-waveshare4v3b", "fonts", "helvR18.bdf");
+const charset = path.join(REPO, "ddf-source-papers3", "fonts", "helvR18.bdf");
 const args = (out) => [roboto, "14", out, "Roboto-Regular-check", "--bpp", "4", "--by", "cap", "--axes", "wght=400,wdth=100", "--charset-from", charset];
 const a = path.join(OUT, "a.bdf");
 const b = path.join(OUT, "b.bdf");
