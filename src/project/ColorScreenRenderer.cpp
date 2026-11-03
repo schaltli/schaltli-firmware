@@ -2993,14 +2993,110 @@ bool ColorScreenRenderer::renderTabControl(const ScreenObject& obj, const String
     ScreenObject offsetChild = child;
     offsetChild.x += obj.x;
     offsetChild.y += obj.y;
+    // Its clip shapes stand in the same space as its x and y.
+    for (ClipShape& c : offsetChild.properties.clips) {
+      c.x += obj.x;
+      c.y += obj.y;
+    }
     renderObject(offsetChild, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
   return true;
 }
 
+const std::vector<std::pair<int16_t, int16_t>>* ColorScreenRenderer::clipSpansFor(int w, int h, int r) {
+  if (clipSpansW_ == w && clipSpansH_ == h && clipSpansR_ == r) return &clipSpans_;
+  // Drawn once into a one-bit canvas by the very primitive the area's box is
+  // drawn with (renderBox), so the shape is its pixel set by definition, and
+  // read back as one span per row - the shape is convex.
+  GFXcanvas1 mask(w, h);
+  if (mask.getBuffer() == nullptr) return nullptr;
+  mask.fillScreen(0);
+  if (r > 0) mask.fillRoundRect(0, 0, w, h, r, 1);
+  else mask.fillRect(0, 0, w, h, 1);
+  clipSpans_.assign(h, {0, 0});
+  for (int y = 0; y < h; y++) {
+    int a = 0;
+    while (a < w && !mask.getPixel(a, y)) a++;
+    int b = w;
+    while (b > a && !mask.getPixel(b - 1, y)) b--;
+    clipSpans_[y] = {(int16_t)a, (int16_t)b};
+  }
+  clipSpansW_ = w;
+  clipSpansH_ = h;
+  clipSpansR_ = r;
+  return &clipSpans_;
+}
+
+// An object a free area clips (`clip`, docs/2026-11-03-card-clip.md): drawn
+// with the canvas region narrowed to the shapes' rectangles - which every
+// drawing path honours, the glyph rows and pills written straight into the
+// buffer too - and the pixels inside those rectangles but outside a shape's
+// round corners put back as they were before it drew. Nothing it draws can
+// land outside the shapes, whichever way it writes.
 bool ColorScreenRenderer::renderObject(const ScreenObject& obj, const String& pressedButtonId,
                                         const String& pendingSwitchId, int pendingSwitchStateIndex,
                                         const String& pressedSwitchId, int pressedSwitchStateIndex) {
+  const std::vector<ClipShape>& clips = obj.properties.clips;
+  if (clips.empty() || canvas_ == nullptr || canvas_->getBuffer() == nullptr || canvas_->getRotation() != 0) {
+    return renderObjectUnclipped(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId,
+                                 pressedSwitchStateIndex);
+  }
+  const bool hadRegion = canvas_->regionActive();
+  const int16_t oldX = canvas_->regionX(), oldY = canvas_->regionY(), oldW = canvas_->regionW(), oldH = canvas_->regionH();
+  // The rectangle every shape and the current region share.
+  int x0 = hadRegion ? oldX : 0, y0 = hadRegion ? oldY : 0;
+  int x1 = hadRegion ? oldX + oldW : canvas_->width(), y1 = hadRegion ? oldY + oldH : canvas_->height();
+  for (const ClipShape& c : clips) {
+    if (c.x > x0) x0 = c.x;
+    if (c.y > y0) y0 = c.y;
+    if (c.x + c.width < x1) x1 = c.x + c.width;
+    if (c.y + c.height < y1) y1 = c.y + c.height;
+  }
+  if (x1 <= x0 || y1 <= y0) return true;  // Nothing of it can show.
+
+  // The corner pixels, saved before it draws: inside the rectangle, outside a shape.
+  uint16_t* buffer = canvas_->getBuffer();
+  const int stride = canvas_->width();
+  struct Run {
+    int16_t x, y, n;
+    size_t at;
+  };
+  std::vector<Run> runs;
+  std::vector<uint16_t> saved;
+  auto save = [&](int y, int a, int b) {
+    if (a < x0) a = x0;
+    if (b > x1) b = x1;
+    if (b <= a) return;
+    runs.push_back({(int16_t)a, (int16_t)y, (int16_t)(b - a), saved.size()});
+    const uint16_t* row = buffer + (int32_t)y * stride + a;
+    saved.insert(saved.end(), row, row + (b - a));
+  };
+  for (const ClipShape& c : clips) {
+    const auto* spans = clipSpansFor(c.width, c.height, c.radius);
+    if (spans == nullptr) continue;
+    // Only the rows its corners round; the rest it covers whole.
+    for (int y = y0; y < y1; y++) {
+      const auto& s = (*spans)[y - c.y];
+      save(y, c.x, c.x + s.first);
+      save(y, c.x + s.second, c.x + c.width);
+    }
+  }
+
+  canvas_->setRegion((int16_t)x0, (int16_t)y0, (int16_t)(x1 - x0), (int16_t)(y1 - y0));
+  const bool drawn = renderObjectUnclipped(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId,
+                                           pressedSwitchStateIndex);
+  for (const Run& r : runs) {
+    uint16_t* row = buffer + (int32_t)r.y * stride + r.x;
+    std::copy(saved.begin() + r.at, saved.begin() + r.at + r.n, row);
+  }
+  if (hadRegion) canvas_->setRegion(oldX, oldY, oldW, oldH);
+  else canvas_->clearRegion();
+  return drawn;
+}
+
+bool ColorScreenRenderer::renderObjectUnclipped(const ScreenObject& obj, const String& pressedButtonId,
+                                                const String& pendingSwitchId, int pendingSwitchStateIndex,
+                                                const String& pressedSwitchId, int pressedSwitchStateIndex) {
   if (obj.type == "box") return renderBox(obj);
   if (objecttypes::isLine(obj.type)) return obj.type == "live-line" ? renderMqttDataLine(obj) : renderLine(obj);
   if (obj.type == "text") return renderLabel(obj);

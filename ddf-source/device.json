@@ -454,7 +454,8 @@
     "scaled-values",
     "button-values",
     "duration-display",
-    "charts"
+    "charts",
+    "clip"
   ],
   "supportsSoftwareButtons": true,
   "testInterface": {

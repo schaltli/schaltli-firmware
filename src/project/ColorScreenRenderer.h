@@ -409,6 +409,14 @@ private:
 
   bool renderObject(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
                      int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);
+  // renderObject without the clip of a free area around it (`clip`).
+  bool renderObjectUnclipped(const ScreenObject& obj, const String& pressedButtonId, const String& pendingSwitchId,
+                             int pendingSwitchStateIndex, const String& pressedSwitchId, int pressedSwitchStateIndex);
+  // The last clip shape's row spans [start, end), read once from the pixels
+  // Adafruit_GFX::fillRoundRect sets for it (docs/2026-11-03-card-clip.md).
+  std::vector<std::pair<int16_t, int16_t>> clipSpans_;
+  int clipSpansW_ = -1, clipSpansH_ = -1, clipSpansR_ = -1;
+  const std::vector<std::pair<int16_t, int16_t>>* clipSpansFor(int w, int h, int r);
   bool renderBox(const ScreenObject& obj);
   void energyInputs(const EnergyDiagramProps& e, std::vector<energydiagram::Node>& nodes,
                     std::vector<energydiagram::Value>& values) const;

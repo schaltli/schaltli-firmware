@@ -469,7 +469,8 @@
     "button-values",
     "duration-display",
     "charts",
-    "pinch"
+    "pinch",
+    "clip"
   ],
   "supportsSoftwareButtons": true
 }

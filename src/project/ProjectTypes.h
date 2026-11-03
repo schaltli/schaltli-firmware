@@ -220,6 +220,19 @@ struct ChartHandle {
   ChartProps* operator->() const { return p.get(); }
 };
 
+// A shape an object is clipped by (device contract 2.1, `clip`;
+// docs/2026-11-03-card-clip.md in the designer): a rounded rectangle in the
+// object's own coordinate space, already inside the clipping area's edge.
+// A pixel of the object shows only where Adafruit_GFX::fillRoundRect(x, y,
+// width, height, radius) would set one, for every shape it carries.
+struct ClipShape {
+  int x = 0;
+  int y = 0;
+  int width = 0;
+  int height = 0;
+  int radius = 0;
+};
+
 // Base properties for screen objects
 struct ObjectProperties {
   // Common properties
@@ -337,6 +350,8 @@ struct ObjectProperties {
   String strokeColor;                     // Box border color - empty means "no border", same as the
                                            // designer's `if (strokeColor && strokeWidth > 0)` check
   int cornerRadius;                       // Corner radius in px (0 = square corners)
+  // Clipped by these, outermost first (`clip`); empty for almost every object.
+  std::vector<ClipShape> clips;
 
   // panel properties - matched against the parent tab-control's `topic`
   // value (that object's own `topic` field, reused rather than duplicated).
