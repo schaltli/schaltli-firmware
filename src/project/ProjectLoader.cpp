@@ -631,6 +631,18 @@ ObjectProperties ProjectLoader::parseObjectProperties(JsonObject propsJson) {
   // the designer's `if (strokeColor && strokeWidth > 0)` check exactly.
   props.strokeColor = propsJson["strokeColor"] | "";
   props.cornerRadius = pixelValue(propsJson["cornerRadius"]);
+  // The shapes a free area clips it by (device contract 2.1, `clip`).
+  if (propsJson["clip"].is<JsonArrayConst>()) {
+    for (JsonObjectConst c : propsJson["clip"].as<JsonArrayConst>()) {
+      ClipShape shape;
+      shape.x = pixelValue(c["x"]);
+      shape.y = pixelValue(c["y"]);
+      shape.width = pixelValue(c["width"]);
+      shape.height = pixelValue(c["height"]);
+      shape.radius = pixelValue(c["radius"]);
+      if (shape.width > 0 && shape.height > 0) props.clips.push_back(shape);
+    }
+  }
 
   // panel properties - matched against the parent tab-control's own
   // `topic` (already parsed above). Default operator "==" covers the
