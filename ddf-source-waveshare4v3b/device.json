@@ -670,6 +670,188 @@
         "font-seg7b-61-4bit",
         "font-seg7b-61"
       ]
+    },
+    {
+      "id": "font-montserrat-c9",
+      "displayName": "Montserrat 17px",
+      "internalName": "montserrat-c9",
+      "file": "fonts/montserrat-c9.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 9
+    },
+    {
+      "id": "font-montserrat-c11",
+      "displayName": "Montserrat 21px",
+      "internalName": "montserrat-c11",
+      "file": "fonts/montserrat-c11.bdf",
+      "size": 21,
+      "ascent": 16,
+      "descent": 5,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 11
+    },
+    {
+      "id": "font-montserrat-c13",
+      "displayName": "Montserrat 23px",
+      "internalName": "montserrat-c13",
+      "file": "fonts/montserrat-c13.bdf",
+      "size": 23,
+      "ascent": 18,
+      "descent": 5,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-montserrat-c14",
+      "displayName": "Montserrat 26px",
+      "internalName": "montserrat-c14",
+      "file": "fonts/montserrat-c14.bdf",
+      "size": 26,
+      "ascent": 20,
+      "descent": 6,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 14
+    },
+    {
+      "id": "font-montserrat-c18",
+      "displayName": "Montserrat 32px",
+      "internalName": "montserrat-c18",
+      "file": "fonts/montserrat-c18.bdf",
+      "size": 32,
+      "ascent": 25,
+      "descent": 7,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 18
+    },
+    {
+      "id": "font-montserrat-c25",
+      "displayName": "Montserrat 45px",
+      "internalName": "montserrat-c25",
+      "file": "fonts/montserrat-c25.bdf",
+      "size": 45,
+      "ascent": 35,
+      "descent": 10,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 25
+    },
+    {
+      "id": "font-montserrat-c37",
+      "displayName": "Montserrat 66px",
+      "internalName": "montserrat-c37",
+      "file": "fonts/montserrat-c37.bdf",
+      "size": 66,
+      "ascent": 52,
+      "descent": 14,
+      "family": "Montserrat",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 37
+    },
+    {
+      "id": "font-montserratb-c9",
+      "displayName": "Montserrat Bold 17px",
+      "internalName": "montserratb-c9",
+      "file": "fonts/montserratb-c9.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 9
+    },
+    {
+      "id": "font-montserratb-c11",
+      "displayName": "Montserrat Bold 21px",
+      "internalName": "montserratb-c11",
+      "file": "fonts/montserratb-c11.bdf",
+      "size": 21,
+      "ascent": 16,
+      "descent": 5,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 11
+    },
+    {
+      "id": "font-montserratb-c13",
+      "displayName": "Montserrat Bold 23px",
+      "internalName": "montserratb-c13",
+      "file": "fonts/montserratb-c13.bdf",
+      "size": 23,
+      "ascent": 18,
+      "descent": 5,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-montserratb-c14",
+      "displayName": "Montserrat Bold 26px",
+      "internalName": "montserratb-c14",
+      "file": "fonts/montserratb-c14.bdf",
+      "size": 26,
+      "ascent": 20,
+      "descent": 6,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 14
+    },
+    {
+      "id": "font-montserratb-c18",
+      "displayName": "Montserrat Bold 32px",
+      "internalName": "montserratb-c18",
+      "file": "fonts/montserratb-c18.bdf",
+      "size": 32,
+      "ascent": 25,
+      "descent": 7,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 18
+    },
+    {
+      "id": "font-montserratb-c25",
+      "displayName": "Montserrat Bold 45px",
+      "internalName": "montserratb-c25",
+      "file": "fonts/montserratb-c25.bdf",
+      "size": 45,
+      "ascent": 35,
+      "descent": 10,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 25
+    },
+    {
+      "id": "font-montserratb-c37",
+      "displayName": "Montserrat Bold 66px",
+      "internalName": "montserratb-c37",
+      "file": "fonts/montserratb-c37.bdf",
+      "size": 66,
+      "ascent": 52,
+      "descent": 14,
+      "family": "Montserrat",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 37
     }
   ],
   "typography": [
@@ -698,6 +880,15 @@
         "label": "Roboto Condensed",
         "title": "Roboto Condensed",
         "display": "Seven Segment"
+      }
+    },
+    {
+      "name": "Geometric",
+      "styles": {
+        "caption": "Montserrat",
+        "label": "Montserrat",
+        "title": "Montserrat",
+        "display": "Montserrat"
       }
     }
   ],

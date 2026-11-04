@@ -9,3 +9,4 @@ redistribution; the notes say what else each asks for.
 | Roboto | roboto-*, robotob-* | Roboto (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits by tools/ttf-to-bdf.py | SIL Open Font License 1.1 (tools/fonts-src/roboto/OFL.txt) |
 | Roboto Condensed | robotocond-*, robotocondb-* | Roboto Condensed (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/roboto-condensed/OFL.txt) |
 | Inter | inter-*, interb-* | Inter (c) 2020 The Inter Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/inter/OFL.txt) |
+| Montserrat | montserrat-*, montserratb-* | Montserrat (c) 2024 The Montserrat.Git Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/montserrat/OFL.txt) |

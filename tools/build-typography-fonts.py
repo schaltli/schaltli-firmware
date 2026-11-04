@@ -1,4 +1,4 @@
-"""Puts the fonts of the three typographies into each board's DDF source.
+"""Puts the fonts of the typographies into each board's DDF source.
 
     python tools/build-typography-fonts.py
 
@@ -28,7 +28,7 @@ draws in its successor. A run that finds 1-bit fonts on a colour board works
 the lists out once more and then drops those fonts and their files.
 
 This writes their fonts into ddf-source*/fonts, adds them to device.json
-with their family and weight, and writes the three typographies. Run it
+with their family and weight, and writes the typographies. Run it
 again after changing the sizes below; it keeps fonts that are already
 there. Then regenerate the headers (tools/generate-ddf-header.js, which
 every build also does).
@@ -112,6 +112,10 @@ FOUR_BIT_FAMILIES = [
      {"regular": "wght=400", "bold": "wght=700"}, ALL_SIZES),
     ("Roboto Condensed", "robotocond", "roboto-condensed/RobotoCondensed[wght].ttf",
      {"regular": "wght=400", "bold": "wght=700"}, [s for s in ALL_SIZES if s != "huge"]),
+    # CamperUI's face (the user, 2026-11-04): its "regular" is Medium, the
+    # weight LVGL's Montserrat fonts are rasterised in.
+    ("Montserrat", "montserrat", "montserrat/Montserrat[wght].ttf",
+     {"regular": "wght=500", "bold": "wght=700"}, ALL_SIZES),
 ]
 
 TYPOGRAPHIES = [
@@ -127,6 +131,8 @@ TYPOGRAPHIES_4BIT = [
     {"name": "Standard", "styles": {"caption": "Roboto", "label": "Roboto", "title": "Roboto", "display": "Roboto"}},
     {"name": "Humanist", "styles": {"caption": "Inter", "label": "Inter", "title": "Inter", "display": "Inter"}},
     {"name": "Technic", "styles": {"caption": "Roboto Condensed", "label": "Roboto Condensed", "title": "Roboto Condensed", "display": "Seven Segment"}},
+    # A fourth since 2026-11-04, CamperUI's Montserrat (the user).
+    {"name": "Geometric", "styles": {"caption": "Montserrat", "label": "Montserrat", "title": "Montserrat", "display": "Montserrat"}},
 ]
 
 # Which 4-bit family stands in for each 1-bit one (spec, «Firmware»: a
@@ -169,6 +175,7 @@ u8g2's font list with each group's licence: https://github.com/olikraus/u8g2/wik
 LICENSES_4BIT_ROWS = """| Roboto | roboto-*, robotob-* | Roboto (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits by tools/ttf-to-bdf.py | SIL Open Font License 1.1 (tools/fonts-src/roboto/OFL.txt) |
 | Roboto Condensed | robotocond-*, robotocondb-* | Roboto Condensed (c) 2011 The Roboto Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/roboto-condensed/OFL.txt) |
 | Inter | inter-*, interb-* | Inter (c) 2020 The Inter Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/inter/OFL.txt) |
+| Montserrat | montserrat-*, montserratb-* | Montserrat (c) 2024 The Montserrat.Git Project Authors, from google/fonts, rasterised at 4 bits | SIL Open Font License 1.1 (tools/fonts-src/montserrat/OFL.txt) |
 """
 
 
