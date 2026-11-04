@@ -373,97 +373,135 @@ void MemoryZipEntryReader::close() {
   zip_ = nullptr;
 }
 
-// Why a project's deviceId could not be read, said once on the serial line:
-// under memory pressure on the 4.3B this failed and, read as "no deviceId",
-// let a project for another device install (2026-11-01). Always false.
-static bool unreadable(const String& zipPath, const char* why) {
-  Serial.printf("[zip] %s: %s - its deviceId is unknown\n", zipPath.c_str(), why);
-  return false;
-}
+// project.json out of the zip, fed to ArduinoJson in pieces as it is
+// inflated - never held whole. Until 2026-11-04 both readers below inflated
+// all of it into one buffer first: 626 KB for the HIL's large project, and
+// after the conformance suite the 4.3B had 1.5 MB of PSRAM free but no block
+// that size, so a project for this very device was refused as «could not
+// read the project's deviceId» (hil/internal-heap.js). Now it takes a 1 KB
+// buffer, whatever the project's size.
+//
+// ArduinoJson's custom reader: read() and readBytes(). The CRC runs over
+// every byte inflated, and drain() inflates whatever the parser left (it
+// stops at the closing brace), so a damaged entry is still caught.
+class ZipEntryJsonReader {
+public:
+  explicit ZipEntryJsonReader(mz_zip_reader_extract_iter_state* state) : state_(state) {}
+  int read() {
+    if (pos_ == len_ && !fill()) return -1;
+    return buf_[pos_++];
+  }
+  size_t readBytes(char* out, size_t n) {
+    size_t done = 0;
+    while (done < n) {
+      if (pos_ == len_ && !fill()) break;
+      size_t take = len_ - pos_;
+      if (take > n - done) take = n - done;
+      memcpy(out + done, buf_ + pos_, take);
+      pos_ += take;
+      done += take;
+    }
+    return done;
+  }
+  void drain() {
+    pos_ = len_;
+    while (fill()) pos_ = len_;
+  }
+  size_t total() const { return total_; }
+  uint32_t crc() const { return crc_; }
 
-bool readProjectDeviceId(const String& zipPath, String& deviceIdOut) {
-  deviceIdOut = "";
+private:
+  bool fill() {
+    len_ = mz_zip_reader_extract_iter_read(state_, buf_, sizeof(buf_));
+    pos_ = 0;
+    crc_ = (uint32_t)mz_crc32(crc_, buf_, len_);
+    total_ += len_;
+    return len_ > 0;
+  }
+  mz_zip_reader_extract_iter_state* state_;
+  uint8_t buf_[1024];
+  size_t pos_ = 0;
+  size_t len_ = 0;
+  size_t total_ = 0;
+  uint32_t crc_ = MZ_CRC32_INIT;
+};
+
+// Parses the zip's project.json through `filter` into `doc`. False, with
+// *why set, when the zip, the entry, its CRC or its JSON cannot be read.
+//
+// Matches ProjectLoader.cpp's own NestingLimit(30) exactly - see the
+// e-paper ProjectInstaller's identical comment for why the default (10)
+// isn't enough for a real project once tab-control/panel nesting,
+// icon-pair arrays etc. are involved.
+// Only the filter's fields are kept: parsed whole, a large project's
+// strings - each a small allocation, and small ones go to internal RAM -
+// took ~114 KB of it for a moment, on every install, leaving 1 KB for
+// WiFi (30 pages on the 4.3B, 2026-10-14). The reboot after an install
+// hid it from every reading until a refused install did not reboot.
+static bool readProjectJsonFields(const String& zipPath, JsonDocument& filter, JsonDocument& doc, const char** why) {
   File zipFile = LittleFS.open(zipPath, "r");
-  if (!zipFile) return unreadable(zipPath, "could not open the zip");
-
-  size_t zipSize = zipFile.size();
+  if (!zipFile) {
+    *why = "could not open the zip";
+    return false;
+  }
   ZipFileReadContext readCtx{&zipFile};
-
   mz_zip_archive zip;
   memset(&zip, 0, sizeof(zip));
   useDictReservingAllocator(zip);
   useStreamingReader(zip, readCtx);
-  if (!mz_zip_reader_init(&zip, zipSize, 0)) {
+  if (!mz_zip_reader_init(&zip, zipFile.size(), 0)) {
     zipFile.close();
-    return unreadable(zipPath, "not a zip it can read");
+    *why = "not a zip it can read";
+    return false;
   }
 
+  bool ok = false;
   mz_uint32 fileIndex = 0;
-  if (!mz_zip_reader_locate_file_v2(&zip, "project.json", nullptr, 0, &fileIndex)) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return unreadable(zipPath, "no project.json in it");
-  }
-
   mz_zip_archive_file_stat fileStat;
   memset(&fileStat, 0, sizeof(fileStat));
-  if (!mz_zip_reader_file_stat(&zip, fileIndex, &fileStat)) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return unreadable(zipPath, "project.json's entry unreadable");
-  }
-
-  // See useDictReservingAllocator() above for why the zip's allocator is
-  // overridden. Separately, don't trust mz_zip_reader_extract_iter_free()'s
-  // own return value for success/failure here - verify against
-  // fileStat.m_crc32 ourselves instead, over jsonData (a plain, unrelated
-  // allocation unaffected by anything miniz's internal bookkeeping gets
-  // wrong).
-  size_t jsonSize = fileStat.m_uncomp_size;
-  uint8_t* jsonData = (uint8_t*)malloc(jsonSize);
-  if (!jsonData) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return unreadable(zipPath, "no memory for project.json");
-  }
-
-  bool extractOk = false;
-  mz_zip_reader_extract_iter_state* pState = mz_zip_reader_extract_iter_new(&zip, fileIndex, 0);
-  if (pState) {
-    size_t totalRead = 0;
-    while (totalRead < jsonSize) {
-      size_t bytesRead = mz_zip_reader_extract_iter_read(pState, jsonData + totalRead, jsonSize - totalRead);
-      if (bytesRead == 0) break;
-      totalRead += bytesRead;
+  if (!mz_zip_reader_locate_file_v2(&zip, "project.json", nullptr, 0, &fileIndex)) {
+    *why = "no project.json in it";
+  } else if (!mz_zip_reader_file_stat(&zip, fileIndex, &fileStat)) {
+    *why = "project.json's entry unreadable";
+  } else {
+    // See useDictReservingAllocator() above for why the zip's allocator is
+    // overridden. Separately, mz_zip_reader_extract_iter_free()'s own
+    // return value is not trusted: the CRC is checked here instead.
+    mz_zip_reader_extract_iter_state* pState = mz_zip_reader_extract_iter_new(&zip, fileIndex, 0);
+    if (!pState) {
+      *why = "project.json could not be inflated";
+    } else {
+      ZipEntryJsonReader reader(pState);
+      DeserializationError err = deserializeJson(doc, reader, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
+      reader.drain();
+      mz_zip_reader_extract_iter_free(pState);
+      if (reader.total() != fileStat.m_uncomp_size || reader.crc() != fileStat.m_crc32) {
+        *why = "project.json did not extract cleanly";
+      } else if (err) {
+        *why = "project.json is not JSON";
+      } else {
+        ok = true;
+      }
     }
-    mz_zip_reader_extract_iter_free(pState);
-    extractOk = (totalRead == jsonSize) && (mz_crc32(MZ_CRC32_INIT, jsonData, jsonSize) == fileStat.m_crc32);
   }
-
   mz_zip_reader_end(&zip);
   zipFile.close();
+  return ok;
+}
 
-  if (!extractOk) {
-    free(jsonData);
-    return unreadable(zipPath, "project.json did not extract cleanly");
-  }
-
-  // Matches ProjectLoader.cpp's own NestingLimit(30) exactly - see the
-  // e-paper ProjectInstaller's identical comment for why the default (10)
-  // isn't enough for a real project once tab-control/panel nesting,
-  // icon-pair arrays etc. are involved.
-  // Only the one field is kept (a filter): parsed whole, a large project's
-  // strings - each a small allocation, and small ones go to internal RAM -
-  // took ~114 KB of it for a moment, on every install, leaving 1 KB for
-  // WiFi (30 pages on the 4.3B, 2026-10-14). The reboot after an install
-  // hid it from every reading until a refused install did not reboot.
+// Why a project's deviceId could not be read, said once on the serial line:
+// under memory pressure on the 4.3B this failed and, read as "no deviceId",
+// let a project for another device install (2026-11-01).
+bool readProjectDeviceId(const String& zipPath, String& deviceIdOut) {
+  deviceIdOut = "";
   JsonDocument filter;
   filter["deviceId"] = true;
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
-  free(jsonData);
-  if (err) return unreadable(zipPath, "project.json is not JSON");
-
+  const char* why = "";
+  if (!readProjectJsonFields(zipPath, filter, doc, &why)) {
+    Serial.printf("[zip] %s: %s - its deviceId is unknown\n", zipPath.c_str(), why);
+    return false;
+  }
   const char* deviceId = doc["deviceId"] | "";
   deviceIdOut = String(deviceId);
   return true;
@@ -474,11 +512,6 @@ String peekProjectDeviceId(const String& zipPath) {
   return readProjectDeviceId(zipPath, deviceId) ? deviceId : String();
 }
 
-// Mirrors peekProjectDeviceId() above almost verbatim (same zip-open,
-// locate, extract, verify steps) rather than sharing a helper with it -
-// peekProjectDeviceId() is exercised by every real deploy, so it stays
-// untouched rather than being refactored underneath.
-//
 // Reads the export's `systemGeneration` (e.g. "1.4") and returns its MAJOR
 // component. This was `schemaVersion` on the M5 Dial; the designer
 // collapsed three separately-bumped integers into this single number on
@@ -498,72 +531,11 @@ String peekProjectDeviceId(const String& zipPath) {
 // the same "optional field, default when omitted" convention used
 // everywhere else here.
 long peekProjectSystemGenerationMajor(const String& zipPath) {
-  File zipFile = LittleFS.open(zipPath, "r");
-  if (!zipFile) return -1;
-
-  size_t zipSize = zipFile.size();
-  ZipFileReadContext readCtx{&zipFile};
-
-  mz_zip_archive zip;
-  memset(&zip, 0, sizeof(zip));
-  useDictReservingAllocator(zip);
-  useStreamingReader(zip, readCtx);
-  if (!mz_zip_reader_init(&zip, zipSize, 0)) {
-    zipFile.close();
-    return -1;
-  }
-
-  mz_uint32 fileIndex = 0;
-  if (!mz_zip_reader_locate_file_v2(&zip, "project.json", nullptr, 0, &fileIndex)) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return -1;
-  }
-
-  mz_zip_archive_file_stat fileStat;
-  memset(&fileStat, 0, sizeof(fileStat));
-  if (!mz_zip_reader_file_stat(&zip, fileIndex, &fileStat)) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return -1;
-  }
-
-  size_t jsonSize = fileStat.m_uncomp_size;
-  uint8_t* jsonData = (uint8_t*)malloc(jsonSize);
-  if (!jsonData) {
-    mz_zip_reader_end(&zip);
-    zipFile.close();
-    return -1;
-  }
-
-  bool extractOk = false;
-  mz_zip_reader_extract_iter_state* pState = mz_zip_reader_extract_iter_new(&zip, fileIndex, 0);
-  if (pState) {
-    size_t totalRead = 0;
-    while (totalRead < jsonSize) {
-      size_t bytesRead = mz_zip_reader_extract_iter_read(pState, jsonData + totalRead, jsonSize - totalRead);
-      if (bytesRead == 0) break;
-      totalRead += bytesRead;
-    }
-    mz_zip_reader_extract_iter_free(pState);
-    extractOk = (totalRead == jsonSize) && (mz_crc32(MZ_CRC32_INIT, jsonData, jsonSize) == fileStat.m_crc32);
-  }
-
-  mz_zip_reader_end(&zip);
-  zipFile.close();
-
-  if (!extractOk) {
-    free(jsonData);
-    return -1;
-  }
-
-  // Only the one field is kept - see peekProjectDeviceId() above.
   JsonDocument filter;
   filter["systemGeneration"] = true;
   JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, (const char*)jsonData, jsonSize, DeserializationOption::Filter(filter), DeserializationOption::NestingLimit(30));
-  free(jsonData);
-  if (err) return -1;
+  const char* why = "";
+  if (!readProjectJsonFields(zipPath, filter, doc, &why)) return -1;
 
   // Stored as a "major.minor" string, unlike the bare integer schemaVersion
   // it replaced. A bare number is accepted too, so "2" and "2.0" mean the

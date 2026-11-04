@@ -64,7 +64,7 @@ private:
 
 // Reads just project.json out of the zip at zipPath (without touching
 // /PROJECT at all). Returns false when it cannot - no zip, no project.json,
-// no memory, a bad CRC, not JSON - and the caller must refuse the project:
+// a bad CRC, not JSON - and the caller must refuse the project:
 // until 2026-11-01 that case and "the project names no device" were the same
 // empty string, which the gates let through, and the 4.3B under load
 // installed a project for another device. Returns true with deviceIdOut set
