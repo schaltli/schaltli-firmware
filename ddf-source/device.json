@@ -55,39 +55,6 @@
       ]
     },
     {
-      "id": "font-roboto-c24",
-      "displayName": "Roboto 41px",
-      "internalName": "roboto-c24",
-      "file": "fonts/roboto-c24.bdf",
-      "size": 41,
-      "ascent": 32,
-      "descent": 9,
-      "family": "Roboto",
-      "weight": "regular",
-      "bpp": 4,
-      "capHeight": 24,
-      "replaces": [
-        "font-helvR24",
-        "font-fur35"
-      ]
-    },
-    {
-      "id": "font-roboto-c38",
-      "displayName": "Roboto 63px",
-      "internalName": "roboto-c38",
-      "file": "fonts/roboto-c38.bdf",
-      "size": 63,
-      "ascent": 50,
-      "descent": 13,
-      "family": "Roboto",
-      "weight": "regular",
-      "bpp": 4,
-      "capHeight": 38,
-      "replaces": [
-        "font-fur42"
-      ]
-    },
-    {
       "id": "font-robotob-c11",
       "displayName": "Roboto Bold 18px",
       "internalName": "robotob-c11",
@@ -118,39 +85,6 @@
       "capHeight": 16,
       "replaces": [
         "font-helvB18"
-      ]
-    },
-    {
-      "id": "font-robotob-c24",
-      "displayName": "Roboto Bold 41px",
-      "internalName": "robotob-c24",
-      "file": "fonts/robotob-c24.bdf",
-      "size": 41,
-      "ascent": 32,
-      "descent": 9,
-      "family": "Roboto",
-      "weight": "bold",
-      "bpp": 4,
-      "capHeight": 24,
-      "replaces": [
-        "font-helvB24",
-        "font-fub35"
-      ]
-    },
-    {
-      "id": "font-robotob-c38",
-      "displayName": "Roboto Bold 63px",
-      "internalName": "robotob-c38",
-      "file": "fonts/robotob-c38.bdf",
-      "size": 63,
-      "ascent": 50,
-      "descent": 13,
-      "family": "Roboto",
-      "weight": "bold",
-      "bpp": 4,
-      "capHeight": 38,
-      "replaces": [
-        "font-fub42"
       ]
     },
     {
@@ -189,35 +123,6 @@
       ]
     },
     {
-      "id": "font-inter-c24",
-      "displayName": "Inter 40px",
-      "internalName": "inter-c24",
-      "file": "fonts/inter-c24.bdf",
-      "size": 40,
-      "ascent": 32,
-      "descent": 8,
-      "family": "Inter",
-      "weight": "regular",
-      "bpp": 4,
-      "capHeight": 24,
-      "replaces": [
-        "font-luRS24"
-      ]
-    },
-    {
-      "id": "font-inter-c38",
-      "displayName": "Inter 64px",
-      "internalName": "inter-c38",
-      "file": "fonts/inter-c38.bdf",
-      "size": 64,
-      "ascent": 51,
-      "descent": 13,
-      "family": "Inter",
-      "weight": "regular",
-      "bpp": 4,
-      "capHeight": 38
-    },
-    {
       "id": "font-interb-c11",
       "displayName": "Inter Bold 19px",
       "internalName": "interb-c11",
@@ -253,35 +158,6 @@
       ]
     },
     {
-      "id": "font-interb-c24",
-      "displayName": "Inter Bold 40px",
-      "internalName": "interb-c24",
-      "file": "fonts/interb-c24.bdf",
-      "size": 40,
-      "ascent": 32,
-      "descent": 8,
-      "family": "Inter",
-      "weight": "bold",
-      "bpp": 4,
-      "capHeight": 24,
-      "replaces": [
-        "font-luBS24"
-      ]
-    },
-    {
-      "id": "font-interb-c38",
-      "displayName": "Inter Bold 64px",
-      "internalName": "interb-c38",
-      "file": "fonts/interb-c38.bdf",
-      "size": 64,
-      "ascent": 51,
-      "descent": 13,
-      "family": "Inter",
-      "weight": "bold",
-      "bpp": 4,
-      "capHeight": 38
-    },
-    {
       "id": "font-robotocond-c11",
       "displayName": "Roboto Condensed 18px",
       "internalName": "robotocond-c11",
@@ -306,26 +182,6 @@
       "weight": "regular",
       "bpp": 4,
       "capHeight": 16
-    },
-    {
-      "id": "font-robotocond-c24",
-      "displayName": "Roboto Condensed 41px",
-      "internalName": "robotocond-c24",
-      "file": "fonts/robotocond-c24.bdf",
-      "size": 41,
-      "ascent": 32,
-      "descent": 9,
-      "family": "Roboto Condensed",
-      "weight": "regular",
-      "bpp": 4,
-      "capHeight": 24,
-      "replaces": [
-        "font-logisoso28",
-        "font-logisoso30",
-        "font-logisoso32",
-        "font-logisoso34",
-        "font-logisoso38"
-      ]
     },
     {
       "id": "font-robotocondb-c11",
@@ -354,45 +210,441 @@
       "capHeight": 16
     },
     {
-      "id": "font-robotocondb-c24",
-      "displayName": "Roboto Condensed Bold 41px",
-      "internalName": "robotocondb-c24",
-      "file": "fonts/robotocondb-c24.bdf",
-      "size": 41,
-      "ascent": 32,
-      "descent": 9,
+      "id": "font-roboto-c8",
+      "displayName": "Roboto 14px",
+      "internalName": "roboto-c8",
+      "file": "fonts/roboto-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
+      "family": "Roboto",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 8
+    },
+    {
+      "id": "font-roboto-c10",
+      "displayName": "Roboto 17px",
+      "internalName": "roboto-c10",
+      "file": "fonts/roboto-c10.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Roboto",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-roboto-c13",
+      "displayName": "Roboto 22px",
+      "internalName": "roboto-c13",
+      "file": "fonts/roboto-c13.bdf",
+      "size": 22,
+      "ascent": 17,
+      "descent": 5,
+      "family": "Roboto",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-roboto-c23",
+      "displayName": "Roboto 38px",
+      "internalName": "roboto-c23",
+      "file": "fonts/roboto-c23.bdf",
+      "size": 38,
+      "ascent": 30,
+      "descent": 8,
+      "family": "Roboto",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-roboto-c24",
+        "font-helvR24",
+        "font-fur35"
+      ]
+    },
+    {
+      "id": "font-roboto-c34",
+      "displayName": "Roboto 57px",
+      "internalName": "roboto-c34",
+      "file": "fonts/roboto-c34.bdf",
+      "size": 57,
+      "ascent": 45,
+      "descent": 12,
+      "family": "Roboto",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 34,
+      "replaces": [
+        "font-roboto-c38",
+        "font-fur42"
+      ]
+    },
+    {
+      "id": "font-robotob-c8",
+      "displayName": "Roboto Bold 14px",
+      "internalName": "robotob-c8",
+      "file": "fonts/robotob-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
+      "family": "Roboto",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 8
+    },
+    {
+      "id": "font-robotob-c10",
+      "displayName": "Roboto Bold 17px",
+      "internalName": "robotob-c10",
+      "file": "fonts/robotob-c10.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Roboto",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-robotob-c13",
+      "displayName": "Roboto Bold 22px",
+      "internalName": "robotob-c13",
+      "file": "fonts/robotob-c13.bdf",
+      "size": 22,
+      "ascent": 17,
+      "descent": 5,
+      "family": "Roboto",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-robotob-c23",
+      "displayName": "Roboto Bold 38px",
+      "internalName": "robotob-c23",
+      "file": "fonts/robotob-c23.bdf",
+      "size": 38,
+      "ascent": 30,
+      "descent": 8,
+      "family": "Roboto",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-robotob-c24",
+        "font-helvB24",
+        "font-fub35"
+      ]
+    },
+    {
+      "id": "font-robotob-c34",
+      "displayName": "Roboto Bold 57px",
+      "internalName": "robotob-c34",
+      "file": "fonts/robotob-c34.bdf",
+      "size": 57,
+      "ascent": 45,
+      "descent": 12,
+      "family": "Roboto",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 34,
+      "replaces": [
+        "font-robotob-c38",
+        "font-fub42"
+      ]
+    },
+    {
+      "id": "font-inter-c8",
+      "displayName": "Inter 14px",
+      "internalName": "inter-c8",
+      "file": "fonts/inter-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
+      "family": "Inter",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 8
+    },
+    {
+      "id": "font-inter-c10",
+      "displayName": "Inter 18px",
+      "internalName": "inter-c10",
+      "file": "fonts/inter-c10.bdf",
+      "size": 18,
+      "ascent": 14,
+      "descent": 4,
+      "family": "Inter",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-inter-c13",
+      "displayName": "Inter 23px",
+      "internalName": "inter-c13",
+      "file": "fonts/inter-c13.bdf",
+      "size": 23,
+      "ascent": 18,
+      "descent": 5,
+      "family": "Inter",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-inter-c23",
+      "displayName": "Inter 39px",
+      "internalName": "inter-c23",
+      "file": "fonts/inter-c23.bdf",
+      "size": 39,
+      "ascent": 31,
+      "descent": 8,
+      "family": "Inter",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-inter-c24",
+        "font-luRS24"
+      ]
+    },
+    {
+      "id": "font-inter-c34",
+      "displayName": "Inter 58px",
+      "internalName": "inter-c34",
+      "file": "fonts/inter-c34.bdf",
+      "size": 58,
+      "ascent": 46,
+      "descent": 12,
+      "family": "Inter",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 34,
+      "replaces": [
+        "font-inter-c38"
+      ]
+    },
+    {
+      "id": "font-interb-c8",
+      "displayName": "Inter Bold 14px",
+      "internalName": "interb-c8",
+      "file": "fonts/interb-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
+      "family": "Inter",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 8
+    },
+    {
+      "id": "font-interb-c10",
+      "displayName": "Inter Bold 18px",
+      "internalName": "interb-c10",
+      "file": "fonts/interb-c10.bdf",
+      "size": 18,
+      "ascent": 14,
+      "descent": 4,
+      "family": "Inter",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-interb-c13",
+      "displayName": "Inter Bold 23px",
+      "internalName": "interb-c13",
+      "file": "fonts/interb-c13.bdf",
+      "size": 23,
+      "ascent": 18,
+      "descent": 5,
+      "family": "Inter",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-interb-c23",
+      "displayName": "Inter Bold 39px",
+      "internalName": "interb-c23",
+      "file": "fonts/interb-c23.bdf",
+      "size": 39,
+      "ascent": 31,
+      "descent": 8,
+      "family": "Inter",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-interb-c24",
+        "font-luBS24"
+      ]
+    },
+    {
+      "id": "font-interb-c34",
+      "displayName": "Inter Bold 58px",
+      "internalName": "interb-c34",
+      "file": "fonts/interb-c34.bdf",
+      "size": 58,
+      "ascent": 46,
+      "descent": 12,
+      "family": "Inter",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 34,
+      "replaces": [
+        "font-interb-c38"
+      ]
+    },
+    {
+      "id": "font-robotocond-c8",
+      "displayName": "Roboto Condensed 14px",
+      "internalName": "robotocond-c8",
+      "file": "fonts/robotocond-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
+      "family": "Roboto Condensed",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 8
+    },
+    {
+      "id": "font-robotocond-c10",
+      "displayName": "Roboto Condensed 17px",
+      "internalName": "robotocond-c10",
+      "file": "fonts/robotocond-c10.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Roboto Condensed",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-robotocond-c13",
+      "displayName": "Roboto Condensed 22px",
+      "internalName": "robotocond-c13",
+      "file": "fonts/robotocond-c13.bdf",
+      "size": 22,
+      "ascent": 17,
+      "descent": 5,
+      "family": "Roboto Condensed",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-robotocond-c23",
+      "displayName": "Roboto Condensed 38px",
+      "internalName": "robotocond-c23",
+      "file": "fonts/robotocond-c23.bdf",
+      "size": 38,
+      "ascent": 30,
+      "descent": 8,
+      "family": "Roboto Condensed",
+      "weight": "regular",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-robotocond-c24",
+        "font-logisoso28",
+        "font-logisoso30",
+        "font-logisoso32",
+        "font-logisoso34",
+        "font-logisoso38"
+      ]
+    },
+    {
+      "id": "font-robotocondb-c8",
+      "displayName": "Roboto Condensed Bold 14px",
+      "internalName": "robotocondb-c8",
+      "file": "fonts/robotocondb-c8.bdf",
+      "size": 14,
+      "ascent": 11,
+      "descent": 3,
       "family": "Roboto Condensed",
       "weight": "bold",
       "bpp": 4,
-      "capHeight": 24
+      "capHeight": 8
     },
     {
-      "id": "font-seg7-55-4bit",
-      "displayName": "Seven Segment 55px",
-      "internalName": "seg7-55-4bit",
-      "file": "fonts/seg7-55-4bit.bdf",
-      "size": 55,
-      "ascent": 55,
+      "id": "font-robotocondb-c10",
+      "displayName": "Roboto Condensed Bold 17px",
+      "internalName": "robotocondb-c10",
+      "file": "fonts/robotocondb-c10.bdf",
+      "size": 17,
+      "ascent": 13,
+      "descent": 4,
+      "family": "Roboto Condensed",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 10
+    },
+    {
+      "id": "font-robotocondb-c13",
+      "displayName": "Roboto Condensed Bold 22px",
+      "internalName": "robotocondb-c13",
+      "file": "fonts/robotocondb-c13.bdf",
+      "size": 22,
+      "ascent": 17,
+      "descent": 5,
+      "family": "Roboto Condensed",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 13
+    },
+    {
+      "id": "font-robotocondb-c23",
+      "displayName": "Roboto Condensed Bold 38px",
+      "internalName": "robotocondb-c23",
+      "file": "fonts/robotocondb-c23.bdf",
+      "size": 38,
+      "ascent": 30,
+      "descent": 8,
+      "family": "Roboto Condensed",
+      "weight": "bold",
+      "bpp": 4,
+      "capHeight": 23,
+      "replaces": [
+        "font-robotocondb-c24"
+      ]
+    },
+    {
+      "id": "font-seg7-49-4bit",
+      "displayName": "Seven Segment 49px",
+      "internalName": "seg7-49-4bit",
+      "file": "fonts/seg7-49-4bit.bdf",
+      "size": 49,
+      "ascent": 49,
       "descent": 0,
       "family": "Seven Segment",
       "weight": "regular",
       "bpp": 4,
       "replaces": [
+        "font-seg7-55-4bit",
         "font-seg7-55"
       ]
     },
     {
-      "id": "font-seg7b-55-4bit",
-      "displayName": "Seven Segment Bold 55px",
-      "internalName": "seg7b-55-4bit",
-      "file": "fonts/seg7b-55-4bit.bdf",
-      "size": 55,
-      "ascent": 55,
+      "id": "font-seg7b-49-4bit",
+      "displayName": "Seven Segment Bold 49px",
+      "internalName": "seg7b-49-4bit",
+      "file": "fonts/seg7b-49-4bit.bdf",
+      "size": 49,
+      "ascent": 49,
       "descent": 0,
       "family": "Seven Segment",
       "weight": "bold",
       "bpp": 4,
       "replaces": [
+        "font-seg7b-55-4bit",
         "font-seg7b-55"
       ]
     }

@@ -61,11 +61,13 @@ U8G2_TO_BDF = os.path.join(DESIGNER, "scripts", "u8g2-font-to-bdf.js")
 TTF_TO_BDF = os.path.join(REPO, "tools", "ttf-to-bdf.py")
 DSEG7 = os.path.join(REPO, "tools", "fonts-src", "dseg7")
 
-# Each board's Display line in px: 7 mm at its pixels per millimetre.
+# Each board's line for Seven Segment in px: the Huge size, 6.2 mm, on the
+# colour boards since 2026-11-04 (7 mm, Display, before); the PaperS3 keeps
+# its 1-bit Display face.
 BOARDS = {
-    "ddf-source": 55,                # Knob 1.8, 7.88 px/mm
-    "ddf-source-waveshare4v3b": 61,  # 4.3B, 8.66 px/mm
-    "ddf-source-waveshare4": 47,     # 4", 6.78 px/mm (6.73 x 6.83, measured 2026-10-31)
+    "ddf-source": 49,                # Knob 1.8, 7.88 px/mm
+    "ddf-source-waveshare4v3b": 54,  # 4.3B, 8.66 px/mm
+    "ddf-source-waveshare4": 42,     # 4", 6.78 px/mm (6.73 x 6.83, measured 2026-10-31)
     "ddf-source-papers3": 65,        # PaperS3, 9.26 px/mm
 }
 
@@ -87,6 +89,12 @@ COLOUR_BOARDS = ["ddf-source", "ddf-source-waveshare4v3b", "ddf-source-waveshare
 # today's Helvetica BDFs' own ratio (docs/device-contract.md, «Font depth»).
 TEXT_STYLE_MM = {"caption": 2.0, "label": 3.0, "title": 4.5, "display": 7.0}
 CAP_PER_LINE = 0.69
+# The seven text sizes since 2026-11-04 (schaltli-designer lib/size-scale.ts
+# TEXT_STYLE_MM, docs/2026-11-04-text-sizes-and-colours.md): what the 4-bit
+# faces are made at. TEXT_STYLE_MM above is the four old styles, which
+# add_replaces still reasons with about the 1-bit fonts.
+TEXT_SIZE_MM = {"micro": 1.5, "mini": 1.8, "standard": 2.1, "large": 2.4, "xl": 3.0, "xxl": 4.2, "huge": 6.2}
+ALL_SIZES = list(TEXT_SIZE_MM)
 # The characters of the Windows code pages for Central and Western Europe
 # and the chart's arrow and minus (tools/ttf-to-bdf.py --charset); each
 # family is written with as many of them as it has. helvR18's 753 until
@@ -95,14 +103,15 @@ CAP_PER_LINE = 0.69
 # pages, French included.
 CHARSET = "cp1250+cp1252"
 FONTS_SRC = os.path.join(REPO, "tools", "fonts-src")
-# (family, file tag, TTF, axes per weight, styles it serves)
+# (family, file tag, TTF, axes per weight, sizes it serves) - Roboto
+# Condensed all but Huge, which is Technic's Seven Segment.
 FOUR_BIT_FAMILIES = [
     ("Roboto", "roboto", "roboto/Roboto[wdth,wght].ttf",
-     {"regular": "wght=400,wdth=100", "bold": "wght=700,wdth=100"}, ["caption", "label", "title", "display"]),
+     {"regular": "wght=400,wdth=100", "bold": "wght=700,wdth=100"}, ALL_SIZES),
     ("Inter", "inter", "inter/Inter[opsz,wght].ttf",
-     {"regular": "wght=400", "bold": "wght=700"}, ["caption", "label", "title", "display"]),
+     {"regular": "wght=400", "bold": "wght=700"}, ALL_SIZES),
     ("Roboto Condensed", "robotocond", "roboto-condensed/RobotoCondensed[wght].ttf",
-     {"regular": "wght=400", "bold": "wght=700"}, ["caption", "label", "title"]),
+     {"regular": "wght=400", "bold": "wght=700"}, [s for s in ALL_SIZES if s != "huge"]),
 ]
 
 TYPOGRAPHIES = [
@@ -245,8 +254,9 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
     over 2.3-2.9 MB of description); Seven Segment
     at the Display line."""
     ppmm = pixels_per_mm(device)
-    for family, tag, ttf, axes, styles in FOUR_BIT_FAMILIES:
-        caps = sorted({round(CAP_PER_LINE * TEXT_STYLE_MM[st] * ppmm) for st in styles})
+    wanted = []
+    for family, tag, ttf, axes, sizes in FOUR_BIT_FAMILIES:
+        caps = sorted({round(CAP_PER_LINE * TEXT_SIZE_MM[sz] * ppmm) for sz in sizes})
         for weight, weight_axes in axes.items():
             for cap in caps:
                 name = f"{tag}{'b' if weight == 'bold' else ''}-c{cap}"
@@ -255,6 +265,7 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
                     # Inter's optical size follows the size it is set at:
                     # its em is about cap / 0.728, between 14 and 32.
                     axes_arg += f",opsz={min(32, max(14, round(cap / 0.728)))}"
+                wanted.append(f"font-{name}")
                 add_font(device, fonts_dir, {
                     "id": f"font-{name}",
                     "displayName": f"{family}{' Bold' if weight == 'bold' else ''} {{line}}px",
@@ -270,6 +281,7 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
                     check=True, capture_output=True))
     for weight, ttf, tag in [("regular", "DSEG7Classic-Regular.ttf", "seg7"), ("bold", "DSEG7Classic-Bold.ttf", "seg7b")]:
         name = f"{tag}-{display_px}-4bit"
+        wanted.append(f"font-{name}")
         add_font(device, fonts_dir, {
             "id": f"font-{name}",
             "displayName": f"Seven Segment{' Bold' if weight == 'bold' else ''} {display_px}px",
@@ -282,6 +294,42 @@ def add_four_bit_fonts(device, fonts_dir, display_px):
             [sys.executable, TTF_TO_BDF, os.path.join(DSEG7, ttf), str(display_px), path, f"Seven-Segment-{name}",
              "--bpp", "4", "--charset", CHARSET],
             check=True, capture_output=True))
+    return wanted
+
+
+# The size each of the four old styles became (schaltli-designer
+# lib/size-scale.ts SIZE_OF_OLD_STYLE): an old style's face is succeeded by
+# that size's face, not merely the nearest one.
+SIZE_OF_OLD_STYLE = {"caption": "standard", "label": "xl", "title": "xxl", "display": "huge"}
+
+
+def drop_retired_four_bit(device, fonts_dir, wanted):
+    """The 4-bit faces no size asks for any more (the four styles' before
+    2026-11-04) out of device.json and fonts/, each named - with what it
+    replaced - in the `replaces` of its successor: the same family and
+    weight, at the size its style became (Caption's face goes to Standard's,
+    not to a smaller one that happens to be as near), else the closest
+    capitals. So a project that names one by hand («Custom») draws in its
+    successor, as a 1-bit id does since T14."""
+    ppmm = pixels_per_mm(device)
+    successor_cap = {}
+    for style, size in SIZE_OF_OLD_STYLE.items():
+        successor_cap[round(CAP_PER_LINE * TEXT_STYLE_MM[style] * ppmm)] = round(CAP_PER_LINE * TEXT_SIZE_MM[size] * ppmm)
+    keep = [f for f in device["fonts"] if f.get("bpp") != 4 or f["id"] in wanted]
+    gone = [f for f in device["fonts"] if f.get("bpp") == 4 and f["id"] not in wanted]
+    for old in gone:
+        faces = [f for f in keep if f.get("bpp") == 4 and f["family"] == old["family"] and f["weight"] == old["weight"]]
+        if not faces:
+            sys.exit(f"{old['id']}: no face of {old['family']} {old['weight']} left to replace it")
+        target = successor_cap.get(cap_of(old), cap_of(old))
+        best = min(faces, key=lambda f: (abs(cap_of(f) - target), cap_of(f)))
+        for rid in [old["id"], *old.get("replaces", [])]:
+            if rid not in best.setdefault("replaces", []):
+                best["replaces"].append(rid)
+        path = os.path.join(fonts_dir, os.path.basename(old["file"]))
+        if os.path.exists(path):
+            os.remove(path)
+    device["fonts"] = keep
 
 
 def cap_of(font):
@@ -373,7 +421,8 @@ def main():
                 check=True, capture_output=True))
 
         if board in COLOUR_BOARDS:
-            add_four_bit_fonts(device, fonts_dir, display_px)
+            wanted = add_four_bit_fonts(device, fonts_dir, display_px)
+            drop_retired_four_bit(device, fonts_dir, wanted)
             # Worked out while the 1-bit fonts are there to work from, then
             # kept as they are once they are gone.
             if any(f.get("bpp") != 4 for f in device["fonts"]):
