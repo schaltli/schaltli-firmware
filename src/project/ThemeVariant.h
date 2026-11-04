@@ -48,8 +48,19 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
   f(p.fieldColor, p.fieldColorDark);
   f(p.lineColor, p.lineColorDark);
   f(obj.path, obj.pathDark);
-  f(obj.pathNormal, obj.pathNormalDark);
-  f(obj.pathActive, obj.pathActiveDark);
+  // A button's faces and its icon (contract «button»): colours only, the
+  // radius and the layout are one for both.
+  if (p.button) {
+    ButtonLookProps& b = *p.button;
+    f(b.normal.fill, b.normalDark.fill);
+    f(b.normal.outline, b.normalDark.outline);
+    f(b.normal.ink, b.normalDark.ink);
+    f(b.pressed.fill, b.pressedDark.fill);
+    f(b.pressed.outline, b.pressedDark.outline);
+    f(b.pressed.ink, b.pressedDark.ink);
+    f(b.iconPath, b.iconPathDark);
+    f(b.iconPathPressed, b.iconPathPressedDark);
+  }
   for (SwitchState& state : p.states) {
     f(state.iconPath, state.iconPathDark);
     f(state.iconPathActive, state.iconPathActiveDark);

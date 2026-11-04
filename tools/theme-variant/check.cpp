@@ -36,11 +36,21 @@ static ProjectConfig sample() {
   icon.pathDark = "/PROJECT/assets/s_icon-dark.bmp";
   s.objects.push_back(icon);
 
+  // A button's look (since 2026-11-04): faces light and dark, an icon each.
   ScreenObject button;
-  button.pathNormal = "/PROJECT/assets/b.bmp";
-  button.pathNormalDark = "/PROJECT/assets/b-dark.bmp";
-  button.pathActive = "/PROJECT/assets/b-a.bmp";
-  button.pathActiveDark = "/PROJECT/assets/b-a-dark.bmp";
+  button.properties.button.p.reset(new ButtonLookProps());
+  ButtonLookProps& look = *button.properties.button;
+  look.normal.r = 20;
+  look.normal.fill = "#6750a4";
+  look.normal.ink = "#ffffff";
+  look.normalDark.fill = "#d0bcff";
+  look.normalDark.ink = "#381e72";
+  look.pressed.r = 8;
+  look.pressed.fill = "#7662ad";
+  look.pressed.ink = "#ffffff";
+  look.pressedDark.fill = "#c4b0f0";
+  look.iconPath = "/PROJECT/assets/b-icon.bmp";
+  look.iconPathDark = "/PROJECT/assets/b-icon-dark.bmp";
   s.objects.push_back(button);
 
   ScreenObject sw;
@@ -116,7 +126,10 @@ static bool same(const ProjectConfig& a, const ProjectConfig& b) {
   if (!(x.backgroundColor == y.backgroundColor) || !(x.backgroundColorDark == y.backgroundColorDark)) return false;
   if (!(x.objects[0].properties.color == y.objects[0].properties.color)) return false;
   if (!(x.objects[1].path == y.objects[1].path)) return false;
-  if (!(x.objects[2].pathNormal == y.objects[2].pathNormal)) return false;
+  const ButtonLookProps& bx = *x.objects[2].properties.button;
+  const ButtonLookProps& by = *y.objects[2].properties.button;
+  if (!(bx.normal.fill == by.normal.fill) || !(bx.pressed.fill == by.pressed.fill) || !(bx.normal.ink == by.normal.ink)) return false;
+  if (!(bx.iconPath == by.iconPath)) return false;
   if (!(x.objects[3].properties.states[1].iconPath == y.objects[3].properties.states[1].iconPath)) return false;
   if (!(x.objects[4].children[0].children[0].properties.fillColor ==
         y.objects[4].children[0].children[0].properties.fillColor)) return false;
@@ -141,8 +154,13 @@ int main() {
   expect(s.objects[0].properties.color == "#e6edf3", "a label's colour takes its dark value");
   expect(s.objects[0].properties.backgroundColor == "transparent", "transparent without a twin stays");
   expect(s.objects[1].path == "/PROJECT/assets/s_icon-dark.bmp", "an icon's path");
-  expect(s.objects[2].pathNormal == "/PROJECT/assets/b-dark.bmp", "a button's normal face");
-  expect(s.objects[2].pathActive == "/PROJECT/assets/b-a-dark.bmp", "a button's active face");
+  const ButtonLookProps& darkButton = *s.objects[2].properties.button;
+  expect(darkButton.normal.fill == "#d0bcff", "a button's normal fill");
+  expect(darkButton.normal.ink == "#381e72", "a button's normal ink");
+  expect(darkButton.pressed.fill == "#c4b0f0", "a button's pressed fill");
+  expect(darkButton.pressed.ink == "#ffffff", "a pressed ink with no dark twin stays");
+  expect(darkButton.normal.r == 20 && darkButton.pressed.r == 8, "a button's radii are one for both");
+  expect(darkButton.iconPath == "/PROJECT/assets/b-icon-dark.bmp", "a button's icon");
   expect(s.objects[3].properties.switchColor == "#6aa8d8", "a switch's colour");
   expect(s.objects[3].properties.states[0].iconPath == "/PROJECT/assets/off.bmp", "a state with no dark icon keeps its own");
   expect(s.objects[3].properties.states[1].iconPath == "/PROJECT/assets/on-dark.bmp", "a state's dark icon");

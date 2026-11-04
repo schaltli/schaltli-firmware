@@ -37,8 +37,7 @@ struct CalibrationPoint {
 // `readValue` is matched (trimmed String equality) against the Switch's own
 // `topic` to decide which segment is "active"; `writeValue` is published
 // as-is (raw String, not retained) to the Switch's `writeTopic` when this
-// segment is tapped. `iconPath`/`iconPathActive` mirror SoftwareButton's
-// pathNormal/pathActive split (ScreenObject below) - baked twice by the
+// segment is tapped. `iconPath`/`iconPathActive` - baked twice by the
 // designer's exportSwitchStateIcon() (lib/asset-export.ts) against the
 // segment's normal vs. active background color respectively, since the
 // segment's own fill changes live at runtime and a single fixed-background
@@ -187,6 +186,41 @@ struct EnergyDiagramHandle {
   explicit operator bool() const { return static_cast<bool>(p); }
   EnergyDiagramProps& operator*() const { return *p; }
   EnergyDiagramProps* operator->() const { return p.get(); }
+};
+
+// A software button as the device draws it (designer device contract,
+// «button»; docs/2026-11-04-native-buttons.md in the designer): both faces,
+// where icon and label go, relative to the button. Every judgement is the
+// designer's (lib/button-shape.ts); this only holds what it decided. Until
+// 2026-11-04 a button was two pictures, pathNormal/pathActive.
+struct ButtonFace {
+  int r = 0;
+  String fill;     // empty: no fill
+  String outline;  // empty: no ring
+  String ink;
+};
+struct ButtonLookProps {
+  ButtonFace normal, pressed;
+  // The dark theme's faces (lookDark): colours only; empty: as light.
+  ButtonFace normalDark, pressedDark;
+  int textX = 0, baseline = 0, clipX = 0, clipW = 0;
+  bool hasIcon = false;
+  int iconX = 0, iconY = 0, iconSize = 0;
+  String iconPath, iconPathPressed, iconPathDark, iconPathPressedDark;
+};
+struct ButtonLookHandle {
+  std::unique_ptr<ButtonLookProps> p;
+  ButtonLookHandle() = default;
+  ButtonLookHandle(const ButtonLookHandle& o) : p(o.p ? new ButtonLookProps(*o.p) : nullptr) {}
+  ButtonLookHandle& operator=(const ButtonLookHandle& o) {
+    if (this != &o) p.reset(o.p ? new ButtonLookProps(*o.p) : nullptr);
+    return *this;
+  }
+  ButtonLookHandle(ButtonLookHandle&&) = default;
+  ButtonLookHandle& operator=(ButtonLookHandle&&) = default;
+  explicit operator bool() const { return static_cast<bool>(p); }
+  ButtonLookProps& operator*() const { return *p; }
+  ButtonLookProps* operator->() const { return p.get(); }
 };
 
 // A chart (designer device contract 2.13): its model for the core
@@ -434,6 +468,8 @@ struct ObjectProperties {
   EnergyDiagramHandle energy;
   // A chart's (above); empty for every other type.
   ChartHandle chart;
+  // A software button's look (above); empty for every other type.
+  ButtonLookHandle button;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),
@@ -453,17 +489,13 @@ struct ScreenObject {
   ObjectProperties properties;
   // Bitmap paths the designer's export flattens onto the object itself
   // (not nested in `properties`) - see lib/project-zip.ts: an "icon"
-  // object gets `path`, a "button" gets `pathNormal`/`pathActive`.
+  // object gets `path`. A "button" gets its look (properties.button).
   // Not present in schaltli-eink's ProjectTypes.h - that firmware
   // never implemented either object type (no touchscreen, e-paper icons
   // were never wired up either), so these are new here for M5 Dial.
   String path;
-  String pathNormal;
-  String pathActive;
-  // The dark variant's bitmaps (ThemeVariant.h); empty: same as light.
+  // The dark variant's bitmap (ThemeVariant.h); empty: same as light.
   String pathDark;
-  String pathNormalDark;
-  String pathActiveDark;
   // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own

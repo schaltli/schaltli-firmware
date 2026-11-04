@@ -2513,25 +2513,87 @@ bool ColorScreenRenderer::renderIcon(const ScreenObject& obj) {
   return true;
 }
 
-// Draws pathActive while pressed (isPressed, driven by main.cpp's touch
-// hit-testing - see ColorScreenRenderer.h's renderScreen() comment), else
-// pathNormal. Both bitmaps are already fully rendered by the designer's
-// export (drop shadow / 3D-press offset, border, label text baked in) -
-// this only needs to decode and blit whichever one applies, not
-// reconstruct any of that.
+// A software button, drawn from its look (the designer's device contract,
+// «button»; docs/2026-11-04-native-buttons.md there). Until 2026-11-04 the
+// designer baked it into two pictures - 85 % of the CamperUI rebuild, which
+// then no longer fitted the 4". Now every judgement - colours, radius, the
+// pressed morph, where icon and label go - comes in the look, and this only
+// draws, in the designer's order:
+//
+//   1. the pill through the Switch's rasteriser (paintPills: soft at 24 bit,
+//      whole pixels below), or with an outline the inside run first - the
+//      fill, or a hole - then the whole button in the outline's colour;
+//   2. the icon's square, a picture as the designer drew it in this face;
+//   3. the label in its font and the ink colour, at textX/baseline, clipped
+//      to the columns clipX .. clipX + clipW.
+//
+// The pressed face while isPressed (main.cpp's touch hit-testing, see
+// ColorScreenRenderer.h's renderScreen()). Light or dark is the swap's
+// (ThemeVariant.h): the faces' colours are already the variant shown.
 bool ColorScreenRenderer::renderSoftwareButton(const ScreenObject& obj, bool isPressed) {
-  // Faellt auf das normale Bild zurueck, wenn es kein gedruecktes gibt.
-  // Sonst zeichnete ein Druck GAR NICHTS und der Knopf verschwaende, solange
-  // der Finger liegt - und der Designer zeigt in diesem Fall ebenfalls das
-  // normale Bild, die Pixelgleichheit wird dadurch also hergestellt und
-  // nicht gebrochen. Vor dem 2026-09-10 war das unerreichbar: kein Board
-  // hat je einen gedrueckten Zustand angefordert.
-  const String& path = (isPressed && !obj.pathActive.isEmpty()) ? obj.pathActive : obj.pathNormal;
-  if (path.isEmpty()) return false;
-  if (!ColorAssetLoader::drawBMPToCanvas(canvas_, path, obj.x, obj.y)) {
-    canvas_->fillRect(obj.x + 2, obj.y + 2, obj.width - 4, obj.height - 4, 0x0000);
-    canvas_->drawRect(obj.x, obj.y, obj.width, obj.height, 0x0000);
-    return false;
+  if (!obj.properties.button) return false;
+  const ButtonLookProps& b = *obj.properties.button;
+  const ButtonFace& face = isPressed ? b.pressed : b.normal;
+  const int x = obj.x, y = obj.y, w = obj.width, h = obj.height;
+  if (w <= 0 || h <= 0) return false;
+
+  auto band = [](int bx, int by, int bw, int bh, int r) {
+    PillRaster::Band out;
+    out.x = bx;
+    out.y = by;
+    out.w = bw;
+    out.h = bh;
+    out.rLow = r;
+    out.rHigh = r;
+    return out;
+  };
+  const int innerR = face.r - 1 > 0 ? face.r - 1 : 0;
+#if PILL_ANTIALIASED
+  std::vector<PaintedPill> painted;
+  if (!face.outline.isEmpty()) {
+    PaintedPill inside;
+    inside.band = band(x + 1, y + 1, w - 2, h - 2, innerR);
+    inside.paints = !face.fill.isEmpty();
+    if (inside.paints) inside.colour = parseHexColor(face.fill);
+    painted.push_back(inside);
+    PaintedPill ring;
+    ring.band = band(x, y, w, h, face.r);
+    ring.colour = parseHexColor(face.outline);
+    painted.push_back(ring);
+  } else if (!face.fill.isEmpty()) {
+    PaintedPill whole;
+    whole.band = band(x, y, w, h, face.r);
+    whole.colour = parseHexColor(face.fill);
+    painted.push_back(whole);
+  }
+  if (!painted.empty()) paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)));
+#else
+  // Whole pixels, one shape over another, as the designer's hardPills: the
+  // ring's outer pill, then its inside in the fill - or, for a hole, in the
+  // screen's colour, which is what lies behind a button on a 1- or 4-bit
+  // screen (a card there would show the screen instead of itself).
+  if (!face.outline.isEmpty()) {
+    canvas_->fillRoundRect(x, y, w, h, face.r, parseHexColor(face.outline));
+    if (w > 2 && h > 2) {
+      const String& inside = face.fill.isEmpty() ? currentScreenBgHex_ : face.fill;
+      canvas_->fillRoundRect(x + 1, y + 1, w - 2, h - 2, innerR, parseHexColor(materialcolors::applyDepth(inside)));
+    }
+  } else if (!face.fill.isEmpty()) {
+    canvas_->fillRoundRect(x, y, w, h, face.r, parseHexColor(face.fill));
+  }
+#endif
+
+  if (b.hasIcon) {
+    const String& icon = (isPressed && !b.iconPathPressed.isEmpty()) ? b.iconPathPressed : b.iconPath;
+    if (!icon.isEmpty()) ColorAssetLoader::drawBMPToCanvas(canvas_, icon, x + b.iconX, y + b.iconY);
+  }
+
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  const String text = obj.properties.text.isEmpty() ? String("Button") : obj.properties.text;
+  if (font != nullptr && b.clipW > 0) {
+    canvas_->setClip(x + b.clipX, y, b.clipW, h);
+    font->drawText(*canvas_, text, (int16_t)(x + b.textX), (int16_t)(y + b.baseline), parseHexColor(face.ink));
+    canvas_->clearClip();
   }
   return true;
 }

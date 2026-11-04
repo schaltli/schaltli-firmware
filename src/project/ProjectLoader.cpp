@@ -8,7 +8,7 @@
 
 namespace {
 // Every asset path stored in project.json (icon `path`, SoftwareButton
-// `pathNormal`/`pathActive`, MQTTIconField `valueIconPairs[].path`, a
+// `iconPath`/`iconPathPressed`, MQTTIconField `valueIconPairs[].path`, a
 // screen's flattened-background `path`) is written by the designer's
 // export pipeline (lib/project-zip.ts) relative to the *zip root* (e.g.
 // "assets/icon-lock.bmp") - the same convention e-paper's own export uses.
@@ -441,14 +441,43 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   obj.height = pixelValue(objJson["height"]);
   obj.zIndex = objJson["zIndex"] | 0;
   obj.path = resolveAssetPath(objJson["path"] | "");
-  obj.pathNormal = resolveAssetPath(objJson["pathNormal"] | "");
-  obj.pathActive = resolveAssetPath(objJson["pathActive"] | "");
   obj.pathDark = resolveAssetPath(objJson["pathDark"] | "");
-  obj.pathNormalDark = resolveAssetPath(objJson["pathNormalDark"] | "");
-  obj.pathActiveDark = resolveAssetPath(objJson["pathActiveDark"] | "");
 
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
+  }
+  // A software button's look (the designer's device contract, «button»).
+  if (obj.type == "button" && objJson["look"].is<JsonObject>()) {
+    ButtonLookProps* b = new ButtonLookProps();
+    auto face = [](JsonVariant j, ButtonFace& out) {
+      if (!j.is<JsonObject>()) return;
+      out.r = j["r"] | 0;
+      out.fill = j["fill"] | "";
+      out.outline = j["outline"] | "";
+      out.ink = j["ink"] | "";
+    };
+    JsonObject look = objJson["look"];
+    face(look["normal"], b->normal);
+    face(look["pressed"], b->pressed);
+    if (objJson["lookDark"].is<JsonObject>()) {
+      face(objJson["lookDark"]["normal"], b->normalDark);
+      face(objJson["lookDark"]["pressed"], b->pressedDark);
+    }
+    b->textX = look["textX"] | 0;
+    b->baseline = look["baseline"] | 0;
+    b->clipX = look["clipX"] | 0;
+    b->clipW = look["clipW"] | 0;
+    if (look["icon"].is<JsonObject>()) {
+      b->hasIcon = true;
+      b->iconX = look["icon"]["x"] | 0;
+      b->iconY = look["icon"]["y"] | 0;
+      b->iconSize = look["icon"]["size"] | 0;
+    }
+    b->iconPath = resolveAssetPath(objJson["iconPath"] | "");
+    b->iconPathPressed = resolveAssetPath(objJson["iconPathPressed"] | "");
+    b->iconPathDark = resolveAssetPath(objJson["iconPathDark"] | "");
+    b->iconPathPressedDark = resolveAssetPath(objJson["iconPathPressedDark"] | "");
+    obj.properties.button.p.reset(b);
   }
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
     obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));

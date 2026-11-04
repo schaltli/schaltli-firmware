@@ -38,7 +38,7 @@
 // so their rendering (draw the already-exported bitmap via ColorAssetLoader,
 // always the "normal" state for SoftwareButton until real touch tracking
 // exists) was designed fresh from the designer's own export shape
-// (lib/project-zip.ts's path/pathNormal/pathActive fields), not ported from
+// (lib/project-zip.ts's path fields and a button's look), not ported from
 // existing firmware logic.
 //
 // tab-control/panel/MqttDataLine (2026-08-14 port from schaltli-eink's
@@ -304,7 +304,7 @@ public:
   // Does NOT blit to the display - caller does that once after this
   // returns, same as the color-canvas spike (checkpoint 2a).
   // pressedButtonId: if non-empty and it matches a SoftwareButton's own id
-  // on this screen, that one button draws pathActive instead of pathNormal
+  // on this screen, that one button draws its pressed face
   // - see main.cpp's touch handling for why a full re-render (not a
   // partial single-object update) is used for this: cheap enough on a
   // color LCD with no e-paper ghosting concern to optimize around, same
