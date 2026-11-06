@@ -495,6 +495,10 @@ private:
   bool renderIcon(const ScreenObject& obj);
   bool renderSoftwareButton(const ScreenObject& obj, bool isPressed);
   bool renderSwitch(const ScreenObject& obj, int pendingStateIndex, int pressedStateIndex);
+  // A Toggle Button (designer contract «toggle-button»): the reported
+  // state's look, the ring while pendingStateIndex is another state, the
+  // pressed face while pressed.
+  bool renderToggleButton(const ScreenObject& obj, int pendingStateIndex, bool pressed);
   // A text field (TextField.h): container, line, the text or its dots.
   bool renderTextField(const ScreenObject& obj);
   // A time field (TimeField.h): the text field's drawing, its text the time.

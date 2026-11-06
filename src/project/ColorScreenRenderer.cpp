@@ -2598,6 +2598,108 @@ bool ColorScreenRenderer::renderSoftwareButton(const ScreenObject& obj, bool isP
   return true;
 }
 
+// A Toggle Button, from the looks the designer exported (contract
+// «toggle-button»; designer render-toggle-button.ts draws the same): the
+// reported state's look, or «none»; the disc, then the face - its outline
+// the 2-px ring while another state was asked for - the state's icon
+// picture, one or two lines of text. Light or dark is the swap's
+// (ThemeVariant.h), as for a button.
+bool ColorScreenRenderer::renderToggleButton(const ScreenObject& obj, int pendingStateIndex, bool pressed) {
+  if (!obj.properties.toggle) return false;
+  const ToggleButtonProps& t = *obj.properties.toggle;
+  const int x = obj.x, y = obj.y, w = obj.width, h = obj.height;
+  if (w <= 0 || h <= 0) return false;
+  const int active = getActiveSwitchStateIndex(obj);
+  const ToggleLook& look = active >= 0 && active < (int)t.looks.size() ? t.looks[active] : t.none;
+  const ButtonFace& face = pressed ? look.pressed : look.normal;
+  const bool ringed = pendingStateIndex >= 0 && pendingStateIndex != active && !t.ring.isEmpty();
+  const String& edge = ringed ? t.ring : face.outline;
+  const int edgeW = ringed ? 2 : 1;
+  const int innerR = face.r - edgeW > 0 ? face.r - edgeW : 0;
+  const String& discFill = pressed ? look.discPressed : look.discNormal;
+  const String& discEdge = pressed ? look.discEdgePressed : look.discEdgeNormal;
+  const bool disc = look.hasDisc && look.discR > 0;
+  const int dx = x + look.discCx - look.discR, dy = y + look.discCy - look.discR, dd = 2 * look.discR;
+
+  auto band = [](int bx, int by, int bw, int bh, int r) {
+    PillRaster::Band out;
+    out.x = bx;
+    out.y = by;
+    out.w = bw;
+    out.h = bh;
+    out.rLow = r;
+    out.rHigh = r;
+    return out;
+  };
+#if PILL_ANTIALIASED
+  // In priority order: the disc, then the face (paint-pills.ts).
+  std::vector<PaintedPill> painted;
+  auto run = [&](PillRaster::Band b, const String& colour) {
+    PaintedPill p;
+    p.band = b;
+    p.paints = !colour.isEmpty();
+    if (p.paints) p.colour = parseHexColor(colour);
+    painted.push_back(p);
+  };
+  if (disc) {
+    if (!discEdge.isEmpty() && look.discR > 1) {
+      run(band(dx + 1, dy + 1, dd - 2, dd - 2, look.discR - 1), discFill);
+      run(band(dx, dy, dd, dd, look.discR), discEdge);
+    } else {
+      run(band(dx, dy, dd, dd, look.discR), discFill);
+    }
+  }
+  if (!edge.isEmpty()) {
+    run(band(x + edgeW, y + edgeW, w - 2 * edgeW, h - 2 * edgeW, innerR), face.fill);
+    run(band(x, y, w, h, face.r), edge);
+  } else if (!face.fill.isEmpty()) {
+    run(band(x, y, w, h, face.r), face.fill);
+  }
+  if (!painted.empty()) paintPills(painted, parseHexColor(materialcolors::applyDepth(currentScreenBgHex_)));
+#else
+  // Whole pixels, one shape over another, back to front.
+  if (!edge.isEmpty()) {
+    canvas_->fillRoundRect(x, y, w, h, face.r, parseHexColor(edge));
+    if (w > 2 * edgeW && h > 2 * edgeW) {
+      const String& inside = face.fill.isEmpty() ? currentScreenBgHex_ : face.fill;
+      canvas_->fillRoundRect(x + edgeW, y + edgeW, w - 2 * edgeW, h - 2 * edgeW, innerR, parseHexColor(materialcolors::applyDepth(inside)));
+    }
+  } else if (!face.fill.isEmpty()) {
+    canvas_->fillRoundRect(x, y, w, h, face.r, parseHexColor(face.fill));
+  }
+  if (disc) {
+    if (!discEdge.isEmpty() && look.discR > 1) {
+      canvas_->fillRoundRect(dx, dy, dd, dd, look.discR, parseHexColor(discEdge));
+      canvas_->fillRoundRect(dx + 1, dy + 1, dd - 2, dd - 2, look.discR - 1, parseHexColor(discFill));
+    } else {
+      canvas_->fillRoundRect(dx, dy, dd, dd, look.discR, parseHexColor(discFill));
+    }
+  }
+#endif
+
+  if (look.hasIcon && active >= 0 && active < (int)obj.properties.states.size()) {
+    const SwitchState& state = obj.properties.states[active];
+    const String& icon = (pressed && !state.iconPathPressed.isEmpty()) ? state.iconPathPressed : state.iconPath;
+    if (!icon.isEmpty()) ColorAssetLoader::drawBMPToCanvas(canvas_, icon, x + look.iconX, y + look.iconY);
+  }
+
+  const BdfFont* font = fontFor(obj.properties.fontId);
+  if (font != nullptr && look.clipW > 0) {
+    const uint16_t ink = parseHexColor(face.ink);
+    canvas_->setClip(x + look.clipX, y, look.clipW, h);
+    if (look.hasSecond) {
+      font->drawText(*canvas_, obj.properties.text, (int16_t)(x + look.textX), (int16_t)(y + look.baseline), ink);
+      const BdfFont* second = fontFor(look.secondFontId);
+      if (second == nullptr) second = font;
+      second->drawText(*canvas_, look.label, (int16_t)(x + look.secondTextX), (int16_t)(y + look.secondBaseline), ink);
+    } else {
+      font->drawText(*canvas_, look.label, (int16_t)(x + look.textX), (int16_t)(y + look.baseline), ink);
+    }
+    canvas_->clearClip();
+  }
+  return true;
+}
+
 int ColorScreenRenderer::getActiveSwitchStateIndex(const ScreenObject& obj) const {
   if (obj.properties.topic.isEmpty()) return -1;
   String topicValue = projectLoader_.getTopicValue(obj.properties.topic);
@@ -3171,6 +3273,10 @@ bool ColorScreenRenderer::renderObjectUnclipped(const ScreenObject& obj, const S
   if (obj.type == "live-icon") return renderMQTTIconField(obj);
   if (obj.type == "icon") return renderIcon(obj);
   if (obj.type == "button") return renderSoftwareButton(obj, !pressedButtonId.isEmpty() && obj.id == pressedButtonId);
+  if (objecttypes::isToggle(obj.type)) {
+    int pendingIndex = obj.id == pendingSwitchId ? pendingSwitchStateIndex : -1;
+    return renderToggleButton(obj, pendingIndex, !pressedSwitchId.isEmpty() && obj.id == pressedSwitchId);
+  }
   if (objecttypes::isSwitch(obj.type)) {
     int pendingIndex = obj.id == pendingSwitchId ? pendingSwitchStateIndex : -1;
     int pressedIndex = obj.id == pressedSwitchId ? pressedSwitchStateIndex : -1;

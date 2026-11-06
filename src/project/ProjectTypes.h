@@ -60,6 +60,10 @@ struct SwitchState {
   // The dark variant's two bitmaps (ThemeVariant.h); empty: same as light.
   String iconPathDark;
   String iconPathActiveDark;
+  // A Toggle Button's state icon as it stands on the pressed face; empty:
+  // as iconPath (designer contract «toggle-button»).
+  String iconPathPressed;
+  String iconPathPressedDark;
   // "single" mode only: does this state show the marker bar? Ignored in
   // "segmented", where the bar always marks whichever segment is active.
   bool showMarker;
@@ -221,6 +225,47 @@ struct ButtonLookHandle {
   explicit operator bool() const { return static_cast<bool>(p); }
   ButtonLookProps& operator*() const { return *p; }
   ButtonLookProps* operator->() const { return p.get(); }
+};
+
+// A Toggle Button as the device draws it (designer device contract
+// «toggle-button», docs/2026-11-06-toggle-button.md): a button's look per
+// state, one for «nothing reported», the ring's colour. Every judgement is
+// the designer's (lib/toggle-button-shape.ts); this only holds it.
+struct ToggleLook {
+  ButtonFace normal, pressed, normalDark, pressedDark;
+  String label;
+  int textX = 0, baseline = 0, clipX = 0, clipW = 0;
+  bool hasIcon = false;
+  int iconX = 0, iconY = 0, iconSize = 0;
+  // The state's label under the name; only with a name.
+  bool hasSecond = false;
+  int secondTextX = 0, secondBaseline = 0;
+  String secondFontId;
+  // The disc behind the icon; only with a name and an icon somewhere. An
+  // edge colour names a 1-px ring where the disc's tint is lost (1 bit).
+  bool hasDisc = false;
+  int discCx = 0, discCy = 0, discR = 0;
+  String discNormal, discPressed, discNormalDark, discPressedDark;
+  String discEdgeNormal, discEdgePressed, discEdgeNormalDark, discEdgePressedDark;
+};
+struct ToggleButtonProps {
+  std::vector<ToggleLook> looks;
+  ToggleLook none;
+  String ring, ringDark;
+};
+struct ToggleButtonHandle {
+  std::unique_ptr<ToggleButtonProps> p;
+  ToggleButtonHandle() = default;
+  ToggleButtonHandle(const ToggleButtonHandle& o) : p(o.p ? new ToggleButtonProps(*o.p) : nullptr) {}
+  ToggleButtonHandle& operator=(const ToggleButtonHandle& o) {
+    if (this != &o) p.reset(o.p ? new ToggleButtonProps(*o.p) : nullptr);
+    return *this;
+  }
+  ToggleButtonHandle(ToggleButtonHandle&&) = default;
+  ToggleButtonHandle& operator=(ToggleButtonHandle&&) = default;
+  explicit operator bool() const { return static_cast<bool>(p); }
+  ToggleButtonProps& operator*() const { return *p; }
+  ToggleButtonProps* operator->() const { return p.get(); }
 };
 
 // A chart (designer device contract 2.13): its model for the core
@@ -470,6 +515,8 @@ struct ObjectProperties {
   ChartHandle chart;
   // A software button's look (above); empty for every other type.
   ButtonLookHandle button;
+  // A Toggle Button's looks (above); empty for every other type.
+  ToggleButtonHandle toggle;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),

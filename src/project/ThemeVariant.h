@@ -64,6 +64,27 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
   for (SwitchState& state : p.states) {
     f(state.iconPath, state.iconPathDark);
     f(state.iconPathActive, state.iconPathActiveDark);
+    f(state.iconPathPressed, state.iconPathPressedDark);
+  }
+  // A Toggle Button's looks and its ring (contract «toggle-button»): colours
+  // only, the layout is one for both.
+  if (p.toggle) {
+    ToggleButtonProps& t = *p.toggle;
+    auto look = [&f](ToggleLook& l) {
+      f(l.normal.fill, l.normalDark.fill);
+      f(l.normal.outline, l.normalDark.outline);
+      f(l.normal.ink, l.normalDark.ink);
+      f(l.pressed.fill, l.pressedDark.fill);
+      f(l.pressed.outline, l.pressedDark.outline);
+      f(l.pressed.ink, l.pressedDark.ink);
+      f(l.discNormal, l.discNormalDark);
+      f(l.discPressed, l.discPressedDark);
+      f(l.discEdgeNormal, l.discEdgeNormalDark);
+      f(l.discEdgePressed, l.discEdgePressedDark);
+    };
+    for (ToggleLook& l : t.looks) look(l);
+    look(t.none);
+    f(t.ring, t.ringDark);
   }
   for (ValueIconPair& pair : p.valueIconPairs) f(pair.path, pair.pathDark);
   // The energy diagram's colours, its nodes' and their icons' looks (2.8).

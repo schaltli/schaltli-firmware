@@ -407,6 +407,17 @@ inline SwitchContent content(const SwitchRect& rect, const LevelFontMetrics& m, 
 inline int stateIndexForTap(const ScreenObject& obj, int x, int activeIndex) {
   const int count = (int)obj.properties.states.size();
   if (count <= 0) return -1;
+  // A Toggle Button has no position to tap: the next state, after the last
+  // the first; with nothing reported the first that shows as on, else the
+  // first (designer lib/toggle-button-shape.ts toggleNextIndex).
+  if (obj.type == "toggle-button") {
+    if (activeIndex < 0 || activeIndex >= count) {
+      for (int i = 0; i < count; i++)
+        if (obj.properties.states[i].showMarker) return i;
+      return 0;
+    }
+    return (activeIndex + 1) % count;
+  }
   if (isKnobForm(obj)) {
     if (count == 2) return activeIndex == 0 ? 1 : 0;
     const int slot = slotAt(obj, count, x);

@@ -25,9 +25,15 @@ inline bool isLevel(const String& type) { return type == "bar" || type == "slide
 // The round one.
 inline bool isArc(const String& type) { return type == "gauge" || type == "dial"; }
 
-// A knob in a track, or a connected button group. The form is the type;
-// there is no `mode` property any more.
-inline bool isSwitch(const String& type) { return type == "switch" || type == "button-group"; }
+// A knob in a track, a connected button group, or a Toggle Button - the
+// three with states, a read and a write topic. The form is the type; there
+// is no `mode` property any more. The Toggle Button (designer
+// docs/2026-11-06-toggle-button.md) shares their tap, pending and pressed
+// handling and is drawn from its exported looks (isToggle).
+inline bool isSwitch(const String& type) { return type == "switch" || type == "button-group" || type == "toggle-button"; }
+
+// The one tile that is its state.
+inline bool isToggle(const String& type) { return type == "toggle-button"; }
 
 // Either shape of level, straight or round.
 inline bool isAnyLevel(const String& type) { return isLevel(type) || isArc(type); }

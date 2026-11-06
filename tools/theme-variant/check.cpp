@@ -199,6 +199,57 @@ int main() {
   }
   expect(same(p, light), "five round trips");
 
+  // A Toggle Button (designer contract «toggle-button»): every look's faces
+  // and disc, the ring and the pressed icon swap; the layout stays.
+  {
+    ProjectConfig t;
+    Screen ts;
+    ScreenObject tile;
+    tile.type = "toggle-button";
+    tile.properties.toggle.p.reset(new ToggleButtonProps());
+    ToggleButtonProps& tp = *tile.properties.toggle;
+    ToggleLook on;
+    on.normal.fill = "#0284c7";
+    on.normalDark.fill = "#0ea5e9";
+    on.normal.ink = "#ffffff";
+    on.pressed.fill = "#1b8fcc";
+    on.pressedDark.fill = "#26aeeb";
+    on.discNormal = "#2b93cd";
+    on.discNormalDark = "#2cb0ec";
+    on.discEdgeNormal = "#ffffff";
+    on.textX = 54;
+    tp.looks.push_back(on);
+    tp.none.normal.fill = "#ffffff";
+    tp.none.normalDark.fill = "#181c24";
+    tp.ring = "#0284c7";
+    tp.ringDark = "#0ea5e9";
+    SwitchState st;
+    st.iconPath = "/PROJECT/assets/t-0.bmp";
+    st.iconPathDark = "/PROJECT/assets/t-0-dark.bmp";
+    st.iconPathPressed = "/PROJECT/assets/t-0-pressed.bmp";
+    st.iconPathPressedDark = "/PROJECT/assets/t-0-pressed-dark.bmp";
+    tile.properties.states.push_back(st);
+    ts.objects.push_back(tile);
+    t.screens.push_back(ts);
+
+    themevariant::apply(t, true);
+    const ToggleButtonProps& d = *t.screens[0].objects[0].properties.toggle;
+    const SwitchState& ds = t.screens[0].objects[0].properties.states[0];
+    expect(d.looks[0].normal.fill == "#0ea5e9", "a toggle's on face, dark");
+    expect(d.looks[0].pressed.fill == "#26aeeb", "a toggle's pressed face, dark");
+    expect(d.looks[0].normal.ink == "#ffffff", "a toggle's ink with no dark twin stays");
+    expect(d.looks[0].discNormal == "#2cb0ec", "a toggle's disc, dark");
+    expect(d.looks[0].discEdgeNormal == "#ffffff", "a toggle's disc edge with no dark twin stays");
+    expect(d.looks[0].textX == 54, "a toggle's layout is one for both");
+    expect(d.none.normal.fill == "#181c24", "a toggle's none look, dark");
+    expect(d.ring == "#0ea5e9", "a toggle's ring, dark");
+    expect(ds.iconPath == "/PROJECT/assets/t-0-dark.bmp", "a toggle state's icon, dark");
+    expect(ds.iconPathPressed == "/PROJECT/assets/t-0-pressed-dark.bmp", "a toggle state's pressed icon, dark");
+    themevariant::apply(t, false);
+    expect(d.looks[0].normal.fill == "#0284c7" && d.ring == "#0284c7" && ds.iconPathPressed == "/PROJECT/assets/t-0-pressed.bmp",
+           "a toggle light again");
+  }
+
   expect(themevariant::isDarkPayload("dark"), "dark");
   expect(themevariant::isDarkPayload(" DARK\n"), "dark, trimmed, any case");
   expect(!themevariant::isDarkPayload("light"), "light");

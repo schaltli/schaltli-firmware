@@ -287,6 +287,19 @@ for (const [name, entry] of Object.entries(recorded.cases)) {
   }
 }
 
+// A Toggle Button's tap: the next state, whatever x; from none the first
+// that shows as on (designer toggleNextIndex, the same cases as its spec).
+{
+  const want = ["1", "0", "1", "0", "2", "0", "-1"];
+  const got = execFileSync(build("toggle-tap"), { encoding: "utf8" }).trim().split(/\s+/);
+  if (got.join(" ") !== want.join(" ")) {
+    failures++;
+    console.log(`  FAIL toggle-tap: got ${got.join(" ")}, want ${want.join(" ")}`);
+  } else {
+    console.log("  ok   toggle-tap");
+  }
+}
+
 console.log(
   failures === 0
     ? "\nThe Switch's shape and colours agree with the designer, value for value."

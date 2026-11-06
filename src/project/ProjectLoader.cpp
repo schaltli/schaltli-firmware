@@ -479,6 +479,77 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
     b->iconPathPressedDark = resolveAssetPath(objJson["iconPathPressedDark"] | "");
     obj.properties.button.p.reset(b);
   }
+  // A Toggle Button's looks (contract «toggle-button»): one per state, none,
+  // the ring; dark beside light, colours only.
+  if (obj.type == "toggle-button" && objJson["looks"].is<JsonArray>()) {
+    ToggleButtonProps* t = new ToggleButtonProps();
+    auto face = [](JsonVariant j, ButtonFace& out) {
+      if (!j.is<JsonObject>()) return;
+      out.r = j["r"] | 0;
+      out.fill = j["fill"] | "";
+      out.outline = j["outline"] | "";
+      out.ink = j["ink"] | "";
+    };
+    auto look = [&](JsonVariant j, JsonVariant dark, ToggleLook& out) {
+      if (!j.is<JsonObject>()) return;
+      face(j["normal"], out.normal);
+      face(j["pressed"], out.pressed);
+      out.label = j["label"] | "";
+      out.textX = j["textX"] | 0;
+      out.baseline = j["baseline"] | 0;
+      out.clipX = j["clipX"] | 0;
+      out.clipW = j["clipW"] | 0;
+      if (j["icon"].is<JsonObject>()) {
+        out.hasIcon = true;
+        out.iconX = j["icon"]["x"] | 0;
+        out.iconY = j["icon"]["y"] | 0;
+        out.iconSize = j["icon"]["size"] | 0;
+      }
+      if (j["second"].is<JsonObject>()) {
+        out.hasSecond = true;
+        out.secondTextX = j["second"]["textX"] | 0;
+        out.secondBaseline = j["second"]["baseline"] | 0;
+        out.secondFontId = j["second"]["fontId"] | "";
+      }
+      if (j["disc"].is<JsonObject>()) {
+        JsonVariant d = j["disc"];
+        out.hasDisc = true;
+        out.discCx = d["cx"] | 0;
+        out.discCy = d["cy"] | 0;
+        out.discR = d["r"] | 0;
+        out.discNormal = d["normal"] | "";
+        out.discPressed = d["pressed"] | "";
+        if (d["edge"].is<JsonObject>()) {
+          out.discEdgeNormal = d["edge"]["normal"] | "";
+          out.discEdgePressed = d["edge"]["pressed"] | "";
+        }
+      }
+      if (dark.is<JsonObject>()) {
+        face(dark["normal"], out.normalDark);
+        face(dark["pressed"], out.pressedDark);
+        if (dark["disc"].is<JsonObject>()) {
+          out.discNormalDark = dark["disc"]["normal"] | "";
+          out.discPressedDark = dark["disc"]["pressed"] | "";
+          if (dark["disc"]["edge"].is<JsonObject>()) {
+            out.discEdgeNormalDark = dark["disc"]["edge"]["normal"] | "";
+            out.discEdgePressedDark = dark["disc"]["edge"]["pressed"] | "";
+          }
+        }
+      }
+    };
+    JsonArray looks = objJson["looks"].as<JsonArray>();
+    JsonArray looksDark = objJson["looksDark"].as<JsonArray>();
+    for (size_t i = 0; i < looks.size(); i++) {
+      ToggleLook l;
+      JsonVariant dark = looksDark.isNull() || i >= looksDark.size() ? JsonVariant() : JsonVariant(looksDark[i]);
+      look(looks[i], dark, l);
+      t->looks.push_back(l);
+    }
+    look(objJson["noneLook"], objJson["noneLookDark"], t->none);
+    t->ring = objJson["ring"] | "";
+    t->ringDark = objJson["ringDark"] | "";
+    obj.properties.toggle.p.reset(t);
+  }
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
     obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));
   }
@@ -717,6 +788,11 @@ std::vector<SwitchState> ProjectLoader::parseSwitchStates(JsonArray statesArray)
     state.iconPathActive = resolveAssetPath(stateJson["pathActive"] | "");
     state.iconPathDark = resolveAssetPath(stateJson["pathDark"] | "");
     state.iconPathActiveDark = resolveAssetPath(stateJson["pathActiveDark"] | "");
+    // A Toggle Button's state icons (contract «toggle-button»).
+    if (state.iconPath.isEmpty()) state.iconPath = resolveAssetPath(stateJson["iconPath"] | "");
+    if (state.iconPathDark.isEmpty()) state.iconPathDark = resolveAssetPath(stateJson["iconPathDark"] | "");
+    state.iconPathPressed = resolveAssetPath(stateJson["iconPathPressed"] | "");
+    state.iconPathPressedDark = resolveAssetPath(stateJson["iconPathPressedDark"] | "");
     // "Show this state as switched on", which decides whether a switch
     // showing it is drawn in colour. Renamed from showMarker on 2026-09-20
     // (designer docs/2026-09-20-switch-look.md, decision 4); every project

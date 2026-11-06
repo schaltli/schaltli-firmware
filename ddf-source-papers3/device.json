@@ -424,6 +424,7 @@
     "dial",
     "switch",
     "button-group",
+    "toggle-button",
     "button",
     "text-field",
     "time-field",
