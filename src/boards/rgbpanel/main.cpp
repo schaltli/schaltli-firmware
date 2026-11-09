@@ -806,6 +806,10 @@ static void setupRenderStack()
   // instead, a 4-bit font (150-250 KB of hex) cost the first draw of each
   // new screen half a second: popups opened in 1.1 s, taps and swipes
   // during it went by (2026-11-01, designer docs/2026-11-01-4bit-fonts.md).
+  if (projectLoader.isLoaded())
+    for (const Screen &screen : projectLoader.getProject().screens)
+      for (const ScreenObject &o : screen.objects)
+        if (o.properties.camera && !cameraFeed.allocate()) Serial.println("[camera] no PSRAM for the pictures");
   renderer->preloadFonts();
   renderAndPresent("boot");
 }

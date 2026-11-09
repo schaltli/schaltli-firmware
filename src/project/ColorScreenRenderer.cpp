@@ -724,24 +724,32 @@ const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& d
     }
     return true;
   };
-  const Font* best = nullptr;
-  const Font* smallest = nullptr;
+  // The tallest font within 60 % of the height, else the smallest: tried in that
+  // order from the project's metrics, so only what is tried gets parsed. Parsing
+  // every font to compare them cost 275 ms each and the 4.3B all its PSRAM but
+  // 230 KB, the first time «No live image» was drawn (2026-11-09).
+  // Through the getters: a replaced font the DDF dropped measures as the font
+  // drawing it (standIn).
+  const auto lineOf = [this](const Font* font) { return getFontAscentById(font->id) + getFontDescentById(font->id); };
+  std::vector<std::pair<int, const Font*>> fitting, others;
   for (const Font& f : projectLoader_.getProject().fonts) {
-    const BdfFont* candidate = fontFor(f.id);
-    if (candidate == nullptr || !hasAll(candidate)) continue;
-    if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) continue;
-    // Through the getters: a replaced font the DDF dropped measures as the
-    // font drawing it (standIn).
-    const auto lineOf = [this](const Font* font) { return getFontAscentById(font->id) + getFontDescentById(font->id); };
     const int line = lineOf(&f);
-    if (smallest == nullptr || line < lineOf(smallest)) smallest = &f;
-    if (line * 10 <= height * 6 && (best == nullptr || line > lineOf(best))) best = &f;
+    (line * 10 <= height * 6 ? fitting : others).push_back({line, &f});
   }
-  const Font* chosen = best != nullptr ? best : smallest;
-  if (chosen == nullptr) return nullptr;
-  ascent = getFontAscentById(chosen->id);
-  descent = getFontDescentById(chosen->id);
-  return fontFor(chosen->id);
+  std::stable_sort(fitting.begin(), fitting.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+  // No fitting font passes: the smallest of the others that does, as before.
+  std::stable_sort(others.begin(), others.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  for (const auto* list : {&fitting, &others}) {
+    for (const auto& entry : *list) {
+      const BdfFont* candidate = fontFor(entry.second->id);
+      if (candidate == nullptr || !hasAll(candidate)) continue;
+      if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) continue;
+      ascent = getFontAscentById(entry.second->id);
+      descent = getFontDescentById(entry.second->id);
+      return candidate;
+    }
+  }
+  return nullptr;
 }
 
 void ColorScreenRenderer::renderKeyboard(const keyboard::State& state, const ScreenObject& field,

@@ -24,6 +24,10 @@ public:
   static const int16_t MAX_H = 240;
   static const size_t MAX_IMAGE_BYTES = 256 * 1024;  // spec decision 13
 
+  // Before the fonts are parsed: they take what PSRAM there is (on the 4.3B, all
+  // but 268 KB) and a Camera asking later would be refused. Safe to call again.
+  bool allocate();
+
   // Starts fetching for one object. False when PSRAM or a task is not to be had.
   bool start(const String& id, const String& url, const String& username, const String& password, int16_t width,
              int16_t height);
@@ -63,7 +67,6 @@ private:
   void fetchLoop();
   void decodeLoop();
   void fetchFrom(const String& host, uint16_t port, const String& path, const String& authorization);
-  bool allocate();
   bool grow(Slot& slot, size_t bytes);
   bool decode(const Slot& slot, uint16_t* target);
   static int onDraw(void* draw);
