@@ -268,6 +268,25 @@ struct ToggleButtonHandle {
   ToggleButtonProps* operator->() const { return p.get(); }
 };
 
+// A Camera (designer docs/2026-11-09-camera.md): where its picture comes from.
+struct CameraProps {
+  String url;
+};
+struct CameraHandle {
+  std::unique_ptr<CameraProps> p;
+  CameraHandle() = default;
+  CameraHandle(const CameraHandle& o) : p(o.p ? new CameraProps(*o.p) : nullptr) {}
+  CameraHandle& operator=(const CameraHandle& o) {
+    if (this != &o) p.reset(o.p ? new CameraProps(*o.p) : nullptr);
+    return *this;
+  }
+  CameraHandle(CameraHandle&&) = default;
+  CameraHandle& operator=(CameraHandle&&) = default;
+  explicit operator bool() const { return static_cast<bool>(p); }
+  CameraProps& operator*() const { return *p; }
+  CameraProps* operator->() const { return p.get(); }
+};
+
 // A chart (designer device contract 2.13): its model for the core
 // (ChartCore.h), and its colours as the dark swap (ThemeVariant.h) takes
 // them - the chart's own beyond textColor and lineColor, which every object
@@ -517,6 +536,7 @@ struct ObjectProperties {
   ButtonLookHandle button;
   // A Toggle Button's looks (above); empty for every other type.
   ToggleButtonHandle toggle;
+  CameraHandle camera;
 
   ObjectProperties()
     : numberOfDecimals(2), fontSize(12), strokeWidth(1), cornerRadius(0), filletRadius(0),

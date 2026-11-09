@@ -99,10 +99,12 @@ struct PillShading {
 
 class ChartFeed;
 
+class CameraFeed;
 class ColorScreenRenderer {
 public:
   // Where a chart's history comes from (ChartFeed.h); none, and a chart says so.
   void setChartFeed(ChartFeed* feed) { chartFeed_ = feed; }
+  void setCameraFeed(CameraFeed* feed) { cameraFeed_ = feed; }
   // The NowPoint's pulse (designer lib/chart-shapes.ts ShapeLook.pulse): the
   // phase 0..1 every chart is drawn at, below 0 none. Set by a board that
   // animates, before each render, so a region drawn again matches the rest.
@@ -398,6 +400,8 @@ private:
 
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
+  CameraFeed* cameraFeed_ = nullptr;
+  bool renderCamera(const ScreenObject& obj);
   String deviceId_;
   int popupCloseBadgeRadius_ = 0;
   // Mutable: a const metric lookup may parse the font that stands in for a

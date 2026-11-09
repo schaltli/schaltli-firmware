@@ -67,6 +67,7 @@
 #include "../../ChartFeed.h"
 #include "project/NavigatorLayout.h"
 #include "project/PinchDetector.h"
+#include "project/CameraFeed.h"
 #include "project/ChartShapes.h"
 #include "project/ScreenGraphProject.h"
 #include <Arduino.h>
@@ -414,6 +415,11 @@ static void recordTapLatency(uint32_t us)
 }
 // The energy diagram's motion, defined before loop() (see there).
 static void energyStep();
+static CameraFeed cameraFeed;
+static void cameraStep();
+static String cameraReport();
+static void cameraResetStats();
+static uint32_t loopLastUs = 0, loopMaxGapUs = 0;
 static String energyReport();
 
 static String tapLatencyReport()
@@ -765,6 +771,7 @@ static void setupRenderStack()
 
   renderer = new ColorScreenRenderer(projectLoader, canvas);
   renderer->setChartFeed(&chartFeed);
+  renderer->setCameraFeed(&cameraFeed);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());
@@ -1142,6 +1149,8 @@ static void setupNetworking()
              (ps == WIFI_PS_NONE ? "none" : ps == WIFI_PS_MIN_MODEM ? "min modem" : "max modem") +
              " (?set=wifips=none|min)\n";
       out += wifi.report();
+      if (setArg == "camerastats=reset") cameraResetStats();
+      out += cameraReport() + "\n";
       if (setArg == "wifiscan=1") out += wifi.scanReport();
       if (setArg.startsWith("pclk="))
       {
@@ -3055,6 +3064,55 @@ static void pullTabStep()
   }
 }
 
+// A Camera on what is shown (designer docs/2026-11-09-camera.md): the feed runs
+// while one is visible, and each new picture goes to the canvas and to the glass
+// as one rectangle. Painted over whatever lies above it; nothing is meant to.
+static const ScreenObject *cameraObjectShown()
+{
+  if (!canvas || !renderer || !projectLoader.isLoaded() || displayIsOff || setupModeActive) return nullptr;
+  const ProjectConfig &project = projectLoader.getProject();
+  const int index = activeScreen();
+  if (index < 0 || index >= (int)project.screens.size()) return nullptr;
+  for (const ScreenObject &o : project.screens[index].objects)
+    if (o.properties.camera) return &o;
+  return nullptr;
+}
+
+static void cameraStep()
+{
+  const ScreenObject *camera = cameraObjectShown();
+  if (camera == nullptr)
+  {
+    if (cameraFeed.active()) cameraFeed.stop();
+    return;
+  }
+  if (!cameraFeed.active() || cameraFeed.objectId() != camera->id)
+    cameraFeed.start(camera->id, camera->properties.camera->url, camera->width, camera->height);
+  // While a finger moves the page the frames wait; the feed goes on.
+  if (holdActive || swipe.active()) return;
+  const uint16_t *picture = cameraFeed.takeNewest();
+  if (picture == nullptr) return;
+  const int16_t W = canvas->width(), width = cameraFeed.width(), height = cameraFeed.height();
+  uint16_t *dst = canvas->getBuffer();
+  for (int16_t row = 0; row < height; row++)
+    memcpy(dst + (size_t)(camera->y + row) * W + camera->x, picture + (size_t)row * width, (size_t)width * sizeof(uint16_t));
+  panel.blitRegion(canvas->getBuffer(), camera->x, camera->y, width, height);
+}
+
+static String cameraReport()
+{
+  return cameraFeed.report() + ", loop gap max ms " + String(loopMaxGapUs / 1000.0f, 1);
+}
+
+static void cameraResetStats()
+{
+  cameraFeed.resetStats();
+  // The next pass starts counting: what is left of the request that asked for
+  // this is not a pause the camera caused.
+  loopMaxGapUs = 0;
+  loopLastUs = 0;
+}
+
 static void energyStep()
 {
   if (!canvas || !renderer || displayIsOff || holdActive || swipe.active() || setupModeActive) return;
@@ -3174,8 +3232,14 @@ static String energyReport()
          String(energyRasterUs / n / 1000.0f, 2) + ", flush " + String(energyFlushUs / n / 1000.0f, 2) + "), wave " + String(energyWaveUs / n / 1000.0f, 2) + " ms";
 }
 
+// The longest time between two passes of loop() since the last reset: how long
+// a finger or a value can wait (spec success criterion 4).
+
 void loop()
 {
+  const uint32_t loopNowUs = micros();
+  if (loopLastUs != 0 && loopNowUs - loopLastUs > loopMaxGapUs) loopMaxGapUs = loopNowUs - loopLastUs;
+  loopLastUs = loopNowUs;
   if (restartAtMs && millis() >= restartAtMs) ESP.restart();
   if (!setupModeActive && wifi.tick() && noWifiScreenShown)
   {
@@ -3877,6 +3941,7 @@ void loop()
   if (!keyboardOpen && !pickerOpen)
   {
     energyStep();
+    cameraStep();
     pullTabStep();
     chartPulseStep();
   }

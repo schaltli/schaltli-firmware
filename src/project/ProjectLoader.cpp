@@ -550,6 +550,11 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
     t->ringDark = objJson["ringDark"] | "";
     obj.properties.toggle.p.reset(t);
   }
+  if (obj.type == "camera" && objJson["properties"].is<JsonObject>()) {
+    CameraProps* c = new CameraProps();
+    c->url = objJson["properties"]["url"] | "";
+    obj.properties.camera.p.reset(c);
+  }
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
     obj.properties.energy.p.reset(new EnergyDiagramProps(parseEnergyDiagram(objJson["properties"])));
   }

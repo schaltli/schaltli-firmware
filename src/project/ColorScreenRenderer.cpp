@@ -1,4 +1,5 @@
 #include "ColorScreenRenderer.h"
+#include "CameraFeed.h"
 
 #include "ObjectTypes.h"
 
@@ -2598,6 +2599,37 @@ bool ColorScreenRenderer::renderSoftwareButton(const ScreenObject& obj, bool isP
   return true;
 }
 
+// A Camera, on any redraw of the screen under it: the picture shown last, or
+// black. loop()'s cameraStep paints the new ones straight onto the canvas.
+bool ColorScreenRenderer::renderCamera(const ScreenObject& obj) {
+  const uint16_t* picture = cameraFeed_ != nullptr && cameraFeed_->objectId() == obj.id ? cameraFeed_->shown() : nullptr;
+  if (picture == nullptr) {
+    canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, 0x0000);
+    return true;
+  }
+  // Row by row inside the clip, not drawRGBBitmap: that visits every pixel even
+  // for a value changing elsewhere on the screen, and with values arriving 15
+  // times a second it left 3.6 of 11.6 decoded images shown (HIL, 2026-11-09).
+  const int16_t pictureW = cameraFeed_->width(), pictureH = cameraFeed_->height();
+  int16_t x0 = obj.x, y0 = obj.y, x1 = obj.x + pictureW, y1 = obj.y + pictureH;
+  if (canvas_->clipActive()) {
+    x0 = std::max<int16_t>(x0, canvas_->clipX());
+    y0 = std::max<int16_t>(y0, canvas_->clipY());
+    x1 = std::min<int16_t>(x1, canvas_->clipX() + canvas_->clipW());
+    y1 = std::min<int16_t>(y1, canvas_->clipY() + canvas_->clipH());
+  }
+  x0 = std::max<int16_t>(x0, 0);
+  y0 = std::max<int16_t>(y0, 0);
+  x1 = std::min<int16_t>(x1, canvas_->width());
+  y1 = std::min<int16_t>(y1, canvas_->height());
+  if (x1 <= x0 || y1 <= y0) return true;
+  uint16_t* dst = canvas_->getBuffer();
+  for (int16_t y = y0; y < y1; y++)
+    memcpy(dst + (size_t)y * canvas_->width() + x0, picture + (size_t)(y - obj.y) * pictureW + (x0 - obj.x),
+           (size_t)(x1 - x0) * sizeof(uint16_t));
+  return true;
+}
+
 // A Toggle Button, from the looks the designer exported (contract
 // «toggle-button»; designer render-toggle-button.ts draws the same): the
 // reported state's look, or «none»; the disc, then the face - its outline
@@ -3285,6 +3317,7 @@ bool ColorScreenRenderer::renderObjectUnclipped(const ScreenObject& obj, const S
   if (obj.type == "switcher") {
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
+  if (obj.type == "camera") return renderCamera(obj);
   if (obj.type == "energy-diagram") return renderEnergyDiagram(obj);
   if (obj.type == "chart") return renderChart(obj);
   if (obj.type == "text-field") return renderTextField(obj);
