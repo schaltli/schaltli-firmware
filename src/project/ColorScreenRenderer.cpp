@@ -3900,6 +3900,29 @@ void ColorScreenRenderer::dimOutsidePopupFence() {
 // Objektliste, sondern auch deren Sortierung und den Hintergrund - jede
 // Abweichung waere ein Pixelunterschied, und genau darauf pruefen die
 // HIL-Suiten.
+std::vector<screengraph::Rect> ColorScreenRenderer::regionsAbove(int screenIndex, const ScreenObject& below, int16_t w,
+                                                                 int16_t h) const {
+  std::vector<screengraph::Rect> regions;
+  if (!projectLoader_.isLoaded()) return regions;
+  const Screen* screen = screenOrPopupAt(projectLoader_.getProject(), screenIndex);
+  if (!screen) return regions;
+  const int16_t MARGIN = 8;
+  for (const ScreenObject& o : screen->objects) {
+    if (!zOrderLess(below, o)) continue;
+    const int16_t x0 = std::max<int16_t>(o.x - MARGIN, below.x), y0 = std::max<int16_t>(o.y - MARGIN, below.y);
+    const int16_t x1 = std::min<int16_t>(o.x + o.width + MARGIN, below.x + w);
+    const int16_t y1 = std::min<int16_t>(o.y + o.height + MARGIN, below.y + h);
+    if (x1 <= x0 || y1 <= y0) continue;
+    screengraph::Rect r;
+    r.x = x0;
+    r.y = y0;
+    r.width = x1 - x0;
+    r.height = y1 - y0;
+    regions.push_back(r);
+  }
+  return regions;
+}
+
 bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_t ry, int16_t rw, int16_t rh,
                                              const String& pressedButtonId, const String& pendingSwitchId,
                                              int pendingSwitchStateIndex, const String& pressedSwitchId,

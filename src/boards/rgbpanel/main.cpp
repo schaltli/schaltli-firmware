@@ -3066,7 +3066,7 @@ static void pullTabStep()
 
 // A Camera on what is shown (designer docs/2026-11-09-camera.md): the feed runs
 // while one is visible, and each new picture goes to the canvas and to the glass
-// as one rectangle. Painted over whatever lies above it; nothing is meant to.
+// as one rectangle, with whatever lies above it drawn again first.
 static const uint32_t CAMERA_STALE_MS = 1000;
 static bool cameraMissingShown = false;
 
@@ -3079,6 +3079,15 @@ static const ScreenObject *cameraObjectShown()
   for (const ScreenObject &o : project.screens[index].objects)
     if (o.properties.camera) return &o;
   return nullptr;
+}
+
+// A label on the picture stays on it: the picture went in underneath only now.
+static void cameraRedrawAbove(const ScreenObject &camera, int16_t width, int16_t height)
+{
+  const int index = activeScreen();
+  for (const screengraph::Rect &r : renderer->regionsAbove(index, camera, width, height))
+    renderer->renderScreenRegion(index, r.x, r.y, r.width, r.height, pressedButtonId, pendingSwitchId, pendingSwitchIndex,
+                                 pressedSwitchId, pressedSwitchIndex);
 }
 
 static void cameraStep()
@@ -3104,6 +3113,7 @@ static void cameraStep()
     {
       cameraFeed.forgetShown();
       renderer->drawCameraMissing(*camera);
+      cameraRedrawAbove(*camera, camera->width, camera->height);
       panel.blitRegion(canvas->getBuffer(), camera->x, camera->y, camera->width, camera->height);
       cameraMissingShown = true;
     }
@@ -3114,6 +3124,7 @@ static void cameraStep()
   uint16_t *dst = canvas->getBuffer();
   for (int16_t row = 0; row < height; row++)
     memcpy(dst + (size_t)(camera->y + row) * W + camera->x, picture + (size_t)row * width, (size_t)width * sizeof(uint16_t));
+  cameraRedrawAbove(*camera, width, height);
   panel.blitRegion(canvas->getBuffer(), camera->x, camera->y, width, height);
 }
 

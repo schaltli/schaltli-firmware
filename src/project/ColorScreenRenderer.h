@@ -226,6 +226,10 @@ public:
   int pullTabNudge() const { return pullTabNudge_; }
   std::vector<screengraph::Rect> pullTabRegions(int screenIndex) const;
 
+  // Where objects drawn after `below` cover its first w x h pixels, with the
+  // margin renderScreenRegion gives text that overhangs its box.
+  std::vector<screengraph::Rect> regionsAbove(int screenIndex, const ScreenObject& below, int16_t w, int16_t h) const;
+
   // Every topic (bare) an object's live values read, combined topics
   // followed to the topics under them - what a device subscribes to.
   // An energy diagram (contract 2.8) at a moment of its motion: the wave's
