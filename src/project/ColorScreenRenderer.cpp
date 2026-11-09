@@ -2599,12 +2599,24 @@ bool ColorScreenRenderer::renderSoftwareButton(const ScreenObject& obj, bool isP
   return true;
 }
 
+// Whenever no picture younger than a second is shown (spec decision 7): a dead
+// camera must not pass for a live one. English, as the designer's own labels.
+void ColorScreenRenderer::drawCameraMissing(const ScreenObject& obj) {
+  static const char* const MESSAGE = "No live image";
+  canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, 0x2104);
+  int ascent = 0, descent = 0;
+  const BdfFont* font = keyboardFont(obj.height / 4, ascent, descent, MESSAGE, obj.width - 8);
+  if (font == nullptr) return;
+  font->drawText(*canvas_, MESSAGE, obj.x + (obj.width - font->textWidth(MESSAGE)) / 2,
+                 obj.y + (obj.height + ascent - descent) / 2, 0xFFFF);
+}
+
 // A Camera, on any redraw of the screen under it: the picture shown last, or
 // black. loop()'s cameraStep paints the new ones straight onto the canvas.
 bool ColorScreenRenderer::renderCamera(const ScreenObject& obj) {
   const uint16_t* picture = cameraFeed_ != nullptr && cameraFeed_->objectId() == obj.id ? cameraFeed_->shown() : nullptr;
   if (picture == nullptr) {
-    canvas_->fillRect(obj.x, obj.y, obj.width, obj.height, 0x0000);
+    drawCameraMissing(obj);
     return true;
   }
   // Row by row inside the clip, not drawRGBBitmap: that visits every pixel even

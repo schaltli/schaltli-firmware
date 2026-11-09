@@ -105,6 +105,8 @@ public:
   // Where a chart's history comes from (ChartFeed.h); none, and a chart says so.
   void setChartFeed(ChartFeed* feed) { chartFeed_ = feed; }
   void setCameraFeed(CameraFeed* feed) { cameraFeed_ = feed; }
+  // «No live image» in a Camera's rectangle, onto the canvas.
+  void drawCameraMissing(const ScreenObject& obj);
   // The NowPoint's pulse (designer lib/chart-shapes.ts ShapeLook.pulse): the
   // phase 0..1 every chart is drawn at, below 0 none. Set by a board that
   // animates, before each render, so a region drawn again matches the rest.

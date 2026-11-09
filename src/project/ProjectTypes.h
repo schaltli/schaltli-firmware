@@ -271,6 +271,7 @@ struct ToggleButtonHandle {
 // A Camera (designer docs/2026-11-09-camera.md): where its picture comes from.
 struct CameraProps {
   String url;
+  String username, password;  // HTTP Basic, optional; never logged
 };
 struct CameraHandle {
   std::unique_ptr<CameraProps> p;

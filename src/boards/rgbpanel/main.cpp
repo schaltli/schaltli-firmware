@@ -3067,6 +3067,9 @@ static void pullTabStep()
 // A Camera on what is shown (designer docs/2026-11-09-camera.md): the feed runs
 // while one is visible, and each new picture goes to the canvas and to the glass
 // as one rectangle. Painted over whatever lies above it; nothing is meant to.
+static const uint32_t CAMERA_STALE_MS = 1000;
+static bool cameraMissingShown = false;
+
 static const ScreenObject *cameraObjectShown()
 {
   if (!canvas || !renderer || !projectLoader.isLoaded() || displayIsOff || setupModeActive) return nullptr;
@@ -3087,11 +3090,26 @@ static void cameraStep()
     return;
   }
   if (!cameraFeed.active() || cameraFeed.objectId() != camera->id)
-    cameraFeed.start(camera->id, camera->properties.camera->url, camera->width, camera->height);
+  {
+    cameraFeed.start(camera->id, camera->properties.camera->url, camera->properties.camera->username,
+                     camera->properties.camera->password, camera->width, camera->height);
+    cameraMissingShown = false;
+  }
   // While a finger moves the page the frames wait; the feed goes on.
   if (holdActive || swipe.active()) return;
   const uint16_t *picture = cameraFeed.takeNewest();
-  if (picture == nullptr) return;
+  if (picture == nullptr)
+  {
+    if (!cameraMissingShown && cameraFeed.pictureAgeMs() > CAMERA_STALE_MS)
+    {
+      cameraFeed.forgetShown();
+      renderer->drawCameraMissing(*camera);
+      panel.blitRegion(canvas->getBuffer(), camera->x, camera->y, camera->width, camera->height);
+      cameraMissingShown = true;
+    }
+    return;
+  }
+  cameraMissingShown = false;
   const int16_t W = canvas->width(), width = cameraFeed.width(), height = cameraFeed.height();
   uint16_t *dst = canvas->getBuffer();
   for (int16_t row = 0; row < height; row++)

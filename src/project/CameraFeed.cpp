@@ -2,6 +2,7 @@
 
 #include <JPEGDEC.h>
 #include <WiFi.h>
+#include <base64.h>
 #include <esp_heap_caps.h>
 #include <new>
 
@@ -80,18 +81,21 @@ bool CameraFeed::allocate() {
   return true;
 }
 
-bool CameraFeed::start(const String& id, const String& url, int16_t width, int16_t height) {
+bool CameraFeed::start(const String& id, const String& url, const String& username, const String& password, int16_t width,
+                       int16_t height) {
   if (lock_ == nullptr) lock_ = xSemaphoreCreateMutex();
   if (lock_ == nullptr || !allocate()) return false;
 
   xSemaphoreTake(lock_, portMAX_DELAY);
   url_ = url;
+  authorization_ = username.isEmpty() ? String() : "Authorization: Basic " + base64::encode(username + ":" + password) + "\r\n";
   objectId_ = id;
   width_ = min(width, MAX_W);
   height_ = min(height, MAX_H);
   xSemaphoreGive(lock_);
 
   shown_ = nullptr;
+  lastPictureMs_ = 0;
   generation_++;
   imageShared_.fetch_and((uint8_t)~FRESH);
   pictureShared_.fetch_and((uint8_t)~FRESH);
@@ -133,6 +137,7 @@ void CameraFeed::fetchLoop() {
     }
     xSemaphoreTake(lock_, portMAX_DELAY);
     const String url = url_;
+    const String authorization = authorization_;
     xSemaphoreGive(lock_);
     Url parsed;
     if (!parseUrl(url, parsed)) {
@@ -140,7 +145,7 @@ void CameraFeed::fetchLoop() {
       delay(1000);
       continue;
     }
-    fetchFrom(parsed.host, parsed.port, parsed.path);
+    fetchFrom(parsed.host, parsed.port, parsed.path, authorization);
     delay(1);
   }
 }
@@ -148,7 +153,7 @@ void CameraFeed::fetchLoop() {
 // Reads images off one connection for as long as the server keeps it open and
 // this generation stands. IP Webcam closes after every image; a server that
 // does not saves a connection per image.
-void CameraFeed::fetchFrom(const String& host, uint16_t port, const String& path) {
+void CameraFeed::fetchFrom(const String& host, uint16_t port, const String& path, const String& authorization) {
   const uint32_t generation = generation_.load();
   WiFiClient client;
   client.setTimeout(RESPONSE_TIMEOUT_MS);
@@ -171,7 +176,7 @@ void CameraFeed::fetchFrom(const String& host, uint16_t port, const String& path
       delay(1);
     }
     const uint32_t t0 = micros();
-    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n", path.c_str(), host.c_str());
+    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: keep-alive\r\n\r\n", path.c_str(), host.c_str(), authorization.c_str());
 
     String status;
     if (!readLine(client, status, RESPONSE_TIMEOUT_MS)) break;  // an idle connection the server dropped
@@ -260,6 +265,7 @@ void CameraFeed::decodeLoop() {
     decode_.add(micros() - t0);
     decoded_ = decoded_ + 1;
     if (generation_.load() != generation) continue;
+    lastPictureMs_ = millis();
     write = pictureShared_.exchange((uint8_t)(write | FRESH)) & 0x7F;
   }
 }
@@ -298,6 +304,11 @@ bool CameraFeed::decode(const Slot& slot, uint16_t* target) {
   const bool ok = jpeg_->decode(offsetX, offsetY, options) != 0;
   jpeg_->close();
   return ok;
+}
+
+uint32_t CameraFeed::pictureAgeMs() const {
+  const uint32_t at = lastPictureMs_;
+  return at == 0 ? UINT32_MAX : millis() - at;
 }
 
 void CameraFeed::resetStats() {

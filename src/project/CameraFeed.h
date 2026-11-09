@@ -25,7 +25,8 @@ public:
   static const size_t MAX_IMAGE_BYTES = 256 * 1024;  // spec decision 13
 
   // Starts fetching for one object. False when PSRAM or a task is not to be had.
-  bool start(const String& id, const String& url, int16_t width, int16_t height);
+  bool start(const String& id, const String& url, const String& username, const String& password, int16_t width,
+             int16_t height);
   void stop();
 
   bool active() const { return active_.load(); }
@@ -36,6 +37,10 @@ public:
   const uint16_t* takeNewest();
   // The one taken last, for a redraw of the screen under it; nullptr: none.
   const uint16_t* shown() const { return shown_; }
+  // Milliseconds since a picture was last finished; UINT32_MAX: none yet.
+  uint32_t pictureAgeMs() const;
+  // What is on the glass is too old to pass for live: a redraw must not bring it back.
+  void forgetShown() { shown_ = nullptr; }
   int16_t width() const { return width_; }
   int16_t height() const { return height_; }
 
@@ -57,7 +62,7 @@ private:
   static void decodeEntry(void* self);
   void fetchLoop();
   void decodeLoop();
-  void fetchFrom(const String& host, uint16_t port, const String& path);
+  void fetchFrom(const String& host, uint16_t port, const String& path, const String& authorization);
   bool allocate();
   bool grow(Slot& slot, size_t bytes);
   bool decode(const Slot& slot, uint16_t* target);
@@ -68,6 +73,7 @@ private:
   std::atomic<uint32_t> generation_{0};
   SemaphoreHandle_t lock_ = nullptr;
   String url_;
+  String authorization_;  // the whole header line, or empty
   String objectId_;
   int16_t width_ = 0, height_ = 0;
 
@@ -89,6 +95,7 @@ private:
   uint16_t* decodeTarget_ = nullptr;
 
   volatile uint32_t fetched_ = 0, decoded_ = 0, taken_ = 0, bad_ = 0, overwritten_ = 0, connects_ = 0, failedConnects_ = 0;
+  volatile uint32_t lastPictureMs_ = 0;
   volatile uint32_t lastBytes_ = 0, sourceW_ = 0, sourceH_ = 0, scale_ = 1;
   Average fetch_, decode_;
   uint32_t statsSinceMs_ = 0;

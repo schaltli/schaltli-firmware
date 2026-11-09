@@ -553,6 +553,8 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   if (obj.type == "camera" && objJson["properties"].is<JsonObject>()) {
     CameraProps* c = new CameraProps();
     c->url = objJson["properties"]["url"] | "";
+    c->username = objJson["properties"]["username"] | "";
+    c->password = objJson["properties"]["password"] | "";
     obj.properties.camera.p.reset(c);
   }
   if (obj.type == "energy-diagram" && objJson["properties"].is<JsonObject>()) {
