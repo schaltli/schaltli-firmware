@@ -53,6 +53,7 @@
 #include "project/ProjectLoader.h"
 #include "project/ThemeVariant.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/CameraFeed.h"
 #include "project/ChartShapes.h"
 #include "project/Placeholders.h"
 #include "project/ObjectTypes.h"
@@ -132,6 +133,20 @@ static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOrigin
 static String lastPopup = "none since boot";
 // The screen or popup a finger or the ring acts on now.
 static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreenIndex; }
+
+// A Camera (designer docs/2026-11-09-camera.md), and the longest time between
+// two passes of loop() since its statistics were reset (criterion 4).
+static CameraFeed cameraFeed;
+static uint32_t cameraLoopLastUs = 0, cameraLoopMaxGapUs = 0;
+static String cameraReport() {
+  return cameraFeed.report() + ", min period ms " + String(cameraFeed.minPeriodMs()) + ", loop gap max ms " +
+         String(cameraLoopMaxGapUs / 1000.0f, 1);
+}
+static void cameraResetStats() {
+  cameraFeed.resetStats();
+  cameraLoopMaxGapUs = 0;
+  cameraLoopLastUs = 0;
+}
 static bool topicsSubscribed = false;
 // The charts' history for the shown screen (ChartFeed.h), and the screen and
 // popup it was last fitted to.
@@ -2475,6 +2490,7 @@ static String buildDebugJson() {
   out += ",\"idleMs\":" + String(millis() - lastHumanInputMs);
   out += ",\"nowMs\":" + String(millis());
   out += ",\"worstLoopMs\":" + String(worstLoopMs);
+  out += ",\"camera\":\"" + jsonEscape(cameraReport()) + "\"";
   out += ",\"mqttReconnects\":" + String(mqttClient.reconnectCount());
   out += ",\"mqttConnects\":" + String(mqttClient.connectCount());
   out += ",\"mqttLastState\":" + String(mqttClient.lastDisconnectState());
@@ -2673,6 +2689,7 @@ static void loadAndRenderProject() {
   if (screenRenderer == nullptr) {
     screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
     screenRenderer->setChartFeed(&chartFeed);
+    screenRenderer->setCameraFeed(&cameraFeed);
     // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
     // The id is fixed at construction, so it is there before the first draw.
     screenRenderer->setDeviceId(mqttClient.getClientId());
@@ -2684,6 +2701,10 @@ static void loadAndRenderProject() {
   }
   // Before the first render, so no render - and in particular no
   // neighbour pre-render during a drag - ever pays for a font parse.
+  // A Camera's pictures first: the fonts would take the PSRAM it needs.
+  for (const Screen &screen : projectLoader.getProject().screens)
+    for (const ScreenObject &o : screen.objects)
+      if (o.properties.camera && !cameraFeed.allocate()) Serial.println("[camera] no PSRAM for the pictures");
   screenRenderer->preloadFonts();
 
   topicsSubscribed = false;
@@ -3440,6 +3461,9 @@ static void setupWiFi() {
         }
         // set=charts: the charts' history it holds (ChartFeed::describe).
         if (setArg == "charts") return chartFeed.describe();
+        // set=camerastats=reset, set=cameraperiod=<ms>: for the Camera's HIL.
+        if (setArg == "camerastats=reset") cameraResetStats();
+        if (setArg.startsWith("cameraperiod=")) cameraFeed.setMinPeriodMs((uint32_t)setArg.substring(13).toInt());
         // ?set=chartpulse=off stills the NowPoint for a test comparing pixels; =on again.
         if (setArg == "chartpulse=off" || setArg == "chartpulse=on") {
           chartFeed.setPulsing(setArg == "chartpulse=on");
@@ -3887,7 +3911,56 @@ static String energyReport() {
          String(energyWorstStepUs / 1000.0f, 1) + " ms, worst after a redraw " + String(energyWorstRecomputeUs / 1000.0f, 1) + " ms";
 }
 
+// The Camera on what is shown: the feed runs while one is visible. Each new
+// picture is drawn by redrawing its rectangle, which puts what lies above it
+// back on top, and handed to LVGL like any other region.
+static const uint32_t CAMERA_STALE_MS = 1000;
+static bool cameraMissingShown = false;
+
+static void cameraStep() {
+  const ScreenObject *camera = nullptr;
+  if (screenRenderer != nullptr && projectLoader.isLoaded() && !displayIsOff && !setupModeActive && !signalModeActive) {
+    const ProjectConfig &project = projectLoader.getProject();
+    const int index = activeScreen();
+    if (index >= 0 && index < (int)project.screens.size())
+      for (const ScreenObject &o : project.screens[index].objects)
+        if (o.properties.camera) {
+          camera = &o;
+          break;
+        }
+  }
+  if (camera == nullptr) {
+    if (cameraFeed.active()) cameraFeed.stop();
+    return;
+  }
+  if (!cameraFeed.active() || cameraFeed.objectId() != camera->id) {
+    cameraFeed.start(camera->id, camera->properties.camera->url, camera->properties.camera->username,
+                     camera->properties.camera->password, camera->width, camera->height);
+    cameraMissingShown = false;
+  }
+  // While a finger moves the page the pictures wait; the feed goes on.
+  if (touchIsDown || dragActive || dragAnimating || pendingScreenRender || canvasPresenter.transitionActive()) return;
+  int16_t w = 0, h = 0;
+  if (cameraFeed.takeNewest() != nullptr) {
+    cameraMissingShown = false;
+    w = cameraFeed.width();
+    h = cameraFeed.height();
+  } else if (!cameraMissingShown && cameraFeed.pictureAgeMs() > CAMERA_STALE_MS) {
+    cameraFeed.forgetShown();
+    cameraMissingShown = true;
+    w = camera->width;
+    h = camera->height;
+  }
+  if (w <= 0 || h <= 0) return;
+  if (screenRenderer->renderScreenRegion(activeScreen(), camera->x, camera->y, w, h))
+    canvasPresenter.presentRegion(camera->x, camera->y, camera->x + w - 1, camera->y + h - 1);
+}
+
 void loop() {
+  const uint32_t cameraLoopNowUs = micros();
+  if (cameraLoopLastUs != 0 && cameraLoopNowUs - cameraLoopLastUs > cameraLoopMaxGapUs)
+    cameraLoopMaxGapUs = cameraLoopNowUs - cameraLoopLastUs;
+  cameraLoopLastUs = cameraLoopNowUs;
 #if INPUT_DEBUG
   const uint32_t loopStart = millis();
 #endif
@@ -4064,6 +4137,7 @@ void loop() {
   }
   PHASE("pull tabs", pullTabStep());
   PHASE("chart pulse", chartPulseStep());
+  PHASE("camera", cameraStep());
 
   delay(5);
 #if INPUT_DEBUG
