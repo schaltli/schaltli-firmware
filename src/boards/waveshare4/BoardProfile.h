@@ -50,6 +50,10 @@ static const uint16_t VSYNC_FRONT_PORCH = 10;
 
 static const size_t BOUNCE_BUFFER_PX = PANEL_W * 10;
 
+// The Camera's pictures no closer than this; 0: as fast as they are decoded
+// (about 10 a second here, within the spec's loop pause - HIL 2026-11-09).
+static const uint32_t CAMERA_MIN_PERIOD_MS = 0;
+
 // --- shared I2C bus -------------------------------------------------------
 // Touch (GT911 at 0x5D), the CH32V003 (0x24) and the RTC (PCF85063, 0x51).
 static const int I2C_SDA = 15;

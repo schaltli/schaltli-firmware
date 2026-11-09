@@ -52,6 +52,11 @@ static const uint16_t VSYNC_FRONT_PORCH = 8;
 // picture drifts sideways under bus contention. Waveshare uses width * 10.
 static const size_t BOUNCE_BUFFER_PX = PANEL_W * 10;
 
+// The Camera's pictures no closer than this. Unlimited (7.5 a second) the loop
+// paused up to 389 ms against 136 without one, beyond the spec's +150 ms
+// (designer docs/2026-11-09-camera.md, criterion 4; HIL 2026-11-09).
+static const uint32_t CAMERA_MIN_PERIOD_MS = 170;
+
 // --- shared I2C bus -------------------------------------------------------
 // Touch, the CH422G expander and the RTC all sit on the same two lines.
 static const int I2C_SDA = 8;

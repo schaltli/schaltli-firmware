@@ -175,6 +175,12 @@ void CameraFeed::fetchFrom(const String& host, uint16_t port, const String& path
       if (generation_.load() != generation) return;
       delay(1);
     }
+    // A board whose loop cannot spare more pictures asks for them no sooner.
+    while (minPeriodMs_.load() > 0 && millis() - lastRequestMs_ < minPeriodMs_.load()) {
+      if (generation_.load() != generation) return;
+      delay(5);
+    }
+    lastRequestMs_ = millis();
     const uint32_t t0 = micros();
     client.printf("GET %s HTTP/1.1\r\nHost: %s\r\n%sConnection: keep-alive\r\n\r\n", path.c_str(), host.c_str(), authorization.c_str());
 

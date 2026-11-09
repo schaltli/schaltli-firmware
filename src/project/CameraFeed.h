@@ -51,6 +51,10 @@ public:
   String report() const;
   void resetStats();
 
+  // The shortest time between two requests; 0: as fast as pictures are decoded.
+  void setMinPeriodMs(uint32_t ms) { minPeriodMs_.store(ms); }
+  uint32_t minPeriodMs() const { return minPeriodMs_.load(); }
+
 private:
   struct Slot {
     uint8_t* data = nullptr;
@@ -72,6 +76,8 @@ private:
   static int onDraw(void* draw);
 
   std::atomic<bool> active_{false};
+  std::atomic<uint32_t> minPeriodMs_{0};
+  uint32_t lastRequestMs_ = 0;  // the fetch task's own
   // Bumped by start and stop: what is being fetched for an older one is dropped.
   std::atomic<uint32_t> generation_{0};
   SemaphoreHandle_t lock_ = nullptr;

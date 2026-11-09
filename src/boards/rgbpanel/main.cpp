@@ -772,6 +772,7 @@ static void setupRenderStack()
   renderer = new ColorScreenRenderer(projectLoader, canvas);
   renderer->setChartFeed(&chartFeed);
   renderer->setCameraFeed(&cameraFeed);
+  cameraFeed.setMinPeriodMs(CAMERA_MIN_PERIOD_MS);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
   // The id is fixed at construction, so it is there before the first draw.
   renderer->setDeviceId(mqttClient.getClientId());
@@ -1154,6 +1155,7 @@ static void setupNetworking()
              " (?set=wifips=none|min)\n";
       out += wifi.report();
       if (setArg == "camerastats=reset") cameraResetStats();
+      if (setArg.startsWith("cameraperiod=")) cameraFeed.setMinPeriodMs((uint32_t)setArg.substring(13).toInt());
       out += cameraReport() + "\n";
       if (setArg == "wifiscan=1") out += wifi.scanReport();
       if (setArg.startsWith("pclk="))
@@ -3134,7 +3136,8 @@ static void cameraStep()
 
 static String cameraReport()
 {
-  return cameraFeed.report() + ", loop gap max ms " + String(loopMaxGapUs / 1000.0f, 1);
+  return cameraFeed.report() + ", min period ms " + String(cameraFeed.minPeriodMs()) + ", loop gap max ms " +
+         String(loopMaxGapUs / 1000.0f, 1);
 }
 
 static void cameraResetStats()
