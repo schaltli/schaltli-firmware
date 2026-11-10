@@ -420,6 +420,10 @@ static void cameraStep();
 static String cameraReport();
 static void cameraResetStats();
 static uint32_t loopLastUs = 0, loopMaxGapUs = 0;
+// What the turn behind loopMaxGapUs spent where: values drawn, the energy
+// diagram's step, the Camera's picture (criterion 4 on the 4.3B, 2026-11-10).
+static uint32_t turnValuesUs = 0, turnEnergyUs = 0, turnCameraUs = 0;
+static uint32_t worstValuesUs = 0, worstEnergyUs = 0, worstCameraUs = 0;
 static String energyReport();
 
 static String tapLatencyReport()
@@ -3137,7 +3141,8 @@ static void cameraStep()
 static String cameraReport()
 {
   return cameraFeed.report() + ", min period ms " + String(cameraFeed.minPeriodMs()) + ", loop gap max ms " +
-         String(loopMaxGapUs / 1000.0f, 1);
+         String(loopMaxGapUs / 1000.0f, 1) + " (values " + String(worstValuesUs / 1000.0f, 1) + ", energy " +
+         String(worstEnergyUs / 1000.0f, 1) + ", camera " + String(worstCameraUs / 1000.0f, 1) + ")";
 }
 
 static void cameraResetStats()
@@ -3147,6 +3152,7 @@ static void cameraResetStats()
   // this is not a pause the camera caused.
   loopMaxGapUs = 0;
   loopLastUs = 0;
+  worstValuesUs = worstEnergyUs = worstCameraUs = 0;
 }
 
 static void energyStep()
@@ -3274,8 +3280,15 @@ static String energyReport()
 void loop()
 {
   const uint32_t loopNowUs = micros();
-  if (loopLastUs != 0 && loopNowUs - loopLastUs > loopMaxGapUs) loopMaxGapUs = loopNowUs - loopLastUs;
+  if (loopLastUs != 0 && loopNowUs - loopLastUs > loopMaxGapUs)
+  {
+    loopMaxGapUs = loopNowUs - loopLastUs;
+    worstValuesUs = turnValuesUs;
+    worstEnergyUs = turnEnergyUs;
+    worstCameraUs = turnCameraUs;
+  }
   loopLastUs = loopNowUs;
+  turnValuesUs = turnEnergyUs = turnCameraUs = 0;
   if (restartAtMs && millis() >= restartAtMs) ESP.restart();
   if (!setupModeActive && wifi.tick() && noWifiScreenShown)
   {
@@ -3968,6 +3981,7 @@ void loop()
       renderAndPresent("topic");
     }
     topicRenderUs += micros() - t0;
+    turnValuesUs += micros() - t0;
     topicRenders++;
     pendingTopicCount = 0;
     pendingTopicOverflow = false;
@@ -3976,8 +3990,15 @@ void loop()
   // The energy diagram's motion, after the touch and the values (see there).
   if (!keyboardOpen && !pickerOpen)
   {
+    const uint32_t te = micros();
     energyStep();
-    cameraStep();
+    const uint32_t tc = micros();
+    turnEnergyUs += tc - te;
+    // Not in a turn that drew values: the two together made the longest
+    // pause, 162 ms of values and 98 of a picture in one turn on the 4.3B
+    // (293 ms, 286 allowed; 2026-11-10). The picture waits one turn.
+    if (turnValuesUs == 0) cameraStep();
+    turnCameraUs += micros() - tc;
     pullTabStep();
     chartPulseStep();
   }

@@ -54,8 +54,10 @@ static const size_t BOUNCE_BUFFER_PX = PANEL_W * 10;
 
 // The Camera's pictures no closer than this. Unlimited (7.5 a second) the loop
 // paused up to 389 ms against 136 without one, beyond the spec's +150 ms
-// (designer docs/2026-11-09-camera.md, criterion 4; HIL 2026-11-09).
-static const uint32_t CAMERA_MIN_PERIOD_MS = 170;
+// (designer docs/2026-11-09-camera.md, criterion 4; HIL 2026-11-09). 170 ms
+// then, 290-293 ms of 286 allowed; since a picture waits out a turn that drew
+// values, 130 ms gives 6.1-6.3 shown a second and 240-242 ms (2026-11-10).
+static const uint32_t CAMERA_MIN_PERIOD_MS = 130;
 
 // --- shared I2C bus -------------------------------------------------------
 // Touch, the CH422G expander and the RTC all sit on the same two lines.
