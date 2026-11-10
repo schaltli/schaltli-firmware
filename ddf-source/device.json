@@ -870,6 +870,7 @@
     }
   ],
   "supportedObjectTypes": [
+    "camera",
     "live-text",
     "live-icon",
     "text",
