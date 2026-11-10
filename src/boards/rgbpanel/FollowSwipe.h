@@ -277,6 +277,16 @@ public:
     stats_.flicked = flick;
     active_ = false;
 
+    // The frames went straight into the panel's buffers, past its book of
+    // what each still owes: only the last one shows the screen at rest, the
+    // others hold frames of the slide. Whatever presented a rectangle next
+    // brought one of those back around it - with a Camera, ten times a
+    // second, so after swiping away and back the picture jittered and a
+    // shifted «No live image» from the slide flashed beside it (the user,
+    // 2026-11-10). Owed, not copied now: each buffer takes the canvas whole
+    // at its next present.
+    panel_->oweEverything();
+
     Record &r = log_[logCount_ % LOG_SIZE];
     r.frames = stats_.frames;
     r.composeUs = stats_.totalUs;

@@ -165,6 +165,16 @@ public:
     present(src);
   }
 
+  // Every buffer owes the whole screen, without a present: for something that
+  // wrote into the buffers past this bookkeeping (a swipe's frames). Each
+  // buffer then takes the canvas whole at its next present - three full
+  // copies spread over the next three, instead of a slide frame coming back
+  // around every rectangle presented from then on.
+  void oweEverything()
+  {
+    for (size_t i = 0; i < count_; i++) dirtyAll_[i] = true;
+  }
+
   // Several rectangles, one present: something that moves in many small
   // places at once (the energy diagram's dots, 2026-10-11) would otherwise
   // flip a buffer per rectangle.
