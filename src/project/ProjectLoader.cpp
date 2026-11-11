@@ -510,29 +510,43 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
         out.secondTextX = j["second"]["textX"] | 0;
         out.secondBaseline = j["second"]["baseline"] | 0;
         out.secondFontId = j["second"]["fontId"] | "";
+        out.secondInk = j["second"]["ink"] | "";
       }
-      if (j["disc"].is<JsonObject>()) {
-        JsonVariant d = j["disc"];
-        out.hasDisc = true;
-        out.discCx = d["cx"] | 0;
-        out.discCy = d["cy"] | 0;
-        out.discR = d["r"] | 0;
-        out.discNormal = d["normal"] | "";
-        out.discPressed = d["pressed"] | "";
-        if (d["edge"].is<JsonObject>()) {
-          out.discEdgeNormal = d["edge"]["normal"] | "";
-          out.discEdgePressed = d["edge"]["pressed"] | "";
+      // The light (docs/2026-11-11-led-look.md).
+      if (j["light"].is<JsonObject>()) {
+        JsonVariant l = j["light"];
+        out.lightX = l["x"] | 0;
+        out.lightY = l["y"] | 0;
+        out.lightW = l["w"] | 0;
+        out.lightH = l["h"] | 0;
+        out.lightR = l["r"] | 0;
+        out.lightFill = l["fill"] | "";
+        out.lightAsked = l["asked"] | "";
+        out.lightAskedDim = l["askedDim"] | "";
+        out.lightOutline = l["outline"] | "";
+        if (l["label"].is<JsonObject>()) {
+          out.hasWord = true;
+          out.wordText = l["label"]["text"] | "";
+          out.wordX = l["label"]["textX"] | 0;
+          out.wordBaseline = l["label"]["baseline"] | 0;
+          out.wordFontId = l["label"]["fontId"] | "";
+          out.wordInk = l["label"]["ink"] | "";
+          out.wordAskedInk = l["label"]["askedInk"] | "";
         }
       }
       if (dark.is<JsonObject>()) {
         face(dark["normal"], out.normalDark);
         face(dark["pressed"], out.pressedDark);
-        if (dark["disc"].is<JsonObject>()) {
-          out.discNormalDark = dark["disc"]["normal"] | "";
-          out.discPressedDark = dark["disc"]["pressed"] | "";
-          if (dark["disc"]["edge"].is<JsonObject>()) {
-            out.discEdgeNormalDark = dark["disc"]["edge"]["normal"] | "";
-            out.discEdgePressedDark = dark["disc"]["edge"]["pressed"] | "";
+        if (dark["second"].is<JsonObject>()) out.secondInkDark = dark["second"]["ink"] | "";
+        if (dark["light"].is<JsonObject>()) {
+          JsonVariant l = dark["light"];
+          out.lightFillDark = l["fill"] | "";
+          out.lightAskedDark = l["asked"] | "";
+          out.lightAskedDimDark = l["askedDim"] | "";
+          out.lightOutlineDark = l["outline"] | "";
+          if (l["label"].is<JsonObject>()) {
+            out.wordInkDark = l["label"]["ink"] | "";
+            out.wordAskedInkDark = l["label"]["askedInk"] | "";
           }
         }
       }

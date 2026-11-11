@@ -199,8 +199,9 @@ int main() {
   }
   expect(same(p, light), "five round trips");
 
-  // A Toggle Button (designer contract «toggle-button»): every look's faces
-  // and disc, the ring and the pressed icon swap; the layout stays.
+  // A Toggle Button (designer contract «toggle-button», LED look of
+  // 2026-11-11): every look's faces and light, the ring and the pressed icon
+  // swap; the layout stays.
   {
     ProjectConfig t;
     Screen ts;
@@ -214,9 +215,12 @@ int main() {
     on.normal.ink = "#ffffff";
     on.pressed.fill = "#1b8fcc";
     on.pressedDark.fill = "#26aeeb";
-    on.discNormal = "#2b93cd";
-    on.discNormalDark = "#2cb0ec";
-    on.discEdgeNormal = "#ffffff";
+    on.lightFill = "#0284c7";
+    on.lightFillDark = "#0ea5e9";
+    on.lightAsked = "#7ab0d4";
+    on.lightAskedDark = "#155a7a";
+    on.wordInk = "#000000";
+    on.lightOutline = "";
     on.textX = 54;
     tp.looks.push_back(on);
     tp.none.normal.fill = "#ffffff";
@@ -238,8 +242,9 @@ int main() {
     expect(d.looks[0].normal.fill == "#0ea5e9", "a toggle's on face, dark");
     expect(d.looks[0].pressed.fill == "#26aeeb", "a toggle's pressed face, dark");
     expect(d.looks[0].normal.ink == "#ffffff", "a toggle's ink with no dark twin stays");
-    expect(d.looks[0].discNormal == "#2cb0ec", "a toggle's disc, dark");
-    expect(d.looks[0].discEdgeNormal == "#ffffff", "a toggle's disc edge with no dark twin stays");
+    expect(d.looks[0].lightFill == "#0ea5e9", "a toggle's light, dark");
+    expect(d.looks[0].lightAsked == "#155a7a", "a toggle's asked light, dark");
+    expect(d.looks[0].wordInk == "#000000", "a toggle's window word with no dark twin stays");
     expect(d.looks[0].textX == 54, "a toggle's layout is one for both");
     expect(d.none.normal.fill == "#181c24", "a toggle's none look, dark");
     expect(d.ring == "#0ea5e9", "a toggle's ring, dark");

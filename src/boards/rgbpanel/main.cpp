@@ -3937,6 +3937,16 @@ void loop()
     // looking like it is still being asked.
     clearPending("pending timed out");
   }
+  // While asked, a Toggle Button's light pulses (designer docs/2026-11-11-
+  // led-look.md, decision 4): its rectangle redrawn on the renderer's beat.
+  {
+    static unsigned long lastPulseMs = 0;
+    if (!pendingSwitchId.isEmpty() && pressedSwitchId.isEmpty() && millis() - lastPulseMs >= 500)
+    {
+      lastPulseMs = millis();
+      renderRegion(pendingX, pendingY, pendingW, pendingH, "asked pulse");
+    }
+  }
 
   // A released level whose end value was never answered: the installation's
   // last word is shown after all, as decision 6c has it - just later.

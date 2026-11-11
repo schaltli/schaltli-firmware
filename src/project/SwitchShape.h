@@ -251,8 +251,101 @@ inline void segments(const ScreenObject& obj, int count, std::vector<SwitchRect>
   }
 }
 
+// A Button Group's LED form (designer docs/2026-11-11-led-look.md, decision 7;
+// lib/switch-shape.ts switchLedLook / switchLedLayout): no container, the
+// segments edge to edge, a 1-px line where two meet, a strip under each
+// label - lit under the chosen one. A Switch (the knob) has none.
+inline bool isLed(const ScreenObject& obj) { return obj.type == "button-group" && obj.properties.switchStyle == "led"; }
+
+struct SwitchLedLook {
+  String ink, muted, divider, track, lit, asked, askedDim, outline;
+};
+
+inline SwitchLedLook ledLook(const ScreenObject& obj, const String& background) {
+  SwitchLedLook out;
+  const String ground = materialcolors::applyDepth(background.isEmpty() ? String("#ffffff") : background);
+  String text = obj.properties.textColor;
+  text.trim();
+  out.ink = materialcolors::applyDepth(text.isEmpty() ? materialcolors::onColorFor(ground) : text);
+  String track = obj.properties.trackColor;
+  track.trim();
+  out.track = materialcolors::applyDepth(track.isEmpty() ? materialcolors::blend(ground, out.ink, 15) : track);
+  out.lit = materialcolors::applyDepth(colorOf(obj));
+  out.muted = materialcolors::applyDepth(materialcolors::blend(ground, out.ink, 60));
+  String edge = obj.properties.borderColor;
+  edge.trim();
+  out.divider = materialcolors::applyDepth(edge.isEmpty() ? materialcolors::blend(ground, out.ink, 20) : edge);
+  out.asked = materialcolors::applyDepth(materialcolors::blend(out.track, out.lit, 50));
+  out.askedDim = materialcolors::applyDepth(materialcolors::blend(out.track, out.lit, 20));
+  String t = out.track, g = ground;
+  t.toLowerCase();
+  g.toLowerCase();
+  out.outline = t == g ? out.ink : String("");
+  return out;
+}
+
+constexpr int kLedStripInset = 8;
+constexpr int kLedStripGap = 5;
+
+inline int ledStripThickness(const LevelFontMetrics& m) {
+  const int t = (m.capHeight * 2) / 5;
+  return t > 3 ? t : 3;
+}
+
+struct SwitchLedLayout {
+  std::vector<SwitchRect> segments, strips;
+  std::vector<int> dividers;  // x of each 1-px line, the object's full height
+  int bandY = 0, bandH = 0;   // where the labels stand
+};
+
+inline void ledLayout(const ScreenObject& obj, int count, const LevelFontMetrics& m, SwitchLedLayout& out) {
+  out.segments.clear();
+  out.strips.clear();
+  out.dividers.clear();
+  const int x = obj.x, y = obj.y, w = obj.width > 0 ? obj.width : 0, h = obj.height > 0 ? obj.height : 0;
+  const int n = count > 0 ? count : 1;
+  const int line = m.ascent + m.descent;
+  const int strip = ledStripThickness(m);
+  const int top = y + (h - (line + kLedStripGap + strip)) / 2;
+  out.bandY = top;
+  out.bandH = line;
+  for (int i = 0; i < n; i++) {
+    const int from = x + (w * i) / n;
+    const int to = x + (w * (i + 1)) / n;
+    SwitchRect seg;
+    seg.x = from;
+    seg.y = y;
+    seg.w = to - from;
+    seg.h = h;
+    seg.r = 0;
+    seg.rRight = 0;
+    out.segments.push_back(seg);
+    if (i > 0) out.dividers.push_back(from);
+    const int quarter = (to - from) / 4;
+    const int inset = kLedStripInset < quarter ? kLedStripInset : quarter;
+    SwitchRect s;
+    s.x = from + inset;
+    s.y = top + line + kLedStripGap;
+    s.w = to - from - 2 * inset > 0 ? to - from - 2 * inset : 0;
+    s.h = strip;
+    s.r = strip / 2;
+    s.rRight = strip / 2;
+    out.strips.push_back(s);
+  }
+}
+
+inline int ledSegmentAt(const ScreenObject& obj, int count, int x) {
+  const int n = count > 0 ? count : 1;
+  const int w = obj.width > 0 ? obj.width : 1;
+  int i = ((x - obj.x) * n) / w;
+  if (i < 0) i = 0;
+  if (i > n - 1) i = n - 1;
+  return i;
+}
+
 // Which segment a finger at `x` is on.
 inline int segmentAt(const ScreenObject& obj, int count, int x) {
+  if (isLed(obj)) return ledSegmentAt(obj, count, x);
   std::vector<SwitchRect> segs;
   segments(obj, count, segs);
   for (size_t i = 0; i < segs.size(); i++) {

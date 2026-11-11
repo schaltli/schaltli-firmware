@@ -228,25 +228,31 @@ struct ButtonLookHandle {
 };
 
 // A Toggle Button as the device draws it (designer device contract
-// «toggle-button», docs/2026-11-06-toggle-button.md): a button's look per
-// state, one for «nothing reported», the ring's colour. Every judgement is
-// the designer's (lib/toggle-button-shape.ts); this only holds it.
+// «toggle-button», docs/2026-11-06-toggle-button.md and, since 2026-11-11,
+// docs/2026-11-11-led-look.md): a calm tile per state with its name, and a
+// light - Korry's window or an LED strip - that says the state. Every
+// judgement is the designer's (lib/toggle-button-shape.ts); this only holds
+// it.
 struct ToggleLook {
   ButtonFace normal, pressed, normalDark, pressedDark;
   String label;
   int textX = 0, baseline = 0, clipX = 0, clipW = 0;
   bool hasIcon = false;
   int iconX = 0, iconY = 0, iconSize = 0;
-  // The state's label under the name; only with a name.
+  // The state's label as a line of text (LED Horizontal: at the end of the
+  // name's line; LED Vertical: under the name), in its own ink.
   bool hasSecond = false;
   int secondTextX = 0, secondBaseline = 0;
-  String secondFontId;
-  // The disc behind the icon; only with a name and an icon somewhere. An
-  // edge colour names a 1-px ring where the disc's tint is lost (1 bit).
-  bool hasDisc = false;
-  int discCx = 0, discCy = 0, discR = 0;
-  String discNormal, discPressed, discNormalDark, discPressedDark;
-  String discEdgeNormal, discEdgePressed, discEdgeNormalDark, discEdgePressedDark;
+  String secondFontId, secondInk, secondInkDark;
+  // The light: its rectangle; its fill for the state; asked and askedDim in
+  // turn while a request is outstanding; a 1-px ring where it needs one.
+  int lightX = 0, lightY = 0, lightW = 0, lightH = 0, lightR = 0;
+  String lightFill, lightAsked, lightAskedDim, lightOutline;
+  String lightFillDark, lightAskedDark, lightAskedDimDark, lightOutlineDark;
+  // Korry's window word, centred, with its ink per fill.
+  bool hasWord = false;
+  String wordText, wordFontId, wordInk, wordAskedInk, wordInkDark, wordAskedInkDark;
+  int wordX = 0, wordBaseline = 0;
 };
 struct ToggleButtonProps {
   std::vector<ToggleLook> looks;
