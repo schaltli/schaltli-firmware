@@ -132,6 +132,7 @@ Chart chartFrom(JsonObjectConst p) {
     c.days = p["days"].as<int>();
   }
   c.scroll = p["scroll"] | false;
+  c.compact = p["compact"] | false;
   c.left = axisFrom(p["left"]);
   if (!p["right"].isNull()) {
     c.hasRight = true;
@@ -215,6 +216,16 @@ static Window baseWindow(const Chart& chart, const std::string& range, double no
 }
 
 Window chartWindow(const Chart& chart, const std::string& range, double now, const Calendar& cal, double back) {
+  // A compact chart: the last three hours, ending with the step now is in,
+  // whatever the screen's range and wherever it was moved.
+  if (chart.compact && chart.mode != "per-day") {
+    Window c;
+    c.step = 300;
+    c.to = std::floor(now / c.step) * c.step + c.step;
+    c.from = c.to - 3 * 3600;
+    c.source = "recent6";
+    return c;
+  }
   Window base = baseWindow(chart, range, now, cal);
   if (back <= 0) return base;
   const double from = base.from - back;
@@ -647,6 +658,8 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   const double rowH = o.fontSize + pad;
   const double legendBelow = chart.legend == "bottom" ? rowH * std::max<size_t>(1, chart.series.size()) : 0;
   const bool perDay = chart.mode == "per-day";
+  // The compact form: the plot the whole object, a pixel in, nothing written.
+  const bool compact = chart.compact && !perDay;
   // Over time, a row above the plot for the days' names, outside the grid.
   const double dateSize = o.dateFontSize > 0 ? o.dateFontSize : o.fontSize;
   const double top = perDay ? pad + jsRound(o.fontSize / 2) : pad + dateSize + pad;
@@ -655,6 +668,12 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   plot.y = top;
   plot.w = std::max(1.0, o.width - labelW - pad * 2 - (usesRight ? labelW : 0));
   plot.h = std::max(1.0, o.height - bottom - legendBelow - top);
+  if (compact) {
+    plot.x = 1;
+    plot.y = 1;
+    plot.w = std::max(1.0, o.width - 2);
+    plot.h = std::max(1.0, o.height - 2);
+  }
   const double span = w.to - w.from;
   auto xOf = [&](double t) { return round1(plot.x + ((t - w.from) / span) * plot.w); };
   auto inWindow = [&](double t, double len) { return t + len > w.from && t < w.to; };
@@ -699,6 +718,10 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     L.hasRight = true;
     L.right = axisLayout(rightRange, plot, decimal);
   }
+  if (compact) {
+    L.left.ticks.clear();
+    L.right.ticks.clear();
+  }
   auto yOf = [&](double v, const std::string& axis) {
     const Range& r = axis == "right" && usesRight ? rightRange : leftRange;
     return round1(plot.y + plot.h - ((v - r.min) / (r.max - r.min)) * plot.h);
@@ -708,7 +731,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   const double slot = perDay ? plot.w / std::max<size_t>(1, w.dates.size()) : 0;
   if (perDay) {
     for (size_t j = 0; j < w.dates.size(); j++) L.times.push_back({round1(plot.x + slot * (j + 0.5)), weekdayOf(w.dates[j])});
-  } else {
+  } else if (!compact) {
     double every = 0;
     if (span <= 3600) every = 900;
     else if (span <= 6 * 3600) every = 3600;
@@ -905,8 +928,10 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     L.series.push_back(out);
   }
 
+  if (compact)
+    for (SeriesLayout& s : L.series) s.marks.clear();
   // The legend.
-  if (chart.legend != "none") {
+  if (!compact && chart.legend != "none") {
     for (size_t i = 0; i < chart.series.size(); i++) {
       const Series& s = chart.series[i];
       LegendRow row;
@@ -942,7 +967,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
   // Each day in the window, its name above its part of the plot: the whole
   // row long, else short, else the weekday - the longest every day fits; a
   // day too narrow for any, unnamed (lib/chart-layout.ts).
-  if (!perDay) {
+  if (!perDay && !compact) {
     const std::string today = o.now > 0 ? dateOf(o.now, o.cal) : std::string();
     struct Named {
       double x, w;
@@ -992,7 +1017,7 @@ Layout chartLayout(const Chart& chart, const Window& w, const std::vector<Series
     if (row.align == "right") box(line, plot.x, row.y, row.x - 14 - plot.x, "right", "text");
     else box(line, row.x + 14, row.y, plot.w - 14 - (row.x - plot.x), "left", "text");
   }
-  if (!perDay && o.now >= w.to) box("→", plot.x, plot.y + plot.h / 2 - half, plot.w - 2, "right", "muted");
+  if (!perDay && !compact && o.now >= w.to) box("→", plot.x, plot.y + plot.h / 2 - half, plot.w - 2, "right", "muted");
 
   L.nowOn = nowOn;
   L.nowPast = !perDay && !nowOn && o.now >= w.to;

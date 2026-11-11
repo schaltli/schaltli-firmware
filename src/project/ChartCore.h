@@ -97,6 +97,8 @@ struct Chart {
   std::vector<Zone> zones;
   std::string legend = "top-right";
   std::vector<Series> series;
+  /** The compact form: no axes, legend, date; the last 3 h (lib/chart.ts). */
+  bool compact = false;
 };
 
 /** A chart's properties as the export writes them. */
