@@ -3483,7 +3483,7 @@ void ColorScreenRenderer::hitTestWalk(const std::vector<ScreenObject>& objects, 
     const int16_t oy = dy + o->y;
     if (x < ox || x >= ox + o->width) continue;
     if (y < oy || y >= oy + o->height) continue;
-    if (energy && energyActionAt(*o, x - ox, y - oy) == nullptr) continue;
+    if (energy && energyActionAt(*o, x - ox, y - oy) == nullptr && energySwitchAt(*o, x - ox, y - oy) == 0) continue;
     treffer = o;
     objX = ox;
     objY = oy;

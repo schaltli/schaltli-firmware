@@ -594,6 +594,14 @@ static bool handleTap(int16_t x, int16_t y)
   // only lets a diagram catch a tap on one. As on the 4.3B.
   if (hit->type == "energy-diagram")
   {
+    // Its own switch first, as on the 4.3B.
+    const int asked = renderer->energySwitchAt(*hit, x - objX, y - objY);
+    if (asked != 0)
+    {
+      Serial.printf("[papers3] tap: energy diagram \"%s\" shows %s\n", hit->id.c_str(), asked == 2 ? "sankey" : "flow");
+      if (renderer->energyShowMode(*hit, asked == 2)) renderAndPresent("energy mode");
+      return true;
+    }
     const ButtonAction *action = renderer->energyActionAt(*hit, x - objX, y - objY);
     if (action == nullptr) return false;
     Serial.printf("[papers3] tap: energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());

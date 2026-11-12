@@ -284,6 +284,10 @@ public:
   // The action of the node a tap at (x, y) in the diagram lands on, if it
   // has one (decision 13); never the bus.
   const ButtonAction* energyActionAt(const ScreenObject& obj, double x, double y) const;
+  // The diagram's own switch under (x, y), relative to it: 1 Flow, 2 Sankey,
+  // 0 none; and showing a mode there, true when it changed.
+  int energySwitchAt(const ScreenObject& obj, double x, double y) const;
+  bool energyShowMode(const ScreenObject& obj, bool sankey);
   // A dot's pixels at (cx, cy) on the canvas, each with its coverage 1..16.
   static void energyDotPixels(double cx, double cy, const std::function<void(int16_t, int16_t, uint8_t)>& pixel);
   static uint16_t energyBlend(uint16_t under, uint16_t over, uint8_t coverage);

@@ -2802,6 +2802,16 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // only lets a diagram catch a tap on one.
   if (hit->type == "energy-diagram")
   {
+    // Its own switch first (designer docs/2026-11-11-energy-mode-switch.md):
+    // the mode shown on this display, until the project is loaded again.
+    const int asked = renderer->energySwitchAt(*hit, x - objX, y - objY);
+    if (asked != 0)
+    {
+      Serial.printf("[tap] energy diagram \"%s\" shows %s\n", hit->id.c_str(), asked == 2 ? "sankey" : "flow");
+      lastTap = "(" + String(x) + "," + String(y) + ") energy diagram \"" + hit->id + "\" switch " + (asked == 2 ? "sankey" : "flow");
+      if (renderer->energyShowMode(*hit, asked == 2)) renderRegion(objX, objY, hit->width, hit->height, "energy mode");
+      return true;
+    }
     const ButtonAction *action = renderer->energyActionAt(*hit, x - objX, y - objY);
     if (action == nullptr) return false;
     Serial.printf("[tap] energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());

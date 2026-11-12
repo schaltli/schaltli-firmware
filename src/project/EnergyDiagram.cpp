@@ -294,10 +294,23 @@ DiagramBoxes flowBoxes(const FlowLayout& layout, const LabelMetrics& m) {
     return out;
 }
 
+SankeyLayout sankeyLayoutBeside(const std::vector<Resolved>& nodes, Size size, double fullScale, int switchRow) {
+    if (switchRow == 0) return sankeyLayout(nodes, size, fullScale);
+    SankeyLayout l = sankeyLayout(nodes, {size.width, std::max(0.0, size.height - SWITCH_TAP)}, fullScale);
+    if (switchRow < 0) return l;
+    const double dy = SWITCH_TAP;
+    for (Bar& b : l.bars) b.box.y += dy;
+    for (Slot& s : l.slots) s.y += dy;
+    for (Band& b : l.bands)
+        for (Point& q : b.polygon) q.y += dy;
+    l.bus.y += dy;
+    return l;
+}
+
 std::string nodeAtTap(bool sankey, const std::vector<Node>& nodes, const std::vector<Resolved>& resolved, Size size, double fullScale,
-                      double x, double y) {
+                      double x, double y, int switchRow) {
     if (sankey) {
-        const SankeyLayout layout = sankeyLayout(resolved, size, fullScale);
+        const SankeyLayout layout = sankeyLayoutBeside(resolved, size, fullScale, switchRow);
         for (const Slot& s : layout.slots) {
             const bool onSide = s.side == Side::Left ? x < SANKEY_LABEL_W + SANKEY_BAR_W : x >= size.width - SANKEY_LABEL_W - SANKEY_BAR_W;
             if (y >= s.y && y < s.y + s.height && onSide) return s.id;

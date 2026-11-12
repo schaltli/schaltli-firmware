@@ -1077,6 +1077,40 @@ EnergyDiagramProps ProjectLoader::parseEnergyDiagram(JsonObject p) {
   EnergyDiagramProps e;
   e.sankey = String(p["mode"] | "flow") == "sankey";
   e.motion = p["motion"] | true;
+  // Its own switch, as the export laid it out.
+  if (p["modeSwitch"].is<JsonObject>()) {
+    JsonObject sw = p["modeSwitch"];
+    const String corner = sw["corner"] | "none";
+    e.switchRow = corner.startsWith("top") ? 1 : corner.startsWith("bottom") ? -1 : 0;
+    auto box = [](JsonObject b, float* out) {
+      out[0] = b["x"] | 0.0f;
+      out[1] = b["y"] | 0.0f;
+      out[2] = b["width"] | 0.0f;
+      out[3] = b["height"] | 0.0f;
+    };
+    auto shapes = [](JsonArray list, std::vector<EnergyDiagramProps::SwitchShape>& out) {
+      for (JsonObject s : list) {
+        EnergyDiagramProps::SwitchShape sh;
+        sh.disc = String(s["kind"] | "") == "disc";
+        if (sh.disc) {
+          sh.a = s["cx"] | 0.0f;
+          sh.b = s["cy"] | 0.0f;
+          sh.c = s["r"] | 0.0f;
+        } else {
+          sh.a = s["x0"] | 0.0f;
+          sh.b = s["y0"] | 0.0f;
+          sh.c = s["x1"] | 0.0f;
+          sh.d = s["y1"] | 0.0f;
+          sh.w = s["width"] | 0.0f;
+        }
+        out.push_back(sh);
+      }
+    };
+    box(sw["flow"]["tap"], e.flowTap);
+    box(sw["sankey"]["tap"], e.sankeyTap);
+    shapes(sw["flow"]["shapes"], e.flowShapes);
+    shapes(sw["sankey"]["shapes"], e.sankeyShapes);
+  }
   e.fullScale = p["fullScale"] | 1000.0f;
   if (!(e.fullScale > 0)) e.fullScale = 1000;
   e.fontId = p["fontId"] | "";

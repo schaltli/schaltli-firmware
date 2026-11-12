@@ -172,6 +172,18 @@ struct EnergyDiagramProps {
   String chargeColor, chargeColorDark;
   String dischargeColor, dischargeColorDark;
   std::vector<EnergyNodeProps> nodes;
+  // Its own Flow/Sankey switch (designer docs/2026-11-11-energy-mode-switch.md),
+  // laid out by the export: the row the Sankey keeps free (1 top, -1 bottom,
+  // 0 none), each icon's tap area and its shapes - a capsule (x0 y0 x1 y1 w)
+  // or a disc (cx cy r, the rest 0). The mode a tap picks replaces `sankey`
+  // until the project is loaded again.
+  struct SwitchShape {
+    bool disc = false;
+    float a = 0, b = 0, c = 0, d = 0, w = 0;
+  };
+  int switchRow = 0;
+  float flowTap[4] = {0, 0, 0, 0}, sankeyTap[4] = {0, 0, 0, 0};
+  std::vector<SwitchShape> flowShapes, sankeyShapes;
 };
 
 // An energy diagram's data behind a pointer that copies what it points at:

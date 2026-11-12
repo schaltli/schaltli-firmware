@@ -1618,6 +1618,15 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   // A node of an energy diagram with an action (contract 2.8): the hit test
   // only lets a diagram catch a tap on one. As on the 4.3B.
   if (treffer->type == "energy-diagram") {
+    // Its own switch first, as on the 4.3B (designer docs/2026-11-11-energy-mode-switch.md).
+    const int asked = screenRenderer->energySwitchAt(*treffer, x - objX, y - objY);
+    if (asked != 0) {
+      Serial.printf("[tap] energy diagram \"%s\" shows %s\n", treffer->id.c_str(), asked == 2 ? "sankey" : "flow");
+      if (screenRenderer->energyShowMode(*treffer, asked == 2) &&
+          screenRenderer->renderScreenRegion(activeScreen(), objX, objY, treffer->width, treffer->height))
+        canvasPresenter.presentRegion(objX, objY, objX + treffer->width - 1, objY + treffer->height - 1);
+      return true;
+    }
     const ButtonAction *action = screenRenderer->energyActionAt(*treffer, x - objX, y - objY);
     if (action == nullptr) return false;
     Serial.printf("[tap] energy diagram \"%s\" action %s\n", treffer->id.c_str(), action->type.c_str());
