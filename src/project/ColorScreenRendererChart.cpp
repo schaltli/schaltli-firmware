@@ -217,7 +217,10 @@ bool ColorScreenRenderer::renderChart(const ScreenObject& obj) {
     drawTextBox(box, String(t.text.c_str()), false);
   };
   for (const chartcore::Text& t : layout.texts) text(t);
-  const char* message = chart.series.empty()                               ? "Chart: add a series"
+  // Not on a compact chart (a value card's sparkline): no room for words, it
+  // stays empty, as the designer draws it (2026-11-12).
+  const char* message = chart.compact                                      ? nullptr
+                        : chart.series.empty()                             ? "Chart: add a series"
                         : !history || !history->recorderOnline()          ? "No recorder on this broker"
                         : !anyHeld                                         ? "No history yet"
                                                                            : nullptr;
