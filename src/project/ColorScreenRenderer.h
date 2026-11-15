@@ -7,6 +7,7 @@
 #include "ProjectTypes.h"
 #include "ScreenGraph.h"
 #include "../ClippedCanvas16.h"
+#include "Guard.h"
 #include "ColorAssetLoader.h"
 #include "LevelShape.h"
 #include "PillRaster.h"
@@ -311,6 +312,28 @@ public:
   String fontReport() const;
   ClippedCanvas16* canvas() const { return canvas_; }
 
+  // Guarded controls' covers (device contract §2.14), drawn over the objects
+  // by every full or region redraw: the board owns the gesture and hands the
+  // renderer what to draw - the outline on the glass, lifted and faded.
+  struct GuardOverlay {
+    int16_t x = 0, y = 0, w = 0, h = 0, r = 0;
+    int lift = 0;
+    float alpha = 1.0f;
+    int bob = 0;
+  };
+  void setGuardOverlays(const std::vector<GuardOverlay>* overlays) { guardOverlays_ = overlays; }
+  // «Slide up to unlock» after a plain tap, centred at the bottom (E5).
+  void setGuardHint(bool shown) { guardHint_ = shown; }
+  bool guardHintRect(int16_t& x, int16_t& y, int16_t& w, int16_t& h);
+  // The rectangle a cover can paint at any lift up to its waiting place.
+  static void guardReach(const GuardOverlay& o, int16_t& x, int16_t& y, int16_t& w, int16_t& h) {
+    const int wait = guard::waitOffset(o.h);
+    x = o.x;
+    y = (int16_t)(o.y - wait - guard::BOB_PX);
+    w = o.w;
+    h = (int16_t)(o.h + wait + guard::BOB_PX);
+  }
+
   // Renders every object on the given screen index into the canvas
   // (z-index order, matching sortChildrenByZIndex on the designer side).
   // Does NOT blit to the display - caller does that once after this
@@ -410,6 +433,12 @@ private:
 
   IProjectLoader& projectLoader_;
   ClippedCanvas16* canvas_;
+  const std::vector<GuardOverlay>* guardOverlays_ = nullptr;
+  bool guardHint_ = false;
+  void fillGuardRuns(const guard::Runs& runs, int x, int y, uint16_t colour);
+  void drawGuardLock(const ScreenObject& obj, int pendingStateIndex, bool pressed);
+  void drawGuardCover(const GuardOverlay& o);
+  void drawGuardCovers();
   CameraFeed* cameraFeed_ = nullptr;
   bool renderCamera(const ScreenObject& obj);
   String deviceId_;

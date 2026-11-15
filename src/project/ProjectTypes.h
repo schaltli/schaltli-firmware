@@ -350,6 +350,22 @@ struct ClipShape {
   int radius = 0;
 };
 
+// A guarded control's geometry (device contract §2.14, the designer's
+// lib/guard.ts exportedGuard): the cover's outline, how far it must travel to
+// lock in, and where the lock sits at rest - a corner lock for a button or a
+// toggle button, a badge for a button group; a switch's lock rides its knob.
+// Stored relative to the object's own x/y (the loader subtracts them), so a
+// child of a switcher's panel needs no offset of its own.
+struct GuardGeom {
+  bool on = false;
+  int16_t coverX = 0, coverY = 0, coverW = 0, coverH = 0, coverR = 0;
+  int16_t travel = 20;
+  bool hasLock = false;
+  int16_t lockX = 0, lockY = 0, lockSize = 0;
+  bool hasBadge = false;
+  int16_t badgeCx = 0, badgeCy = 0, badgeR = 0, badgeLockX = 0, badgeLockY = 0, badgeLockSize = 0;
+};
+
 // Base properties for screen objects
 struct ObjectProperties {
   // Common properties
@@ -582,6 +598,8 @@ struct ScreenObject {
   String path;
   // The dark variant's bitmap (ThemeVariant.h); empty: same as light.
   String pathDark;
+  // `properties.guard` with the designer's geometry beside it (§2.14).
+  GuardGeom guard;
   // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own

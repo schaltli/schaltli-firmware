@@ -900,7 +900,8 @@
     "button-values",
     "duration-display",
     "charts",
-    "clip"
+    "clip",
+    "guard"
   ],
   "supportsSoftwareButtons": true,
   "testInterface": {

@@ -53,6 +53,7 @@
 #include "project/ProjectLoader.h"
 #include "project/ThemeVariant.h"
 #include "project/ColorScreenRenderer.h"
+#include "project/GuardSet.h"
 #include "project/CameraFeed.h"
 #include "project/ChartShapes.h"
 #include "project/Placeholders.h"
@@ -114,6 +115,8 @@ static WiFiSetupServer wifiSetupServer(displayAdapter, configStorage);
 static TestInterfaceServer testInterface;
 static ProjectLoader projectLoader;
 static ColorScreenRenderer *screenRenderer = nullptr;
+// Guarded controls' covers on the screen showing (designer docs/2026-11-15-guard.md).
+static GuardSet guards;
 static MqttClient mqttClient;
 // ddf/get and recovery/get, answered over the broker (DeviceRequests.h).
 static DeviceRequests deviceRequests(mqttClient);
@@ -596,6 +599,8 @@ static void navigateToScreen(int index) {
   // swipe is not a real gesture, and queueing would page twice from it.
   if (dragActive || dragAnimating) return;
   currentScreenIndex = index;
+  // Every guarded control locks with the screen it was on (E2).
+  guards.clear();
   pendingScreenRender = true;
   // Leading edge: a detent arriving after a quiet spell is drawn at once,
   // so a single click stays instant and a spin starts answering immediately.
@@ -626,6 +631,7 @@ static void presentCanvas() {
 
 static void openPopupAt(int index) {
   if (screenRenderer == nullptr) return;
+  guards.clear();
   energyLiftDots();
   const ProjectConfig &project = projectLoader.getProject();
   const Screen *popup = screenOrPopupAt(project, index);
@@ -675,6 +681,7 @@ static void openPopupAt(int index) {
 static void closePopup(const char *reason) {
   if (openPopup < 0) return;
   openPopup = -1;
+  guards.clear();
   canvasPresenter.invalidateSlots();
   renderScreenIndex(currentScreenIndex);
   lastPopup = String("closed by ") + reason;
@@ -1254,6 +1261,8 @@ static void blankDisplay() {
   displayIsOff = true;
   digitalWrite(LCD_BL, LOW);
   Serial.println("[display] off after inactivity");
+  // Dark, every guarded control locks (E2).
+  guards.clear();
 
   // Back to the idle screen, *after* the backlight is off: the panel would
   // otherwise be seen flipping pages on its way out, which reads as the
@@ -1614,6 +1623,12 @@ static bool dispatchTapAt(int16_t x, int16_t y) {
   int16_t objY = 0;
   const ScreenObject *treffer = screenRenderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (treffer == nullptr) return false;
+  // A guarded control switches only while its cover waits; each change tops
+  // the wait up (designer docs/2026-11-15-guard.md, decision 13).
+  if (treffer->guard.on) {
+    if (!guards.unlocked(treffer->id)) return false;
+    guards.changed(treffer->id, millis());
+  }
 
   // A node of an energy diagram with an action (contract 2.8): the hit test
   // only lets a diagram catch a tap on one. As on the 4.3B.
@@ -1981,7 +1996,13 @@ static void pollTouchGesturesInner() {
       // An open popup's close button takes the contact before anything under it.
       const bool onCloseBadge =
           openPopup >= 0 && screenRenderer && screenRenderer->popupCloseBadge().contains(touchX, touchY);
-      if (!onCloseBadge && beginLevelDrag(touchX, touchY)) dragDecided = true;
+      // A guarded control not unlocked: its cover takes the contact - no
+      // tap, no swipe, no map (designer docs/2026-11-15-guard.md, E6).
+      int16_t gx = 0, gy = 0;
+      const ScreenObject *under =
+          !onCloseBadge && screenRenderer ? screenRenderer->hitTestTappable(activeScreen(), touchX, touchY, gx, gy) : nullptr;
+      if (under != nullptr && guards.down(*under, activeScreen(), gx, gy, touchX, touchY, millis())) dragDecided = true;
+      else if (!onCloseBadge && beginLevelDrag(touchX, touchY)) dragDecided = true;
     }
     if (wasOff) {
       // Marking dragDecided alone was not enough - that only stops the
@@ -1995,6 +2016,12 @@ static void pollTouchGesturesInner() {
 
     const int dx = touchX - touchStartX;
     const int dy = touchY - touchStartY;
+
+    // A cover's contact follows the finger up and is nothing else (E6).
+    if (guards.fingerActive()) {
+      guards.move(touchX, touchY, millis());
+      return;
+    }
 
     // The map, while it is open, is the finger's: a pointer over its tiles.
     if (graphMap.isOpen()) {
@@ -2091,6 +2118,14 @@ static void pollTouchGesturesInner() {
   if (millis() - touchLastDownMs < RELEASE_DEBOUNCE_MS) return;
   touchDown = false;
   graphHints.hide();
+
+  // A cover's contact: lifted before it locked in, the cover goes (a plain
+  // tap shows the hint); after, nothing. Never a tap or a swipe.
+  if (guards.fingerActive()) {
+    guards.up(millis());
+    wokeOnThisContact = false;
+    return;
+  }
 
   // Lifted over the map: to the lit tile's screen, or - over the current
   // one, or off every tile - nowhere.
@@ -2707,7 +2742,13 @@ static void loadAndRenderProject() {
     // across, about 4.6 mm: any bigger and the round glass cuts it. The DDF
     // says the same (screen.popupCloseRadius).
     screenRenderer->setPopupCloseBadgeRadius(18);
+    // A cover moved: only where it was and is, drawn and handed to LVGL.
+    guards.begin(screenRenderer, [](int16_t x, int16_t y, int16_t w, int16_t h, const char *) {
+      if (screenRenderer->renderScreenRegion(activeScreen(), x, y, w, h)) canvasPresenter.presentRegion(x, y, x + w - 1, y + h - 1);
+    });
   }
+  // A reload locks every guarded control (E2).
+  guards.clear();
   // Before the first render, so no render - and in particular no
   // neighbour pre-render during a drag - ever pays for a font parse.
   // A Camera's pictures first: the fonts would take the PSRAM it needs.
@@ -4137,6 +4178,8 @@ void loop() {
   firmwareUpdater.service();
   deviceRequests.service();
   testInterfaceSwitch.service();
+  // Guarded controls' covers: open, wait, drop, the arrows bob (docs/2026-11-15-guard.md).
+  guards.tick(millis());
   if (!keyboardOpen && !pickerOpen) PHASE("energy", energyStep());
   // A released wheel settling onto its value, a frame per pass.
   if (pickerOpen && !touchDown) {

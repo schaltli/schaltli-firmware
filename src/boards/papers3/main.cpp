@@ -40,6 +40,7 @@
 #include "../../FirmwareUpdater.h"
 #include "../../WiFiSetupServer.h"
 #include "../../project/ColorScreenRenderer.h"
+#include "../../project/GuardSet.h"
 #include "../../project/SwitchShape.h"
 #include "../../project/Keyboard.h"
 #include "../../project/TimePicker.h"
@@ -62,6 +63,12 @@ static PanelDisplayAdapter *displayAdapter = nullptr;
 
 static ProjectLoader projectLoader;
 static ColorScreenRenderer *renderer = nullptr;
+// Guarded controls' covers (designer docs/2026-11-15-guard.md, E7 for paper:
+// drawn where it lies, waiting, or gone - one refresh each, no motion).
+static GuardSet guards;
+static bool guardContact = false;
+// The screen (or popup) the covers belong to; another one locks them all (E2).
+static int guardShownScreen = -1;
 static int currentScreen = 0;
 // The popup open over currentScreen, as an index after the screens
 // (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
@@ -253,6 +260,15 @@ static void navigatorFollow(int target)
 static void renderAndPresent(const char *reason)
 {
   if (!renderer || !canvas) return;
+  {
+    const int shown = openPopup >= 0 ? 100000 + openPopup : currentScreen;
+    if (shown != guardShownScreen)
+    {
+      guards.clear();
+      guardContact = false;
+      guardShownScreen = shown;
+    }
+  }
   navigatorFollow(currentScreen);
   const uint32_t t0 = micros();
   bool ok = renderer->renderScreen(currentScreen);
@@ -589,6 +605,13 @@ static bool handleTap(int16_t x, int16_t y)
   int16_t objX = 0, objY = 0;
   const ScreenObject *hit = renderer->hitTestTappable(activeScreen(), x, y, objX, objY);
   if (hit == nullptr) return false;
+  // A guarded control switches only while its cover waits; each change tops
+  // the wait up (designer docs/2026-11-15-guard.md, decision 13).
+  if (hit->guard.on)
+  {
+    if (!guards.unlocked(hit->id)) return false;
+    guards.changed(hit->id, millis());
+  }
 
   // A node of an energy diagram with an action (contract 2.8): the hit test
   // only lets a diagram catch a tap on one. As on the 4.3B.
@@ -827,6 +850,29 @@ static void serviceTouch()
     contactMoved = false;
     pinch.begin(millis());
     pinch.sample(touchPointCount, x, y, touchX2, touchY2, millis());
+    // A guarded control not unlocked: its cover takes the contact (E6, E7).
+    guardContact = false;
+    if (renderer && projectLoader.isLoaded())
+    {
+      int16_t gx = 0, gy = 0;
+      const ScreenObject *under = renderer->hitTestTappable(activeScreen(), x, y, gx, gy);
+      if (under != nullptr) guardContact = guards.down(*under, activeScreen(), gx, gy, x, y, millis());
+    }
+    return;
+  }
+
+  // A cover's contact: pushed far enough it is drawn waiting (one refresh);
+  // lifted early it goes. Never a tap, a swipe, a pinch or the setup hold.
+  if (guardContact)
+  {
+    if (down)
+    {
+      guards.move(x, y, millis());
+      return;
+    }
+    guardContact = false;
+    holdActive = false;
+    guards.up(millis());
     return;
   }
 
@@ -1043,6 +1089,13 @@ static bool setupPanelAndProject()
   // (designer docs/device-contract.md 2.5). 52 px across, about 5.6 mm here;
   // the DDF says the same (screen.popupCloseRadius).
   renderer->setPopupCloseBadgeRadius(26);
+  // A cover shown, locked in or gone: that region drawn and refreshed.
+  guards.begin(
+      renderer,
+      [](int16_t x, int16_t y, int16_t w, int16_t h, const char *) {
+        if (renderer->renderScreenRegion(activeScreen(), x, y, w, h)) panel.blitRegion(canvas->getBuffer(), x, y, w, h);
+      },
+      false);
 
   if (!LittleFS.begin(true))
   {
@@ -1412,6 +1465,7 @@ void loop()
   }
 
   serviceTouch();
+  guards.tick(millis());
   testInterface.handleClient();
   mqttClient.loop();
   // What this display wrote to its local topics, taken in as arrivals.

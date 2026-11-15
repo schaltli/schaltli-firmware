@@ -446,6 +446,39 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
   }
+  // A guarded control (device contract §2.14): `properties.guard` and the
+  // geometry beside it, kept relative to the object.
+  const bool guardable = obj.type == "switch" || obj.type == "button-group" || obj.type == "toggle-button" || obj.type == "button";
+  if (guardable && (objJson["properties"]["guard"] | false)) {
+    GuardGeom& g = obj.guard;
+    g.on = true;
+    JsonObjectConst geom = objJson["guard"].as<JsonObjectConst>();
+    JsonObjectConst cover = geom["cover"].as<JsonObjectConst>();
+    g.coverX = cover.isNull() ? 0 : pixelValue(cover["x"]) - obj.x;
+    g.coverY = cover.isNull() ? 0 : pixelValue(cover["y"]) - obj.y;
+    g.coverW = cover.isNull() ? obj.width : pixelValue(cover["width"]);
+    g.coverH = cover.isNull() ? obj.height : pixelValue(cover["height"]);
+    g.coverR = cover.isNull() ? 0 : pixelValue(cover["radius"]);
+    const int fallbackTravel = (int)ceilf(obj.height * 0.45f) > 20 ? (int)ceilf(obj.height * 0.45f) : 20;
+    g.travel = geom["travel"] | fallbackTravel;
+    JsonObjectConst lock = geom["lock"].as<JsonObjectConst>();
+    if (!lock.isNull()) {
+      g.hasLock = true;
+      g.lockX = pixelValue(lock["x"]) - obj.x;
+      g.lockY = pixelValue(lock["y"]) - obj.y;
+      g.lockSize = pixelValue(lock["size"]);
+    }
+    JsonObjectConst badge = geom["badge"].as<JsonObjectConst>();
+    if (!badge.isNull()) {
+      g.hasBadge = true;
+      g.badgeCx = pixelValue(badge["cx"]) - obj.x;
+      g.badgeCy = pixelValue(badge["cy"]) - obj.y;
+      g.badgeR = pixelValue(badge["r"]);
+      g.badgeLockX = pixelValue(badge["lock"]["x"]) - obj.x;
+      g.badgeLockY = pixelValue(badge["lock"]["y"]) - obj.y;
+      g.badgeLockSize = pixelValue(badge["lock"]["size"]);
+    }
+  }
   // A software button's look (the designer's device contract, «button»).
   if (obj.type == "button" && objJson["look"].is<JsonObject>()) {
     ButtonLookProps* b = new ButtonLookProps();

@@ -3210,7 +3210,12 @@ bool ColorScreenRenderer::renderSwitch(const ScreenObject& obj, int pendingState
   const SwitchState& state = states[shownIndex];
   // Only a knob that is ON carries an icon. The quiet knob is half the
   // track's height, and an icon squeezed into it read as a smudge.
-  if (on) {
+  if (obj.guard.on) {
+    // Guarded: the lock takes the icon's place and moves with the knob
+    // (docs/2026-11-15-guard.md decision 4); always, whichever state.
+    const guard::LockBox lock = guard::knobLock(knob.cx, knob.cy, knob.r);
+    fillGuardRuns(guard::lockRuns(lock.size), lock.x, lock.y, colourOf(knobLook.onKnob));
+  } else if (on) {
     const String& iconPath = !state.iconPathActive.isEmpty() ? state.iconPathActive : state.iconPath;
     if (!iconPath.isEmpty()) {
       // switchshape::knobIcon, not three fifths worked out here: the designer
@@ -3413,15 +3418,26 @@ bool ColorScreenRenderer::renderObjectUnclipped(const ScreenObject& obj, const S
   if (objecttypes::isArc(obj.type)) return renderArcLevel(obj, currentScreenBg_);
   if (obj.type == "live-icon") return renderMQTTIconField(obj);
   if (obj.type == "icon") return renderIcon(obj);
-  if (obj.type == "button") return renderSoftwareButton(obj, !pressedButtonId.isEmpty() && obj.id == pressedButtonId);
+  if (obj.type == "button") {
+    const bool pressed = !pressedButtonId.isEmpty() && obj.id == pressedButtonId;
+    const bool drawn = renderSoftwareButton(obj, pressed);
+    if (drawn && obj.guard.on) drawGuardLock(obj, -1, pressed);
+    return drawn;
+  }
   if (objecttypes::isToggle(obj.type)) {
     int pendingIndex = obj.id == pendingSwitchId ? pendingSwitchStateIndex : -1;
-    return renderToggleButton(obj, pendingIndex, !pressedSwitchId.isEmpty() && obj.id == pressedSwitchId);
+    const bool pressed = !pressedSwitchId.isEmpty() && obj.id == pressedSwitchId;
+    const bool drawn = renderToggleButton(obj, pendingIndex, pressed);
+    if (drawn && obj.guard.on) drawGuardLock(obj, pendingIndex, pressed);
+    return drawn;
   }
   if (objecttypes::isSwitch(obj.type)) {
     int pendingIndex = obj.id == pendingSwitchId ? pendingSwitchStateIndex : -1;
     int pressedIndex = obj.id == pressedSwitchId ? pressedSwitchStateIndex : -1;
-    return renderSwitch(obj, pendingIndex, pressedIndex);
+    const bool drawn = renderSwitch(obj, pendingIndex, pressedIndex);
+    // A group's badge; a switch's lock rides its knob, drawn in renderSwitch.
+    if (drawn && obj.guard.on && obj.type == "button-group") drawGuardLock(obj, pendingIndex, false);
+    return drawn;
   }
   if (obj.type == "switcher") {
     return renderTabControl(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
@@ -3632,6 +3648,8 @@ bool ColorScreenRenderer::renderScreen(int screenIndex, const String& pressedBut
     RenderProfile::Scope s(obj.type);
     renderObject(obj, pressedButtonId, pendingSwitchId, pendingSwitchStateIndex, pressedSwitchId, pressedSwitchStateIndex);
   }
+  // Guarded controls' covers over what they guard (§2.14).
+  drawGuardCovers();
   // Over everything, as it covers what lies under it (contract 2.7).
   renderNavigatorOver(screenIndex);
   // The pull tabs beside it (2.10), in the picture, so they slide with it.
@@ -4069,6 +4087,8 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
     }
   }
 
+  // Guarded controls' covers, cut to the region (§2.14).
+  drawGuardCovers();
   // The navigator over the screen here too, cut to the region (2.7), and
   // the pull tabs beside it (2.10).
   renderNavigatorOver(screenIndex);
@@ -4362,3 +4382,141 @@ bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const Strin
   return true;
 }
 
+
+
+// --- Guard (device contract §2.14, docs/2026-11-15-guard.md in the designer)
+
+void ColorScreenRenderer::fillGuardRuns(const guard::Runs& runs, int x, int y, uint16_t colour) {
+  for (size_t row = 0; row < runs.size(); row++) {
+    for (const auto& s : runs[row]) canvas_->fillRect(x + s.first, y + (int)row, s.second - s.first, 1, colour);
+  }
+}
+
+// The lock at rest: a Button's or Toggle Button's in its top-right corner in
+// the face's ink, a Button Group's badge - a disc in the group's colour, the
+// lock in its on-colour. Whole pixels, the designer's runs.
+void ColorScreenRenderer::drawGuardLock(const ScreenObject& obj, int pendingStateIndex, bool pressed) {
+  const GuardGeom& g = obj.guard;
+  if (g.hasBadge) {
+    const SwitchLook look = switchshape::look(obj, currentScreenBgHex_);
+    const int d = g.badgeR * 2;
+    const auto disc = guard::roundRectSpans(d, d, g.badgeR);
+    const uint16_t fill = parseHexColor(look.chosen);
+    for (int row = 0; row < (int)disc.size(); row++) {
+      if (disc[row].second > disc[row].first) {
+        canvas_->fillRect(obj.x + g.badgeCx - g.badgeR + disc[row].first, obj.y + g.badgeCy - g.badgeR + row,
+                          disc[row].second - disc[row].first, 1, fill);
+      }
+    }
+    fillGuardRuns(guard::lockRuns(g.badgeLockSize), obj.x + g.badgeLockX, obj.y + g.badgeLockY, parseHexColor(look.onChosen));
+    return;
+  }
+  if (!g.hasLock) return;
+  String ink;
+  if (obj.type == "button" && obj.properties.button) {
+    ink = pressed ? obj.properties.button->pressed.ink : obj.properties.button->normal.ink;
+  } else if (obj.properties.toggle) {
+    const ToggleButtonProps& t = *obj.properties.toggle;
+    const int active = getActiveSwitchStateIndex(obj);
+    const bool asking = pendingStateIndex >= 0 && pendingStateIndex != active && pendingStateIndex < (int)t.looks.size();
+    const int shown = asking ? pendingStateIndex : active;
+    const ToggleLook& look = shown >= 0 && shown < (int)t.looks.size() ? t.looks[shown] : t.none;
+    ink = pressed ? look.pressed.ink : look.normal.ink;
+  }
+  if (ink.isEmpty()) return;
+  fillGuardRuns(guard::lockRuns(g.lockSize), obj.x + g.lockX, obj.y + g.lockY, parseHexColor(ink));
+}
+
+static uint16_t guardRgb565(uint32_t c) {
+  return (uint16_t)(((c >> 8) & 0xF800) | ((c >> 5) & 0x07E0) | ((c >> 3) & 0x001F));
+}
+
+static uint16_t guardMix565(uint16_t under, uint16_t over, uint32_t a256) {
+  const uint32_t ur = (under >> 11) & 31, ug = (under >> 5) & 63, ub = under & 31;
+  const uint32_t orr = (over >> 11) & 31, og = (over >> 5) & 63, ob = over & 31;
+  const uint32_t r = (ur * (256 - a256) + orr * a256 + 128) >> 8;
+  const uint32_t g = (ug * (256 - a256) + og * a256 + 128) >> 8;
+  const uint32_t b = (ub * (256 - a256) + ob * a256 + 128) >> 8;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+// One cover: the outline in two yellows, the lock and the double arrow in the
+// dark ink, `lift` px up, at `alpha`. Opaque it is runs of fillRect; faded,
+// each pixel mixed into what lies under it.
+void ColorScreenRenderer::drawGuardCover(const GuardOverlay& o) {
+  if (o.alpha <= 0.0f || o.w <= 0 || o.h <= 0) return;
+  const uint32_t a = o.alpha >= 1.0f ? 256 : (uint32_t)(o.alpha * 256.0f + 0.5f);
+  const uint16_t y1 = guardRgb565(guard::YELLOW), y2 = guardRgb565(guard::YELLOW_2), ink = guardRgb565(guard::INK);
+  const int top = o.y - o.lift;
+  const bool region = canvas_->regionActive();
+  const int rx = region ? canvas_->regionX() : 0;
+  const int ry = region ? canvas_->regionY() : 0;
+  const int rw = region ? canvas_->regionW() : canvas_->width();
+  const int rh = region ? canvas_->regionH() : canvas_->height();
+  auto plot = [&](int x, int y, uint16_t colour) {
+    if (x < rx || y < ry || x >= rx + rw || y >= ry + rh) return;
+    canvas_->drawPixel(x, y, guardMix565(canvas_->getPixel(x, y), colour, a));
+  };
+  const auto spans = guard::roundRectSpans(o.w, o.h, o.r);
+  for (int row = 0; row < (int)spans.size(); row++) {
+    const int y = top + row;
+    if (y < ry || y >= ry + rh) continue;
+    int x = spans[row].first;
+    while (x < spans[row].second) {
+      const bool second = guard::stripeIsSecond(x, row);
+      int end = x + 1;
+      while (end < spans[row].second && guard::stripeIsSecond(end, row) == second) end++;
+      if (a >= 256) {
+        canvas_->fillRect(o.x + x, y, end - x, 1, second ? y2 : y1);
+      } else {
+        for (int px = x; px < end; px++) plot(o.x + px, y, second ? y2 : y1);
+      }
+      x = end;
+    }
+  }
+  const guard::Marks m = guard::coverMarks(o.x, o.y, o.w, o.h);
+  auto marks = [&](const guard::Runs& runs, int mx, int my) {
+    for (int row = 0; row < (int)runs.size(); row++) {
+      for (const auto& s : runs[row]) {
+        if (a >= 256) {
+          canvas_->fillRect(mx + s.first, my + row, s.second - s.first, 1, ink);
+        } else {
+          for (int px = s.first; px < s.second; px++) plot(mx + px, my + row, ink);
+        }
+      }
+    }
+  };
+  marks(guard::lockRuns(m.size), m.lockX, m.lockY - o.lift);
+  marks(guard::arrowRuns(m.size), m.arrowsX, m.arrowsY - o.lift - o.bob);
+}
+
+bool ColorScreenRenderer::guardHintRect(int16_t& x, int16_t& y, int16_t& w, int16_t& h) {
+  if (canvas_ == nullptr) return false;
+  int ascent = 0, descent = 0;
+  const int H = canvas_->height(), W = canvas_->width();
+  const BdfFont* font = keyboardFont(H / 16 > 14 ? H / 16 : 14, ascent, descent, guard::HINT, W - 40);
+  if (font == nullptr) return false;
+  const int textW = font->textWidth(guard::HINT);
+  w = (int16_t)(textW + 32);
+  h = (int16_t)(ascent + descent + 16);
+  x = (int16_t)((W - w) / 2);
+  y = (int16_t)(H - h - H / 12);
+  return true;
+}
+
+void ColorScreenRenderer::drawGuardCovers() {
+  if (canvas_ == nullptr) return;
+  if (guardOverlays_ != nullptr)
+    for (const GuardOverlay& o : *guardOverlays_) drawGuardCover(o);
+  if (!guardHint_) return;
+  int16_t x, y, w, h;
+  if (!guardHintRect(x, y, w, h)) return;
+  int ascent = 0, descent = 0;
+  const BdfFont* font = keyboardFont(canvas_->height() / 16 > 14 ? canvas_->height() / 16 : 14, ascent, descent, guard::HINT,
+                                     canvas_->width() - 40);
+  if (font == nullptr) return;
+  const auto pill = guard::roundRectSpans(w, h, h / 2);
+  for (int row = 0; row < (int)pill.size(); row++)
+    if (pill[row].second > pill[row].first) canvas_->fillRect(x + pill[row].first, y + row, pill[row].second - pill[row].first, 1, 0x2104);
+  font->drawText(*canvas_, guard::HINT, x + (w - font->textWidth(guard::HINT)) / 2, y + 8 + ascent, 0xFFFF);
+}
