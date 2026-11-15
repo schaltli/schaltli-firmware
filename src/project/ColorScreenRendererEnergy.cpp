@@ -227,7 +227,7 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
   std::string key;
   if (dots == nullptr) {
     key = std::string(obj.id.c_str()) + "|" + std::to_string(obj.width) + "x" + std::to_string(obj.height) + "|" + std::to_string(ground) + "|" +
-          (projectLoader_.getProject().themeDark ? "d" : "l") + "|" + std::to_string(wavePhase);
+          (projectLoader_.getProject().themeDark ? "d" : "l") + "|" + std::to_string(wavePhase) + (e.sankey ? "|s" : "|f");
     for (const ed::Value& v : values)
       key += "|" + (v.hasWatts ? std::to_string(v.watts) : std::string("-")) + "/" + (v.hasCharge ? std::to_string(v.charge) : std::string("-"));
   }
@@ -249,7 +249,7 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
   ed::DiagramBoxes boxes;
   if (e.sankey) {
     const ed::Size size{(double)obj.width, (double)obj.height};
-    const ed::SankeyLayout layout = ed::sankeyLayout(resolved, size, e.fullScale > 0 ? e.fullScale : 1000);
+    const ed::SankeyLayout layout = ed::sankeyLayoutBeside(resolved, size, e.fullScale > 0 ? e.fullScale : 1000, e.switchRow);
     auto colourFor = [&](const std::string& id) -> uint16_t {
       for (const ed::Resolved& r : resolved)
         if (r.id == id) return parseHexColor(r.watts > 0 ? colourOf(r) : e.idleColor);
@@ -352,6 +352,16 @@ bool ColorScreenRenderer::renderEnergyDiagram(const ScreenObject& obj, float wav
       px.fill(ed::discOutline(d.x, d.y, ed::DOT_R), ink, (int)ed::jsRound(d.alpha * 256));
     }
     boxes = ed::flowBoxes(layout, m);
+  }
+  // Its own switch (designer docs/2026-11-11-energy-mode-switch.md): the
+  // icon of the mode shown in the text's colour, the other muted.
+  {
+    auto draw = [&](const std::vector<EnergyDiagramProps::SwitchShape>& list, const String& colour) {
+      for (const EnergyDiagramProps::SwitchShape& sh : list)
+        px.fill(sh.disc ? ed::discOutline(sh.a, sh.b, sh.c) : ed::capsuleOutline(sh.a, sh.b, sh.c, sh.d, sh.w), parseHexColor(colour));
+    };
+    draw(e.flowShapes, e.sankey ? e.mutedColor : e.textColor);
+    draw(e.sankeyShapes, e.sankey ? e.textColor : e.mutedColor);
   }
   const uint32_t tShapes = micros();
   // Everything the diagram draws stays in its box, its labels too, as the
@@ -480,7 +490,7 @@ std::vector<ColorScreenRenderer::EnergyAnimation> ColorScreenRenderer::energyAni
       return e.textColor;
     };
     if (e.sankey) {
-      const ed::SankeyLayout layout = ed::sankeyLayout(resolved, {(double)obj.width, (double)obj.height}, e.fullScale > 0 ? e.fullScale : 1000);
+      const ed::SankeyLayout layout = ed::sankeyLayoutBeside(resolved, {(double)obj.width, (double)obj.height}, e.fullScale > 0 ? e.fullScale : 1000, e.switchRow);
       const int16_t cy0 = obj.y < 0 ? 0 : obj.y, cy1 = obj.y + obj.height - 1;
       const int16_t left = obj.x, right = obj.x + obj.width - 1;
       for (const ed::Band& band : layout.bands) {
@@ -571,6 +581,22 @@ uint16_t ColorScreenRenderer::energyWaveColour(const EnergyAnimation& a, uint8_t
   return ed::rgb565(c[0], c[1], c[2]);
 }
 
+int ColorScreenRenderer::energySwitchAt(const ScreenObject& obj, double x, double y) const {
+  if (!obj.properties.energy) return 0;
+  const EnergyDiagramProps& e = *obj.properties.energy;
+  auto inside = [&](const float* b) { return b[2] > 0 && x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]; };
+  if (inside(e.flowTap)) return 1;
+  if (inside(e.sankeyTap)) return 2;
+  return 0;
+}
+
+bool ColorScreenRenderer::energyShowMode(const ScreenObject& obj, bool sankey) {
+  if (!obj.properties.energy || obj.properties.energy->sankey == sankey) return false;
+  // The object as loaded: the mode stays until the project is loaded again.
+  const_cast<EnergyDiagramProps&>(*obj.properties.energy).sankey = sankey;
+  return true;
+}
+
 const ButtonAction* ColorScreenRenderer::energyActionAt(const ScreenObject& obj, double x, double y) const {
   if (!obj.properties.energy) return nullptr;
   const EnergyDiagramProps& e = *obj.properties.energy;
@@ -578,7 +604,7 @@ const ButtonAction* ColorScreenRenderer::energyActionAt(const ScreenObject& obj,
   std::vector<ed::Value> values;
   energyInputs(e, nodes, values);
   const std::string id = ed::nodeAtTap(e.sankey, nodes, ed::resolve(nodes, values), {(double)obj.width, (double)obj.height},
-                                       e.fullScale > 0 ? e.fullScale : 1000, x, y);
+                                       e.fullScale > 0 ? e.fullScale : 1000, x, y, e.switchRow);
   if (id.empty()) return nullptr;
   for (const EnergyNodeProps& n : e.nodes)
     if (id == n.id.c_str()) return n.action.type.isEmpty() ? nullptr : &n.action;

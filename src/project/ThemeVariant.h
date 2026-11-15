@@ -77,10 +77,13 @@ void forEachObjectPair(ScreenObject& obj, F& f) {
       f(l.pressed.fill, l.pressedDark.fill);
       f(l.pressed.outline, l.pressedDark.outline);
       f(l.pressed.ink, l.pressedDark.ink);
-      f(l.discNormal, l.discNormalDark);
-      f(l.discPressed, l.discPressedDark);
-      f(l.discEdgeNormal, l.discEdgeNormalDark);
-      f(l.discEdgePressed, l.discEdgePressedDark);
+      f(l.secondInk, l.secondInkDark);
+      f(l.lightFill, l.lightFillDark);
+      f(l.lightAsked, l.lightAskedDark);
+      f(l.lightAskedDim, l.lightAskedDimDark);
+      f(l.lightOutline, l.lightOutlineDark);
+      f(l.wordInk, l.wordInkDark);
+      f(l.wordAskedInk, l.wordAskedInkDark);
     };
     for (ToggleLook& l : t.looks) look(l);
     look(t.none);

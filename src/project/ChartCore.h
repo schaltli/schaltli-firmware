@@ -97,6 +97,8 @@ struct Chart {
   std::vector<Zone> zones;
   std::string legend = "top-right";
   std::vector<Series> series;
+  /** The compact form: no axes, legend, date; the last 3 h (lib/chart.ts). */
+  bool compact = false;
 };
 
 /** A chart's properties as the export writes them. */
@@ -118,6 +120,9 @@ Window chartWindow(const Chart& chart, const std::string& range, double now, con
 
 /** Where a topic's history lies under schaltli/history/: its `#` written `~`. */
 std::string historyName(const std::string& topic);
+
+/** What a time chart shows, for its top right corner (lib/chart-layout.ts rangeLabelOf). */
+std::string rangeLabelOf(const Window& w, double now, const Calendar& cal);
 
 /** The retained topics a chart reads for a window (lib/chart-window.ts historyTopicsFor). */
 std::vector<std::string> historyTopicsFor(const Chart& chart, const Window& window);

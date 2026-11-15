@@ -101,6 +101,7 @@
 #include "../../project/ProjectLoader.h"
 #include "../../project/ThemeVariant.h"
 #include "../../project/ColorScreenRenderer.h"
+#include "../../project/GuardSet.h"
 #include "../../project/SwitchShape.h"
 #include "../../project/Keyboard.h"
 #include "../../project/TimePicker.h"
@@ -123,6 +124,9 @@ static bool startExpander();
 static ProjectLoader projectLoader;
 static ClippedCanvas16 *canvas = nullptr;
 static ColorScreenRenderer *renderer = nullptr;
+// Guarded controls' covers on the screen showing (designer docs/2026-11-15-guard.md).
+static GuardSet guards;
+static void renderRegion(int16_t rx, int16_t ry, int16_t rw, int16_t rh, const char *reason, bool present);
 static int currentScreen = 0;
 // The popup open over currentScreen, as an index after the screens
 // (screenOrPopupAt, ProjectTypes.h), or -1 (designer docs/device-contract.md
@@ -685,6 +689,8 @@ static void blankDisplay(const char *reason)
   displayIsOff = true;
   expander.setBacklight(false);
   Serial.printf("[display] off (%s)\n", reason);
+  // Dark, every guarded control locks (E2); waking repaints.
+  guards.clear();
 
   // Back to the idle screen AFTER the backlight is out: the panel would
   // otherwise be seen flipping pages on its way off, which reads as the
@@ -784,6 +790,8 @@ static void setupRenderStack()
   // (designer docs/device-contract.md 2.5) - this board first (the user,
   // 2026-10-07). 48 px across, about 5.5 mm here.
   renderer->setPopupCloseBadgeRadius(POPUP_CLOSE_BADGE_RADIUS);
+  // A cover moved: only where it was and is, drawn and blitted.
+  guards.begin(renderer, [](int16_t x, int16_t y, int16_t w, int16_t h, const char *reason) { renderRegion(x, y, w, h, reason, true); });
 
   // A second canvas of the same size, so the incoming screen can be drawn
   // while the outgoing one is still on the panel. Taken at boot rather than
@@ -1849,6 +1857,8 @@ static void forgetTouchFeedback()
   pendingSwitchId = "";
   pendingSwitchIndex = -1;
   feedbackActive = false;
+  // Every guarded control locks with the screen it was on (E2).
+  guards.clear();
 }
 
 static String stripJsonPath(const String &topicOrPath)
@@ -2781,6 +2791,17 @@ static bool dispatchTapAt(int16_t x, int16_t y)
     lastTap = "(" + String(x) + "," + String(y) + ") hit nothing tappable";
     return false;
   }
+  // A guarded control switches only while its cover waits above it; each
+  // change tops the wait up (designer docs/2026-11-15-guard.md, decision 13).
+  if (hit->guard.on)
+  {
+    if (!guards.unlocked(hit->id))
+    {
+      lastTap = "(" + String(x) + "," + String(y) + ") " + hit->type + " \"" + hit->id + "\" is guarded";
+      return false;
+    }
+    guards.changed(hit->id, millis());
+  }
 
   if (hit->type == "button")
   {
@@ -2802,6 +2823,16 @@ static bool dispatchTapAt(int16_t x, int16_t y)
   // only lets a diagram catch a tap on one.
   if (hit->type == "energy-diagram")
   {
+    // Its own switch first (designer docs/2026-11-11-energy-mode-switch.md):
+    // the mode shown on this display, until the project is loaded again.
+    const int asked = renderer->energySwitchAt(*hit, x - objX, y - objY);
+    if (asked != 0)
+    {
+      Serial.printf("[tap] energy diagram \"%s\" shows %s\n", hit->id.c_str(), asked == 2 ? "sankey" : "flow");
+      lastTap = "(" + String(x) + "," + String(y) + ") energy diagram \"" + hit->id + "\" switch " + (asked == 2 ? "sankey" : "flow");
+      if (renderer->energyShowMode(*hit, asked == 2)) renderRegion(objX, objY, hit->width, hit->height, "energy mode");
+      return true;
+    }
     const ButtonAction *action = renderer->energyActionAt(*hit, x - objX, y - objY);
     if (action == nullptr) return false;
     Serial.printf("[tap] energy diagram \"%s\" action %s\n", hit->id.c_str(), action->type.c_str());
@@ -3566,7 +3597,16 @@ void loop()
       navigatorContact = !contactOnlyWoke && onNavigatorStrip(touchX, touchY, navLayout);
       navigatorScrolled = false;
       if (navigatorContact) navigatorStartScroll = renderer->effectiveNavigatorScroll(currentScreen);
-      if (!contactOnlyWoke && !onCloseBadge && !navigatorContact && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
+      // A guarded control not unlocked: its cover takes the contact - no
+      // pressed look, no tap, no swipe (designer docs/2026-11-15-guard.md).
+      bool guardContact = false;
+      if (!contactOnlyWoke && !onCloseBadge && !navigatorContact && renderer)
+      {
+        int16_t gx = 0, gy = 0;
+        const ScreenObject *under = renderer->hitTestTappable(activeScreen(), touchX, touchY, gx, gy);
+        if (under != nullptr) guardContact = guards.down(*under, activeScreen(), gx, gy, touchX, touchY, millis());
+      }
+      if (!contactOnlyWoke && !onCloseBadge && !navigatorContact && !guardContact && !beginLevelDrag(touchX, touchY)) beginPressFeedback(touchX, touchY);
     }
     lastHumanInputMs = millis();
     if (contactOnlyWoke)
@@ -3612,6 +3652,16 @@ void loop()
           navigatorScrolled = true;
         }
       }
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
+    // A cover owns this gesture: it follows the finger up and nothing else
+    // may have it - not a page turn, a pinch or the setup hold (E6).
+    if (guards.fingerActive())
+    {
+      guards.move(touchX, touchY, millis());
       testInterface.handleClient();
       delay(5);
       return;
@@ -3761,6 +3811,17 @@ void loop()
     {
       navigatorContact = false;
       if (!navigatorScrolled && !contactOnlyWoke && contactDrift <= TAP_MAX_DRIFT) dispatchTapAt(holdStartX, holdStartY);
+      contactOnlyWoke = false;
+      testInterface.handleClient();
+      delay(5);
+      return;
+    }
+
+    // A cover's contact: lifted before it locked in, the cover goes (and a
+    // plain tap shows the hint); after, nothing. Never a tap or a swipe.
+    if (guards.fingerActive())
+    {
+      guards.up(millis());
       contactOnlyWoke = false;
       testInterface.handleClient();
       delay(5);
@@ -3937,6 +3998,16 @@ void loop()
     // looking like it is still being asked.
     clearPending("pending timed out");
   }
+  // While asked, a Toggle Button's light pulses (designer docs/2026-11-11-
+  // led-look.md, decision 4): its rectangle redrawn on the renderer's beat.
+  {
+    static unsigned long lastPulseMs = 0;
+    if (!pendingSwitchId.isEmpty() && pressedSwitchId.isEmpty() && millis() - lastPulseMs >= 500)
+    {
+      lastPulseMs = millis();
+      renderRegion(pendingX, pendingY, pendingW, pendingH, "asked pulse");
+    }
+  }
 
   // A released level whose end value was never answered: the installation's
   // last word is shown after all, as decision 6c has it - just later.
@@ -3991,6 +4062,7 @@ void loop()
   if (!keyboardOpen && !pickerOpen)
   {
     const uint32_t te = micros();
+    guards.tick(millis());
     energyStep();
     const uint32_t tc = micros();
     turnEnergyUs += tc - te;

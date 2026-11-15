@@ -925,7 +925,8 @@
     "duration-display",
     "charts",
     "pinch",
-    "clip"
+    "clip",
+    "guard"
   ],
   "supportsSoftwareButtons": true
 }

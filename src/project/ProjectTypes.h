@@ -172,6 +172,18 @@ struct EnergyDiagramProps {
   String chargeColor, chargeColorDark;
   String dischargeColor, dischargeColorDark;
   std::vector<EnergyNodeProps> nodes;
+  // Its own Flow/Sankey switch (designer docs/2026-11-11-energy-mode-switch.md),
+  // laid out by the export: the row the Sankey keeps free (1 top, -1 bottom,
+  // 0 none), each icon's tap area and its shapes - a capsule (x0 y0 x1 y1 w)
+  // or a disc (cx cy r, the rest 0). The mode a tap picks replaces `sankey`
+  // until the project is loaded again.
+  struct SwitchShape {
+    bool disc = false;
+    float a = 0, b = 0, c = 0, d = 0, w = 0;
+  };
+  int switchRow = 0;
+  float flowTap[4] = {0, 0, 0, 0}, sankeyTap[4] = {0, 0, 0, 0};
+  std::vector<SwitchShape> flowShapes, sankeyShapes;
 };
 
 // An energy diagram's data behind a pointer that copies what it points at:
@@ -228,25 +240,31 @@ struct ButtonLookHandle {
 };
 
 // A Toggle Button as the device draws it (designer device contract
-// «toggle-button», docs/2026-11-06-toggle-button.md): a button's look per
-// state, one for «nothing reported», the ring's colour. Every judgement is
-// the designer's (lib/toggle-button-shape.ts); this only holds it.
+// «toggle-button», docs/2026-11-06-toggle-button.md and, since 2026-11-11,
+// docs/2026-11-11-led-look.md): a calm tile per state with its name, and a
+// light - Korry's window or an LED strip - that says the state. Every
+// judgement is the designer's (lib/toggle-button-shape.ts); this only holds
+// it.
 struct ToggleLook {
   ButtonFace normal, pressed, normalDark, pressedDark;
   String label;
   int textX = 0, baseline = 0, clipX = 0, clipW = 0;
   bool hasIcon = false;
   int iconX = 0, iconY = 0, iconSize = 0;
-  // The state's label under the name; only with a name.
+  // The state's label as a line of text (LED Horizontal: at the end of the
+  // name's line; LED Vertical: under the name), in its own ink.
   bool hasSecond = false;
   int secondTextX = 0, secondBaseline = 0;
-  String secondFontId;
-  // The disc behind the icon; only with a name and an icon somewhere. An
-  // edge colour names a 1-px ring where the disc's tint is lost (1 bit).
-  bool hasDisc = false;
-  int discCx = 0, discCy = 0, discR = 0;
-  String discNormal, discPressed, discNormalDark, discPressedDark;
-  String discEdgeNormal, discEdgePressed, discEdgeNormalDark, discEdgePressedDark;
+  String secondFontId, secondInk, secondInkDark;
+  // The light: its rectangle; its fill for the state; asked and askedDim in
+  // turn while a request is outstanding; a 1-px ring where it needs one.
+  int lightX = 0, lightY = 0, lightW = 0, lightH = 0, lightR = 0;
+  String lightFill, lightAsked, lightAskedDim, lightOutline;
+  String lightFillDark, lightAskedDark, lightAskedDimDark, lightOutlineDark;
+  // Korry's window word, centred, with its ink per fill.
+  bool hasWord = false;
+  String wordText, wordFontId, wordInk, wordAskedInk, wordInkDark, wordAskedInkDark;
+  int wordX = 0, wordBaseline = 0;
 };
 struct ToggleButtonProps {
   std::vector<ToggleLook> looks;
@@ -330,6 +348,22 @@ struct ClipShape {
   int width = 0;
   int height = 0;
   int radius = 0;
+};
+
+// A guarded control's geometry (device contract §2.14, the designer's
+// lib/guard.ts exportedGuard): the cover's outline, how far it must travel to
+// lock in, and where the lock sits at rest - a corner lock for a button or a
+// toggle button, a badge for a button group; a switch's lock rides its knob.
+// Stored relative to the object's own x/y (the loader subtracts them), so a
+// child of a switcher's panel needs no offset of its own.
+struct GuardGeom {
+  bool on = false;
+  int16_t coverX = 0, coverY = 0, coverW = 0, coverH = 0, coverR = 0;
+  int16_t travel = 20;
+  bool hasLock = false;
+  int16_t lockX = 0, lockY = 0, lockSize = 0;
+  bool hasBadge = false;
+  int16_t badgeCx = 0, badgeCy = 0, badgeR = 0, badgeLockX = 0, badgeLockY = 0, badgeLockSize = 0;
 };
 
 // Base properties for screen objects
@@ -564,6 +598,8 @@ struct ScreenObject {
   String path;
   // The dark variant's bitmap (ThemeVariant.h); empty: same as light.
   String pathDark;
+  // `properties.guard` with the designer's geometry beside it (§2.14).
+  GuardGeom guard;
   // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own

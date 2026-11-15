@@ -446,6 +446,39 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
   }
+  // A guarded control (device contract §2.14): `properties.guard` and the
+  // geometry beside it, kept relative to the object.
+  const bool guardable = obj.type == "switch" || obj.type == "button-group" || obj.type == "toggle-button" || obj.type == "button";
+  if (guardable && (objJson["properties"]["guard"] | false)) {
+    GuardGeom& g = obj.guard;
+    g.on = true;
+    JsonObjectConst geom = objJson["guard"].as<JsonObjectConst>();
+    JsonObjectConst cover = geom["cover"].as<JsonObjectConst>();
+    g.coverX = cover.isNull() ? 0 : pixelValue(cover["x"]) - obj.x;
+    g.coverY = cover.isNull() ? 0 : pixelValue(cover["y"]) - obj.y;
+    g.coverW = cover.isNull() ? obj.width : pixelValue(cover["width"]);
+    g.coverH = cover.isNull() ? obj.height : pixelValue(cover["height"]);
+    g.coverR = cover.isNull() ? 0 : pixelValue(cover["radius"]);
+    const int fallbackTravel = (int)ceilf(obj.height * 0.45f) > 20 ? (int)ceilf(obj.height * 0.45f) : 20;
+    g.travel = geom["travel"] | fallbackTravel;
+    JsonObjectConst lock = geom["lock"].as<JsonObjectConst>();
+    if (!lock.isNull()) {
+      g.hasLock = true;
+      g.lockX = pixelValue(lock["x"]) - obj.x;
+      g.lockY = pixelValue(lock["y"]) - obj.y;
+      g.lockSize = pixelValue(lock["size"]);
+    }
+    JsonObjectConst badge = geom["badge"].as<JsonObjectConst>();
+    if (!badge.isNull()) {
+      g.hasBadge = true;
+      g.badgeCx = pixelValue(badge["cx"]) - obj.x;
+      g.badgeCy = pixelValue(badge["cy"]) - obj.y;
+      g.badgeR = pixelValue(badge["r"]);
+      g.badgeLockX = pixelValue(badge["lock"]["x"]) - obj.x;
+      g.badgeLockY = pixelValue(badge["lock"]["y"]) - obj.y;
+      g.badgeLockSize = pixelValue(badge["lock"]["size"]);
+    }
+  }
   // A software button's look (the designer's device contract, «button»).
   if (obj.type == "button" && objJson["look"].is<JsonObject>()) {
     ButtonLookProps* b = new ButtonLookProps();
@@ -510,29 +543,43 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
         out.secondTextX = j["second"]["textX"] | 0;
         out.secondBaseline = j["second"]["baseline"] | 0;
         out.secondFontId = j["second"]["fontId"] | "";
+        out.secondInk = j["second"]["ink"] | "";
       }
-      if (j["disc"].is<JsonObject>()) {
-        JsonVariant d = j["disc"];
-        out.hasDisc = true;
-        out.discCx = d["cx"] | 0;
-        out.discCy = d["cy"] | 0;
-        out.discR = d["r"] | 0;
-        out.discNormal = d["normal"] | "";
-        out.discPressed = d["pressed"] | "";
-        if (d["edge"].is<JsonObject>()) {
-          out.discEdgeNormal = d["edge"]["normal"] | "";
-          out.discEdgePressed = d["edge"]["pressed"] | "";
+      // The light (docs/2026-11-11-led-look.md).
+      if (j["light"].is<JsonObject>()) {
+        JsonVariant l = j["light"];
+        out.lightX = l["x"] | 0;
+        out.lightY = l["y"] | 0;
+        out.lightW = l["w"] | 0;
+        out.lightH = l["h"] | 0;
+        out.lightR = l["r"] | 0;
+        out.lightFill = l["fill"] | "";
+        out.lightAsked = l["asked"] | "";
+        out.lightAskedDim = l["askedDim"] | "";
+        out.lightOutline = l["outline"] | "";
+        if (l["label"].is<JsonObject>()) {
+          out.hasWord = true;
+          out.wordText = l["label"]["text"] | "";
+          out.wordX = l["label"]["textX"] | 0;
+          out.wordBaseline = l["label"]["baseline"] | 0;
+          out.wordFontId = l["label"]["fontId"] | "";
+          out.wordInk = l["label"]["ink"] | "";
+          out.wordAskedInk = l["label"]["askedInk"] | "";
         }
       }
       if (dark.is<JsonObject>()) {
         face(dark["normal"], out.normalDark);
         face(dark["pressed"], out.pressedDark);
-        if (dark["disc"].is<JsonObject>()) {
-          out.discNormalDark = dark["disc"]["normal"] | "";
-          out.discPressedDark = dark["disc"]["pressed"] | "";
-          if (dark["disc"]["edge"].is<JsonObject>()) {
-            out.discEdgeNormalDark = dark["disc"]["edge"]["normal"] | "";
-            out.discEdgePressedDark = dark["disc"]["edge"]["pressed"] | "";
+        if (dark["second"].is<JsonObject>()) out.secondInkDark = dark["second"]["ink"] | "";
+        if (dark["light"].is<JsonObject>()) {
+          JsonVariant l = dark["light"];
+          out.lightFillDark = l["fill"] | "";
+          out.lightAskedDark = l["asked"] | "";
+          out.lightAskedDimDark = l["askedDim"] | "";
+          out.lightOutlineDark = l["outline"] | "";
+          if (l["label"].is<JsonObject>()) {
+            out.wordInkDark = l["label"]["ink"] | "";
+            out.wordAskedInkDark = l["label"]["askedInk"] | "";
           }
         }
       }
@@ -1063,6 +1110,40 @@ EnergyDiagramProps ProjectLoader::parseEnergyDiagram(JsonObject p) {
   EnergyDiagramProps e;
   e.sankey = String(p["mode"] | "flow") == "sankey";
   e.motion = p["motion"] | true;
+  // Its own switch, as the export laid it out.
+  if (p["modeSwitch"].is<JsonObject>()) {
+    JsonObject sw = p["modeSwitch"];
+    const String corner = sw["corner"] | "none";
+    e.switchRow = corner.startsWith("top") ? 1 : corner.startsWith("bottom") ? -1 : 0;
+    auto box = [](JsonObject b, float* out) {
+      out[0] = b["x"] | 0.0f;
+      out[1] = b["y"] | 0.0f;
+      out[2] = b["width"] | 0.0f;
+      out[3] = b["height"] | 0.0f;
+    };
+    auto shapes = [](JsonArray list, std::vector<EnergyDiagramProps::SwitchShape>& out) {
+      for (JsonObject s : list) {
+        EnergyDiagramProps::SwitchShape sh;
+        sh.disc = String(s["kind"] | "") == "disc";
+        if (sh.disc) {
+          sh.a = s["cx"] | 0.0f;
+          sh.b = s["cy"] | 0.0f;
+          sh.c = s["r"] | 0.0f;
+        } else {
+          sh.a = s["x0"] | 0.0f;
+          sh.b = s["y0"] | 0.0f;
+          sh.c = s["x1"] | 0.0f;
+          sh.d = s["y1"] | 0.0f;
+          sh.w = s["width"] | 0.0f;
+        }
+        out.push_back(sh);
+      }
+    };
+    box(sw["flow"]["tap"], e.flowTap);
+    box(sw["sankey"]["tap"], e.sankeyTap);
+    shapes(sw["flow"]["shapes"], e.flowShapes);
+    shapes(sw["sankey"]["shapes"], e.sankeyShapes);
+  }
   e.fullScale = p["fullScale"] | 1000.0f;
   if (!(e.fullScale > 0)) e.fullScale = 1000;
   e.fontId = p["fontId"] | "";

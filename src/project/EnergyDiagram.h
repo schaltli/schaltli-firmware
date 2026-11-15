@@ -119,6 +119,11 @@ struct SankeyLayout {
 
 SankeyLayout sankeyLayout(const std::vector<Resolved>& nodes, Size size, double fullScale);
 
+// The diagram's own switch row (lib/energy-diagram.ts SWITCH_TAP), and the
+// Sankey laid out beside it: 1 the row on top, -1 at the bottom, 0 none.
+constexpr double SWITCH_TAP = 44;
+SankeyLayout sankeyLayoutBeside(const std::vector<Resolved>& nodes, Size size, double fullScale, int switchRow);
+
 // ---- Flow (spec decision 9)
 constexpr double FLOW_NODE_R = 32;
 constexpr double FLOW_BUS_R = 14;
@@ -195,7 +200,7 @@ DiagramBoxes flowBoxes(const FlowLayout& layout, const LabelMetrics& m);
 
 // The node a tap at (x, y), relative to the diagram, lands on; "" for none.
 std::string nodeAtTap(bool sankey, const std::vector<Node>& nodes, const std::vector<Resolved>& resolved, Size size, double fullScale,
-                      double x, double y);
+                      double x, double y, int switchRow = 0);
 
 // ---- Shapes, pixel for pixel (energy-firmware, 2026-10-12): every shape
 // the diagram fills is an outline in eighths of a pixel, filled by
