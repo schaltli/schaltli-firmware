@@ -68,7 +68,9 @@ class GuardSet {
     if (e == nullptr) return false;
     const bool hint = e->cover.up(now);
     if (hint) showHint(now);
-    // Paper (E7): gone in one refresh, which the next tick makes.
+    // Lifted after locking in, nothing happens (decision 9). Lifted before:
+    // on paper (E7) gone in one refresh, which the next tick makes.
+    if (e->cover.phase != guard::Phase::Dropping) return hint;
     if (!motion_) e->cover.reset();
     else refresh(*e, now, "guard up");
     return hint;
