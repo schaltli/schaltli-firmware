@@ -114,10 +114,24 @@ class GuardSet {
         redrawReach(gone, "guard gone");
         continue;
       }
-      // Moving parts: the bob while it can be pushed, the open and drop slides.
-      const bool moving = motion_ && (e.cover.phase == guard::Phase::Pushing || e.cover.phase == guard::Phase::Opening ||
-                                      e.cover.phase == guard::Phase::Dropping);
-      if (changed || (moving && now - e.lastFrame >= FRAME_MS)) refresh(e, now, "guard tick");
+      // Moving parts: the open and drop slides, the whole cover each frame;
+      // the arrows' bob while it can be pushed, only their small square and
+      // only when the bob has moved a pixel - redrawing the whole cover for
+      // it cost the 4" 55 ms fifteen times a second under a resting finger
+      // (2026-11-15).
+      const bool sliding = motion_ && (e.cover.phase == guard::Phase::Opening || e.cover.phase == guard::Phase::Dropping);
+      if (changed || (sliding && now - e.lastFrame >= FRAME_MS)) {
+        refresh(e, now, "guard tick");
+      } else if (motion_ && e.cover.phase == guard::Phase::Pushing && now - e.lastFrame >= BOB_FRAME_MS) {
+        const guard::Drawn d = guard::drawn(e.cover, now, e.h, motion_);
+        if (d.bob != e.lastBob) {
+          e.lastBob = d.bob;
+          e.lastFrame = now;
+          rebuild(now);
+          const guard::Marks m = guard::coverMarks(e.x, e.y, e.w, e.h);
+          redrawClamped(m.arrowsX, m.arrowsY - d.lift - guard::BOB_PX, m.size, m.size + guard::BOB_PX + 1, "guard bob");
+        }
+      }
       i++;
     }
     if (hintUntil_ != 0 && (int32_t)(now - hintUntil_) >= 0) {
@@ -141,6 +155,7 @@ class GuardSet {
 
  private:
   static constexpr uint32_t FRAME_MS = 33;
+  static constexpr uint32_t BOB_FRAME_MS = 80;
 
   struct Entry {
     String id;
@@ -149,6 +164,7 @@ class GuardSet {
     int travel = 20;
     guard::Cover cover;
     uint32_t lastFrame = 0;
+    int lastBob = -1;
     int16_t drawnX = 0, drawnY = 0, drawnW = 0, drawnH = 0;
     bool drawn = false;
   };
