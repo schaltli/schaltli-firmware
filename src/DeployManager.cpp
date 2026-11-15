@@ -150,7 +150,16 @@ void DeployManager::handleDeployMessage(const String& payload) {
 
   publishStatus_(deployId, "applying", "", -1);
   String installError;
-  if (!ProjectInstaller::installProjectZipFromFile(installPath, installError)) {
+  // How far: a percentage on "applying", at most every few files, so the
+  // designer's dialog shows the install moving rather than standing.
+  int lastPercent = -1;
+  auto progress = [&](int done, int total) {
+    const int percent = total > 0 ? (done * 100) / total : 0;
+    if (percent / 10 == lastPercent / 10) return;
+    lastPercent = percent;
+    publishStatus_(deployId, "applying", "", percent);
+  };
+  if (!ProjectInstaller::installProjectZipFromFile(installPath, installError, progress)) {
     Serial.printf("[DeployManager] Install failed: %s\n", installError.c_str());
     publishStatus_(deployId, "error", installError, -1);
     // Deliberately not deleting installPath: if the promote above

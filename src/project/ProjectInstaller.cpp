@@ -2,6 +2,8 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <vector>
+#include <set>
+#include <dirent.h>
 
 #ifndef MINIZ_EXPORT
 #define MINIZ_EXPORT
@@ -590,7 +592,32 @@ bool unpackedBytes(const String& zipPath, size_t& out) {
   return ok;
 }
 
-bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
+// Removes every file under /PROJECT the new project does not have, by
+// POSIX readdir over the mount - names only, no file opened per entry, which
+// on LittleFS is what made walking a project of 280 files take a minute.
+static void pruneStale(const String& dir, const std::set<String>& keep) {
+  const String mounted = "/littlefs" + dir;
+  DIR* d = opendir(mounted.c_str());
+  if (d == nullptr) return;
+  std::vector<String> files, dirs;
+  for (struct dirent* e = readdir(d); e != nullptr; e = readdir(d)) {
+    const String name = e->d_name;
+    if (name == "." || name == "..") continue;
+    if (e->d_type == DT_DIR) dirs.push_back(dir + "/" + name);
+    else files.push_back(dir + "/" + name);
+  }
+  closedir(d);
+  for (const String& f : files)
+    if (keep.find(f) == keep.end()) LittleFS.remove(f);
+  for (const String& sub : dirs) pruneStale(sub, keep);
+}
+
+bool installProjectZipFromFile(const String& zipPath, String& errorOut, std::function<void(int done, int total)> progress) {
+  // Each step logged with its time: an install that never ended on the 4"
+  // (2026-11-15) left nothing on the serial line to say where it stood.
+  const uint32_t t0 = millis();
+  Serial.printf("[ProjectInstaller] installing %s: %u KB used of %u KB\n", zipPath.c_str(), (unsigned)(LittleFS.usedBytes() / 1024),
+                (unsigned)(LittleFS.totalBytes() / 1024));
   // Room first, before the running project goes: a project too large for
   // the filesystem used to fail half way through unpacking, unnoticed - the
   // writes were not checked, the CRC was taken over what was read - and
@@ -598,13 +625,21 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
   // pages on the 4.3B). Now it says so and keeps the project it has.
   // LittleFS rounds every file up to its blocks and keeps metadata: 10 %
   // and one block per file are what that costs, with room over.
+  // Beside the running project when it fits there, which is the usual
+  // case: its files are then overwritten in place and only what the new
+  // project lacks is removed afterwards - no walk of the old project to
+  // weigh it, no deleting every file and creating it again. Each of those
+  // cost a LittleFS directory scan per file, and a deploy of 88 files took
+  // the 4" 100 s, one of 278 over four minutes (2026-11-15).
+  bool beside = false;
   {
     size_t needed = 0;
     if (unpackedBytes(zipPath, needed)) {
       size_t total = LittleFS.totalBytes();
       size_t used = LittleFS.usedBytes();
-      size_t freeAfter = total - used + treeBytes("/PROJECT");
       size_t withOverhead = needed + needed / 10 + 64 * 1024;
+      beside = withOverhead <= total - used;
+      size_t freeAfter = beside ? total - used : total - used + treeBytes("/PROJECT");
       if (withOverhead > freeAfter) {
         errorOut = "The project is too large for this device: it needs " + String((unsigned)(withOverhead / 1024)) + " KB unpacked, the device has " +
                    String((unsigned)(freeAfter / 1024)) + " KB. Fewer screens or smaller images make it fit.";
@@ -612,7 +647,8 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
       }
     }
   }
-  if (LittleFS.exists("/PROJECT")) {
+  Serial.printf("[ProjectInstaller] room checked at %lu ms\n", (unsigned long)(millis() - t0));
+  if (!beside && LittleFS.exists("/PROJECT")) {
     // Checked, not assumed. Silently installing on top of a directory that
     // could not be cleared is what filled this filesystem up over months.
     if (!removeTree("/PROJECT")) {
@@ -620,7 +656,8 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
       return false;
     }
   }
-  if (!LittleFS.mkdir("/PROJECT")) {
+  Serial.printf("[ProjectInstaller] previous project cleared at %lu ms\n", (unsigned long)(millis() - t0));
+  if (!LittleFS.exists("/PROJECT") && !LittleFS.mkdir("/PROJECT")) {
     errorOut = "Failed to create /PROJECT directory";
     return false;
   }
@@ -646,6 +683,7 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
 
   int numFiles = (int)mz_zip_reader_get_num_files(&zip);
   bool success = true;
+  std::set<String> written;
   for (int i = 0; i < numFiles && success; i++) {
     mz_zip_archive_file_stat file_stat;
     if (!mz_zip_reader_file_stat(&zip, i, &file_stat)) continue;
@@ -666,6 +704,7 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
     if (String(file_stat.m_filename).startsWith("_source/")) continue;
 
     String outPath = "/PROJECT/" + String(file_stat.m_filename);
+    written.insert(outPath);
     int lastSlash = outPath.lastIndexOf('/');
     if (lastSlash > 0) {
       createDirectoriesForPath(outPath.substring(0, lastSlash));
@@ -716,6 +755,7 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
         break;
       }
     }
+    Serial.printf("[ProjectInstaller] %s: %u bytes at %lu ms\n", file_stat.m_filename, (unsigned)totalWritten, (unsigned long)(millis() - t0));
     if (totalWritten != file_stat.m_uncomp_size || crc != file_stat.m_crc32) {
       Serial.printf("[ProjectInstaller] extract verification failed for %s\n", file_stat.m_filename);
       success = false;
@@ -723,6 +763,7 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
 
     free(buffer);
     outFile.close();
+    if (progress) progress(i + 1, numFiles);
   }
 
   mz_zip_reader_end(&zip);
@@ -737,7 +778,13 @@ bool installProjectZipFromFile(const String& zipPath, String& errorOut) {
     errorOut = "Extracted project has no project.json";
     return false;
   }
+  // Installed beside the old one: what only the old one had goes now.
+  if (beside) {
+    pruneStale("/PROJECT", written);
+    Serial.printf("[ProjectInstaller] stale files removed at %lu ms\n", (unsigned long)(millis() - t0));
+  }
 
+  Serial.printf("[ProjectInstaller] installed %d file(s) in %lu ms\n", numFiles, (unsigned long)(millis() - t0));
   return true;
 }
 

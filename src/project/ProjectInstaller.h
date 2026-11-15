@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <Arduino.h>
 
 // Shared "take a project zip already sitting in a file on LittleFS and turn
@@ -96,6 +97,9 @@ long peekProjectSystemGenerationMajor(const String& zipPath);
 // peekProjectDeviceId()) before calling this, so a failure here is
 // expected to be rare (e.g. genuine flash trouble), not the normal way a
 // bad upload gets rejected.
-bool installProjectZipFromFile(const String& zipPath, String& errorOut);
+// `progress`, when given, hears (files done, files in all) after each file,
+// so a deploy can say how far "applying" has come.
+bool installProjectZipFromFile(const String& zipPath, String& errorOut,
+                               std::function<void(int done, int total)> progress = nullptr);
 
 }
