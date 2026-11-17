@@ -85,6 +85,7 @@ const fs = require("fs")
 const os = require("os")
 const path = require("path")
 const crypto = require("crypto")
+const zlib = require("zlib")
 const { spawnSync } = require("child_process")
 
 const REPO = path.join(__dirname, "..")
@@ -200,7 +201,7 @@ if (!fs.existsSync(path.join(designer, "package.json"))) fail(`no designer check
 // imports in the browser.
 const layoutModule = path.join(designer, "lib", "factory-image.mjs")
 if (!fs.existsSync(layoutModule)) fail(`${layoutModule} is missing - the factory layout lives in the designer repo`)
-const { FACTORY_PARTS, FLASHER_URL, mergeFactoryImage, verifyFactoryImage } = require(layoutModule)
+const { FACTORY_PARTS, FLASHER_URL, appElfSha256, mergeFactoryImage, verifyFactoryImage } = require(layoutModule)
 
 // boot_app0.bin is not a build artifact: it ships with the Arduino core and is
 // the same for every board here. It holds ota_seq = 1, which points the
@@ -234,6 +235,7 @@ const removeTag = () => {
 }
 
 let manifest
+const elfFiles = []
 try {
   // --- build and check every board ----------------------------------------
   const pio = findPio()
@@ -263,6 +265,21 @@ try {
 
     const file = `${deviceId}-${tag}.bin`
     fs.writeFileSync(path.join(outDir, file), image)
+
+    // The ELF, gzipped beside the image and published with it: a panic from
+    // the field names only addresses, and only this exact ELF turns them into
+    // lines (addr2line). Rebuilding the tag later need not give the same one.
+    // Checked against the hash the image itself carries, so the ELF kept is
+    // the one the image was linked from.
+    const elf = fs.readFileSync(path.join(REPO, ".pio", "build", board.env, "firmware.elf"))
+    const elfSha = crypto.createHash("sha256").update(elf).digest("hex")
+    const carried = appElfSha256(image)
+    if (carried !== elfSha) {
+      throw new Error(`${board.env}'s firmware.elf (sha256 ${elfSha}) is not the one its image names (${carried || "no app description"})`)
+    }
+    const elfFile = `${deviceId}-${tag}.elf.gz`
+    fs.writeFileSync(path.join(outDir, elfFile), zlib.gzipSync(elf, { level: 9 }))
+    elfFiles.push(elfFile)
 
     // The factory image: the same app, with what a blank chip is missing in
     // front of it. Its parts come from this board's build directory, except
@@ -304,8 +321,8 @@ try {
   fs.writeFileSync(path.join(outDir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n")
 
   // What changed since the previous release, as material for --notes - kept
-  // in dist/, never published by itself: this repo is private and the release
-  // is public, so what its history says in public is written by a person.
+  // in dist/, never published by itself: what a release says in public is
+  // written by a person (--notes), not a commit list.
   const previous = git("tag", "-l", "fw-*", "--sort=-creatordate")
     .split(/\r?\n/)
     .filter((t) => t && t !== tag && !t.endsWith("-dryrun"))[0]
@@ -313,7 +330,7 @@ try {
   const changes = git("log", "--no-merges", "--format=- %s (%h)", range)
   fs.writeFileSync(path.join(outDir, "CHANGES.txt"),
     `Commits in ${tag}${previous ? ` since ${previous}` : " (first release: the whole history)"}:\n\n${changes}\n`)
-  console.log(`\n[release] images, manifest and CHANGES.txt in ${outDir}`)
+  console.log(`\n[release] images, ELFs, manifest and CHANGES.txt in ${outDir}`)
 } catch (e) {
   removeTag()
   fail(e.message)
@@ -322,7 +339,7 @@ try {
 if (!publish) {
   removeTag()
   console.log(`[release] dry run complete. --publish would push ${tag.replace(/-dryrun$/, "")}, create the release in ${releaseRepo}` +
-    ` with ${Object.keys(manifest.devices).length} OTA images, ${Object.keys(manifest.devices).length} factory images and the manifest,` +
+    ` with ${Object.keys(manifest.devices).length} OTA images, ${Object.keys(manifest.devices).length} factory images, ${elfFiles.length} ELFs and the manifest,` +
     (prerelease ? ` as a pre-release, and put its manifest on the designer branch pre/${prerelease}.`
       : `, commit firmware/manifest.json as "Ship firmware ${tag}" on the designer's main and create the release on that commit.`))
   process.exit(0)
@@ -350,6 +367,8 @@ const notes = [
   "one file at 0x0; nothing else needs installing.)",
   "",
   ...Object.entries(manifest.devices).map(([id, d]) => `- ${id}: ${d.factory.file}, ${d.factory.size} bytes, sha256 ${d.factory.sha256}`),
+  "",
+  `The .elf.gz files are for decoding a crash backtrace (the "ELF file SHA256" it prints says which); a board does not need them.`,
 ].join("\n")
 // manifest.json goes along as an asset, not only into the designer checkout:
 // the flasher page offers the last three releases, and this is where it reads
@@ -357,6 +376,7 @@ const notes = [
 const assets = [
   ...Object.values(manifest.devices).flatMap((d) => [path.join(outDir, d.file), path.join(outDir, d.factory.file)]),
   path.join(outDir, "manifest.json"),
+  ...elfFiles.map((f) => path.join(outDir, f)),
 ]
 if (prerelease) {
   publishPrerelease()
