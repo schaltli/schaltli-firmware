@@ -9,8 +9,15 @@
 // include path and this file is found there, the same way DeviceInfo.h and
 // ddf_zip.h are.
 
+// The Waveshare ESP32-S3-Touch-LCD-7 is this board with a larger glass
+// (designer tasks/waveshare-7-plan.md): src/boards/waveshare7/BoardProfile.h
+// defines the three values below that differ and then includes this file.
+// Each one is therefore only a default here.
+
 // Prefix of this board's own serial lines.
+#ifndef BOARD_LOG
 #define BOARD_LOG "[4v3b] "
+#endif
 
 
 // --- panel geometry -------------------------------------------------------
@@ -39,7 +46,10 @@ static const int16_t PANEL_H = 480;
 //
 // Refresh is 12 MHz / (820 x 500) = 29 Hz, against 39 at 16; a follow-swipe
 // composes at about 14 frames a second on this board either way.
-static const int32_t PCLK_HZ = 12 * 1000 * 1000;
+#ifndef BOARD_PCLK_HZ
+#define BOARD_PCLK_HZ (12 * 1000 * 1000)
+#endif
+static const int32_t PCLK_HZ = BOARD_PCLK_HZ;
 static const uint16_t HSYNC_PULSE_WIDTH = 4;
 static const uint16_t HSYNC_BACK_PORCH = 8;
 static const uint16_t HSYNC_FRONT_PORCH = 8;

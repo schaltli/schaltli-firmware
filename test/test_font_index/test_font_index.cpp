@@ -89,6 +89,7 @@ static void board(const char* path) {
 void test_the_knob() { board("ddf-source/device.json"); }
 void test_the_4_inch() { board("ddf-source-waveshare4/device.json"); }
 void test_the_4v3b() { board("ddf-source-waveshare4v3b/device.json"); }
+void test_the_7_inch() { board("ddf-source-waveshare7/device.json"); }
 
 int main(int, char**) {
   UNITY_BEGIN();
@@ -97,5 +98,6 @@ int main(int, char**) {
   RUN_TEST(test_the_knob);
   RUN_TEST(test_the_4_inch);
   RUN_TEST(test_the_4v3b);
+  RUN_TEST(test_the_7_inch);
   return UNITY_END();
 }

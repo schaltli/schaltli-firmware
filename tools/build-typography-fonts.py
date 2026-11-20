@@ -68,6 +68,7 @@ BOARDS = {
     "ddf-source": 49,                # Knob 1.8, 7.88 px/mm
     "ddf-source-waveshare4v3b": 54,  # 4.3B, 8.66 px/mm
     "ddf-source-waveshare4": 42,     # 4", 6.78 px/mm (6.73 x 6.83, measured 2026-10-31)
+    "ddf-source-waveshare7": 33,     # 7", 5.39 px/mm (5.19 x 5.59, the usual 7" glass; Waveshare states none)
     "ddf-source-papers3": 65,        # PaperS3, 9.26 px/mm
 }
 
@@ -83,7 +84,7 @@ U8G2_FONTS = [
 # 4-bit fonts for the colour boards (schaltli-designer docs/2026-11-01-4bit-fonts.md):
 # anti-aliased, rasterised from outline fonts by tools/ttf-to-bdf.py --bpp 4.
 # The PaperS3 keeps its 1-bit fonts (decision 4) and is not listed.
-COLOUR_BOARDS = ["ddf-source", "ddf-source-waveshare4v3b", "ddf-source-waveshare4"]
+COLOUR_BOARDS = ["ddf-source", "ddf-source-waveshare4v3b", "ddf-source-waveshare4", "ddf-source-waveshare7"]
 # The designer's text styles in millimetres (lib/size-scale.ts, TEXT_STYLE_MM)
 # and the capital height a 4-bit face is picked by: 0.69 of a style's line,
 # today's Helvetica BDFs' own ratio (docs/device-contract.md, «Font depth»).

@@ -15,6 +15,11 @@
 //   EXIO4 SD_CS     TF card select, active low
 //   EXIO5 USB_SEL   USB routing
 //
+// Every line starts high (begin()) unless the board says otherwise with
+// CH422G_IO_AT_START. The 7" does: there USB_SEL high routes GPIO19/20 to
+// the CAN transceiver and the USB-C socket marked USB goes dead
+// (waveshare7/BoardProfile.h).
+//
 // The chip is unusual: it has no register pointer. Each "register" is its
 // own I2C address that you write a single byte to. Getting that wrong is
 // how you end up with a dark panel and no idea whether the fault is the
@@ -24,6 +29,10 @@
 // Addresses and bit meanings are taken from esp-arduino-libs/ESP32_IO_Expander
 // (Apache-2.0), src/port/esp_io_expander_ch422g.c, rather than reconstructed:
 //   WR_SET = 0x48 >> 1, WR_OC = 0x46 >> 1, WR_IO = 0x70 >> 1, RD_IO = 0x4D >> 1
+#ifndef CH422G_IO_AT_START
+#define CH422G_IO_AT_START 0xFF
+#endif
+
 class Ch422g : public PanelExpander {
 public:
   static const uint8_t ADDR_WR_SET = 0x24; // system settings
@@ -50,7 +59,7 @@ public:
   bool begin(TwoWire &wire = Wire) override
   {
     wire_ = &wire;
-    ioState_ = 0xFF;
+    ioState_ = CH422G_IO_AT_START;
     if (!writeByte(ADDR_WR_SET, SET_IO_OUTPUT_ENABLE)) return false;
     return writeByte(ADDR_WR_IO, ioState_);
   }

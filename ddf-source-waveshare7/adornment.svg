@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Adornment for the Waveshare ESP32-S3-Touch-LCD-7 (touch version).
+
+  The board has no case: the cover glass of the touch panel is the front,
+  192.96 x 110.76 mm (Waveshare's wiki, "Product size", touch version).
+  Waveshare states no active area. It is taken as the usual 7" 800x480
+  glass, 154.21 x 85.92 mm, until a photo with a ruler confirms it
+  (designer tasks/waveshare-7-todo.md, T3). At 800px across the screen one
+  millimetre is 5.19px, which puts the glass at 1000 x 608 with a border of
+  100px left and right and 64px top and bottom. The pixels of that glass are
+  not square (5.19 across, 5.59 down); the border is drawn at the across
+  scale, as the screen's 800px are what the designer fits to.
+
+  Conventions as on the 4.3B (DEVICE_GUIDE.md, "Building the adornment
+  SVG"): the screen is a hole punched with fill-rule="evenodd", since the
+  adornment is drawn over the canvas; explicit width/height; nothing past
+  the document edge; <rect id="screen"> is a measurement-only marker. No
+  hardware buttons a screen design can bind to - RESET and BOOT sit on the
+  back.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="1000" height="608" viewBox="0 0 1000 608">
+  <defs>
+    <!-- The glass's black print: a faint sheen from the top left. -->
+    <linearGradient id="glass-sheen" x1="0" y1="0" x2="1000" y2="608" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2c2c33" />
+      <stop offset="0.45" stop-color="#0d0d10" />
+      <stop offset="1" stop-color="#050507" />
+    </linearGradient>
+    <!-- Edge highlight: bright along the top, fading towards the bottom, so
+         the glass reads as a body on a dark canvas too. -->
+    <linearGradient id="edge-light" x1="0" y1="0" x2="0" y2="608" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.40" />
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.08" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.02" />
+    </linearGradient>
+  </defs>
+
+  <!-- Cover glass with the screen punched out. Outer subpath: the glass,
+       corners ~2mm (10px). Inner subpath: the active area at 100,64,
+       800x480, wound so evenodd removes it. -->
+  <path id="glass"
+        fill-rule="evenodd"
+        fill="url(#glass-sheen)"
+        d="M 10,0 H 990 A 10,10 0 0 1 1000,10 V 598 A 10,10 0 0 1 990,608 H 10
+           A 10,10 0 0 1 0,598 V 10 A 10,10 0 0 1 10,0 Z
+           M 100,64 H 900 V 544 H 100 Z" />
+
+  <!-- Edge highlight, inset by half its width. Outline only: a fill here
+       would cover the hole. -->
+  <path id="glass-edge"
+        fill="none"
+        stroke="url(#edge-light)"
+        stroke-width="2"
+        d="M 10,1 H 990 A 9,9 0 0 1 999,10 V 598 A 9,9 0 0 1 990,607 H 10
+           A 9,9 0 0 1 1,598 V 10 A 9,9 0 0 1 10,1 Z" />
+
+  <!-- Where the print meets the active area: a hairline on top. -->
+  <path fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="1"
+        d="M 100,63.5 H 900" />
+
+  <!-- Measurement-only marker. No fill, no stroke. -->
+  <rect id="screen" x="100" y="64" width="800" height="480"
+        fill="none" stroke="none"
+        inkscape:label="screen" />
+</svg>
