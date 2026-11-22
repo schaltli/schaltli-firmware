@@ -225,6 +225,15 @@ const headTags = git("tag", "--points-at", "HEAD", "-l", "fw-*").split(/\r?\n/)
 const fresh = prerelease ? `${nextTag()}-pre.${prerelease}` : nextTag()
 const tag = headTags[0] || (publish ? fresh : `${fresh}-dryrun`)
 const createdTag = headTags.length === 0
+// Reusing the tag is for finishing a publish that stopped half way. A HEAD
+// whose release is already out has nothing left to finish: a new release,
+// even one for a designer change alone, needs a firmware commit of its own.
+// Without this check it built every board and only then failed, committing
+// an unchanged manifest (2026-11-22, the VanPi bridge's fix).
+if (publish && !createdTag) {
+  const out = run("gh", ["release", "view", tag, "--repo", releaseRepo, "--json", "tagName"])
+  if (out.status === 0) fail(`HEAD is already released as ${tag} - a new release needs a firmware commit of its own, also for a designer change alone`)
+}
 const commit = git("rev-parse", "HEAD")
 console.log(`[release] ${tag} from ${commit.slice(0, 10)}${publish ? "" : " (dry run - nothing is published)"}`)
 if (createdTag) git("tag", "-a", tag, "-m", `Firmware release ${tag}`)
