@@ -1,4 +1,7 @@
-// Schaltli firmware for the Waveshare ESP32-S3-Knob-Touch-LCD-1.8.
+// Schaltli firmware for the round boards: the Waveshare
+// ESP32-S3-Knob-Touch-LCD-1.8 and the LilyGO T-Encoder Pro. Everything
+// that differs between them - panel, touch chip, encoder, pins - is the
+// board's BoardHardware.h (src/boards/<board>/), which the env's -I picks.
 //
 // Boot flow: bring up the panel and LVGL, then try saved WiFi. On success
 // the device connects to MQTT, loads whatever project is installed, renders
@@ -20,12 +23,9 @@
 // backgrounds and screen transitions composable later without touching the
 // renderer.
 //
-// Board quirks that still bite, in case they resurface: the ST77916 needs
-// the *150* init table (not the library default), a stale
-// rtc_gpio_hold_en() from an old deep-sleep experiment can latch LCD/touch
-// reset low across reflashes, the CST816 needs no reset pulse but does need
-// one write of 0x00 to register 0x00, and LV_TICK_CUSTOM never worked here
-// so the tick is driven manually from loop().
+// Board quirks live in each board's BoardHardware.h. One that is not a
+// board's: LV_TICK_CUSTOM never worked here, so the tick is driven manually
+// from loop().
 
 #include "ChartFeed.h"
 #include <Arduino.h>
@@ -64,7 +64,7 @@
 #include "project/ColorAssetLoader.h"
 #include "project/ScreenGraphProject.h"
 #include "GraphOverlays.h"
-#include "RotaryEncoderReader.h"
+#include "BoardHardware.h"
 
 // Instrumentation for the physical input path, served at GET /api/debug.
 // Deliberately permanent, not bring-up scaffolding: a serial monitor is
@@ -78,29 +78,9 @@
 // while compiled out.
 #define INPUT_DEBUG 1
 
-// LCD (ST77916, QSPI)
-static const int8_t LCD_CS = 14;
-static const int8_t LCD_SCK = 13;
-static const int8_t LCD_D0 = 15;
-static const int8_t LCD_D1 = 16;
-static const int8_t LCD_D2 = 17;
-static const int8_t LCD_D3 = 18;
-static const int8_t LCD_RST = 21;
-static const uint8_t LCD_BL = 47;
-
-// Touch (CST816, I2C)
-static const int8_t TOUCH_SDA = 11;
-static const int8_t TOUCH_SCL = 12;
-static const int8_t TOUCH_RST = 10;
-static const int8_t TOUCH_INT = 9;
-static const uint8_t CST816_ADDR = 0x15;
-
-static const uint16_t SCREEN_SIZE = 360;
-
-Arduino_DataBus *bus = new Arduino_ESP32QSPI(LCD_CS, LCD_SCK, LCD_D0, LCD_D1, LCD_D2, LCD_D3);
-Arduino_GFX *gfx = new Arduino_ST77916(
-    bus, LCD_RST, 0 /* rotation */, true /* IPS */, SCREEN_SIZE, SCREEN_SIZE,
-    0, 0, 0, 0, st77916_150_init_operations, sizeof(st77916_150_init_operations));
+// The panel's side in pixels (BoardProfile.h). Pins, panel, touch chip and
+// encoder are BoardHardware.h.
+static const uint16_t SCREEN_SIZE = BOARD_SCREEN_SIZE;
 
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t *lvBuf1;
@@ -175,31 +155,7 @@ static String energyReport();
 
 // ---------------------------------------------------------------- display
 
-// Matches the official Waveshare demo (cst816.cpp/Touch_Init): no reset pin
-// is ever driven - just switch the chip to normal mode over I2C. Without
-// that one write the chip ACKs and returns an all-zero block forever, which
-// looks exactly like a dead sensor.
-static void cst816Init() {
-  Wire.beginTransmission(CST816_ADDR);
-  Wire.write(0x00);
-  Wire.write((uint8_t)0x00);
-  Wire.endTransmission(true);
-}
-
-// CST816 register map: read 7 bytes from 0x00. Bytes 3-4 = X, 5-6 = Y.
-// Byte 1 is the gesture id, byte 2 the finger count - see sampleTouch()
-// for which of them means "touched" on this unit (settled by probe data,
-// not guessed). Reads the raw block; interpreting it is the caller's job.
-static bool cst816ReadRaw(uint8_t buf[7]) {
-  Wire.beginTransmission(CST816_ADDR);
-  Wire.write(0x00);
-  if (Wire.endTransmission(false) != 0) return false;
-  if (Wire.requestFrom((int)CST816_ADDR, 7) != 7) return false;
-  for (uint8_t i = 0; i < 7; i++) buf[i] = Wire.read();
-  return true;
-}
-
-// The CST816 is read exactly ONCE per sample period, into these, and both
+// The touch chip is read exactly ONCE per sample period, into these, and both
 // consumers - LVGL's input device and the gesture detector - work from the
 // result. They must not each read the chip: reading clears its touch
 // state, so whichever ran first consumed the event and the other saw an
@@ -260,8 +216,8 @@ static void sampleTouch() {
   if (now - lastSampleMs < touchPeriodMs) return;
   lastSampleMs = now;
 
-  uint8_t buf[7];
-  if (!cst816ReadRaw(buf)) {
+  BoardTouch t;
+  if (!boardTouchRead(t)) {
 #if INPUT_DEBUG
     touchI2cErrorCount++;
 #endif
@@ -272,39 +228,29 @@ static void sampleTouch() {
   touchReadCount++;
 #endif
 
-  int16_t x = ((buf[3] & 0x0F) << 8) | buf[4];
-  int16_t y = ((buf[5] & 0x0F) << 8) | buf[6];
+  const int16_t x = t.x, y = t.y;
 
 #if INPUT_DEBUG
-  if (buf[1] != 0 || buf[2] != 0 || x != 0 || y != 0) {
+  if (t.gesture != 0 || t.fingers != 0 || x != 0 || y != 0) {
     TouchProbe &p = touchProbeBuf[touchProbeWriteIndex % TOUCH_PROBE_SIZE];
     p.ms = now;
-    p.b1 = buf[1];
-    p.b2 = buf[2];
+    p.b1 = t.gesture;
+    p.b2 = t.fingers;
     p.x = (uint16_t)x;
     p.y = (uint16_t)y;
     touchProbeWriteIndex++;
   }
 #endif
 
-  // Byte 2 (finger count) ONLY - the official demo's criterion, confirmed
-  // by this unit's own probe data (2026-08-20, one recorded swipe at 7ms
-  // cadence): b2 holds 1 through the whole drag with live coordinates,
-  // while b1 (gesture id) pulses only when the chip's gesture engine
-  // fires AND stays latched at 5 (click) for ~450ms after the finger
-  // lifts, with frozen coordinates. Keying on b1 is why swipes never
-  // worked: mid-drag it is mostly 0 (instant phantom release), and after
-  // release its latch fabricates a stationary phantom touch. The earlier
-  // note that b2 "stayed 0 during drags" predates this probe and was an
-  // artifact of that day's reset/register experiments - the probe is the
-  // authoritative record.
-  if (buf[2] != 0) {
+  // Touched while the chip reports a finger - which byte that is, and why
+  // only that one, is each board's boardTouchRead().
+  if (t.fingers != 0) {
     touchIsDown = true;
     touchX = x;
     touchY = y;
 #if INPUT_DEBUG
-    if (buf[2] > gestureMaxFingers) gestureMaxFingers = buf[2];
-    if (buf[2] < 8) gestureFingerMask |= (uint8_t)(1u << buf[2]);
+    if (t.fingers > gestureMaxFingers) gestureMaxFingers = t.fingers;
+    if (t.fingers < 8) gestureFingerMask |= (uint8_t)(1u << t.fingers);
 #endif
   } else {
     touchIsDown = false;
@@ -1248,7 +1194,7 @@ static void wakeDisplay() {
   lastHumanInputMs = millis();
   if (!displayIsOff) return;
   displayIsOff = false;
-  digitalWrite(LCD_BL, HIGH);
+  boardPanelLit(true);
   // Repaint before the backlight would reveal a stale frame - the panel
   // keeps whatever it last received, and that is the screen from before it
   // went dark, which may be minutes old.
@@ -1259,7 +1205,7 @@ static void wakeDisplay() {
 static void blankDisplay() {
   if (displayIsOff) return;
   displayIsOff = true;
-  digitalWrite(LCD_BL, LOW);
+  boardPanelLit(false);
   Serial.println("[display] off after inactivity");
   // Dark, every guarded control locks (E2).
   guards.clear();
@@ -1461,7 +1407,7 @@ static void updateDragAnimation() {
   dragActive = false;
 }
 
-// Works from sampleTouch()'s cached reading, never from cst816Read() - see
+// Works from sampleTouch()'s cached reading, never from boardTouchRead() - see
 // its comment for why a second read would find nothing.
 // Was ein Antippen trifft - und was es dann ausloest.
 //
@@ -2348,6 +2294,8 @@ static void pollTouchGesturesRecorded() {
 // Named by GPIO number, not A/B: with the pulse-encoder model the roles
 // are directional (gpio8 pulses = right, gpio7 = left), and A/B naming is
 // exactly how the quadrature assumption snuck in unquestioned.
+// On another board than the knob the fields hold its own encoder pins
+// (BOARD_ENC_PIN_A/B), and /api/debug names them by their numbers.
 struct EdgeEvent {
   uint32_t micros;
   uint8_t gpio7;
@@ -2361,24 +2309,26 @@ static volatile uint32_t edgeCountGpio7 = 0, edgeCountGpio8 = 0;
 static void IRAM_ATTR recordEdge() {
   uint32_t i = edgeWriteIndex % EDGE_BUF_SIZE;
   edgeBuf[i].micros = (uint32_t)esp_timer_get_time();
-  edgeBuf[i].gpio7 = gpio_get_level(GPIO_NUM_7);
-  edgeBuf[i].gpio8 = gpio_get_level(GPIO_NUM_8);
+  edgeBuf[i].gpio7 = gpio_get_level((gpio_num_t)BOARD_ENC_PIN_A);
+  edgeBuf[i].gpio8 = gpio_get_level((gpio_num_t)BOARD_ENC_PIN_B);
   edgeWriteIndex = edgeWriteIndex + 1;
 }
 static void IRAM_ATTR recordEdgeGpio7() { edgeCountGpio7++; recordEdge(); }
 static void IRAM_ATTR recordEdgeGpio8() { edgeCountGpio8++; recordEdge(); }
 
 static void beginWaveformRecorder() {
-  pinMode(7, INPUT_PULLUP);
-  pinMode(8, INPUT_PULLUP);
-  attachInterrupt(7, recordEdgeGpio7, CHANGE);
-  attachInterrupt(8, recordEdgeGpio8, CHANGE);
+  pinMode(BOARD_ENC_PIN_A, INPUT_PULLUP);
+  pinMode(BOARD_ENC_PIN_B, INPUT_PULLUP);
+  attachInterrupt(BOARD_ENC_PIN_A, recordEdgeGpio7, CHANGE);
+  attachInterrupt(BOARD_ENC_PIN_B, recordEdgeGpio8, CHANGE);
 }
 
 // Cumulative end-to-end counters (decoder detents that actually reached
 // dispatchInput), so the full pin -> decoder -> dispatch path can be
 // verified over HTTP by turning the knob and polling GET /api/debug.
 static uint32_t dispatchedRight = 0, dispatchedLeft = 0;
+// Presses of the push key that reached dispatch (boards with one).
+static uint32_t dispatchedPresses = 0;
 
 // WLAN-Zustand fuer die Aufsicht und fuer das Debug-JSON. Hier oben, weil
 // buildDebugJson() ihn ausgibt; die Logik dazu steht unter "wifi" weiter
@@ -2438,10 +2388,11 @@ static String buildDebugJson() {
   out += String(",\"theme\":\"") + (wantedThemeDark ? "dark" : "light") + "\"";
   out += String(",\"themeShown\":\"") +
          (projectLoader.isLoaded() && projectLoader.getProject().themeDark ? "dark" : "light") + "\"";
-  out += ",\"edgeCountGpio7\":" + String(edgeCountGpio7);
-  out += ",\"edgeCountGpio8\":" + String(edgeCountGpio8);
+  out += ",\"edgeCountGpio" + String(BOARD_ENC_PIN_A) + "\":" + String(edgeCountGpio7);
+  out += ",\"edgeCountGpio" + String(BOARD_ENC_PIN_B) + "\":" + String(edgeCountGpio8);
   out += ",\"dispatchedRight\":" + String(dispatchedRight);
   out += ",\"dispatchedLeft\":" + String(dispatchedLeft);
+  out += ",\"dispatchedPresses\":" + String(dispatchedPresses);
   out += ",\"touchSampleCount\":" + String(touchSampleCount);
   out += ",\"lastTouchX\":" + String(lastTouchSampleX);
   out += ",\"lastTouchY\":" + String(lastTouchSampleY);
@@ -2662,7 +2613,7 @@ static String buildDebugJson() {
     const volatile EdgeEvent &e = edgeBuf[(start + k) % EDGE_BUF_SIZE];
     if (k > 0) out += ",";
     out += "{\"dt\":" + String(k == 0 ? 0 : e.micros - prevT);
-    out += ",\"gpio7\":" + String(e.gpio7) + ",\"gpio8\":" + String(e.gpio8) + "}";
+    out += ",\"gpio" + String(BOARD_ENC_PIN_A) + "\":" + String(e.gpio7) + ",\"gpio" + String(BOARD_ENC_PIN_B) + "\":" + String(e.gpio8) + "}";
     prevT = e.micros;
   }
   out += "]}";
@@ -2671,7 +2622,7 @@ static String buildDebugJson() {
 #endif
 
 static void pollEncoder() {
-  int32_t detents = RotaryEncoderReader::readDetents();
+  int32_t detents = boardEncoderDetents();
   if (detents == 0) return;
 
 #if INPUT_DEBUG
@@ -2693,6 +2644,44 @@ static void pollEncoder() {
   const char *buttonId = detents > 0 ? "button-1" : "button-0";
   latMark("knob", buttonId);
   dispatchDetents(buttonId, abs(detents));
+}
+
+// The push key of a board that has one (BOARD_KEY_PIN, the T-Encoder Pro's
+// ring): one press is button-2 «Press» in the adornment, dispatched when the
+// key goes down, held or not. Like a detent, a press on a dark screen only
+// wakes it, and it does nothing while the keyboard or the picker is open.
+// 25 ms debounce, polled from loop(): a press lasts far longer than a pass.
+static void pollKey() {
+#if BOARD_KEY_PIN >= 0
+  static bool begun = false;
+  static bool pressed = false;
+  static bool lastRaw = false;
+  static uint32_t rawSinceMs = 0;
+  if (!begun) {
+    pinMode(BOARD_KEY_PIN, INPUT_PULLUP);
+    begun = true;
+    return;
+  }
+  const bool raw = digitalRead(BOARD_KEY_PIN) == LOW;
+  const uint32_t now = millis();
+  if (raw != lastRaw) {
+    lastRaw = raw;
+    rawSinceMs = now;
+    return;
+  }
+  if (raw == pressed || now - rawSinceMs < 25) return;
+  pressed = raw;
+  if (!pressed) return;
+  const bool wasOff = displayIsOff;
+  wakeDisplay();
+  if (wasOff) return;
+  if (keyboardOpen || pickerOpen) return;
+#if INPUT_DEBUG
+  dispatchedPresses++;
+#endif
+  latMark("key", "button-2");
+  dispatchInput("button-2");
+#endif
 }
 
 // Mehrere Rasten auf einmal: ein Regler nimmt sie als einen Sprung
@@ -3571,24 +3560,8 @@ void setup() {
   Serial.setTxTimeoutMs(1);
   delay(500);
 
-  // A previous deep-sleep experiment latched LCD_RST/TOUCH_RST low via
-  // rtc_gpio_hold_en(); that hold survives normal resets and reflashes, so
-  // release it before gfx->begin() tries to pulse the display out of reset.
-  rtc_gpio_hold_dis(GPIO_NUM_21);
-  rtc_gpio_hold_dis(GPIO_NUM_10);
-  // GPIO7 too - it was this board's EXT0 wake source in the earlier
-  // deep-sleep experiment, and rtc_gpio_deinit() returns it to normal GPIO
-  // control rather than merely unlatching it. Kept as insurance even
-  // though the "GPIO7 stuck at 1 while GPIO8 toggled" observation that
-  // originally motivated this turned out to be the encoder's actual
-  // protocol, not a held pad: only the turned direction's channel pulses
-  // (see RotaryEncoderReader.h), and that scan was done turning right.
-  rtc_gpio_hold_dis(GPIO_NUM_7);
-  rtc_gpio_deinit(GPIO_NUM_7);
-  gpio_deep_sleep_hold_dis();
-
-  pinMode(LCD_BL, OUTPUT);
-  digitalWrite(LCD_BL, HIGH);
+  // Pin releases and the panel's power or backlight (BoardHardware.h).
+  boardEarlyInit();
   displayOffAfterMs = DeviceSettings::displayOffAfterSeconds() * 1000UL;
   lastHumanInputMs = millis();
   // Read before the project loads, because loadAndRenderProject() renders
@@ -3599,17 +3572,10 @@ void setup() {
   Serial.printf("[display] idle screen \"%s\"%s\n", idleScreenId.c_str(),
                 idleScreenId.isEmpty() ? " (none - stays where it is)" : "");
 
-  Wire.begin(TOUCH_SDA, TOUCH_SCL);
-  cst816Init();
+  boardTouchBegin();
 
-  // 80MHz, up from 40MHz (2026-08-21). The QSPI push is the largest single
-  // cost of a screen change (22.2ms of 39.9ms) and it is not memory-bound -
-  // moving the draw buffer into internal RAM barely touched it - so the
-  // clock is the next thing to rule in or out. A panel that cannot keep up
-  // shows it immediately and unmistakably as garbled pixels, and the
-  // measurement in GET /api/debug says whether the rate actually changed at
-  // all, which a datasheet reading alone would not.
-  bool gfxOk = gfx->begin(80000000);
+  // The clock is the board's (BoardHardware.h).
+  bool gfxOk = boardPanelBegin();
   Serial.printf("gfx->begin() = %s\n", gfxOk ? "true" : "false");
   gfx->fillScreen(RGB565_BLACK);
 
@@ -3681,7 +3647,7 @@ void setup() {
   // decoder polls from its own esp_timer - see the recorder's comment.
   beginWaveformRecorder();
 #endif
-  RotaryEncoderReader::begin();
+  boardEncoderBegin();
 
   // The setup portal's Device tab is the same form the running device
   // serves at /settings, so it is filled and applied the same way. Wired
@@ -4153,6 +4119,7 @@ void loop() {
   PHASE("prerender", prerenderNeighbours());
   watchForOffCentre();
   PHASE("encoder", pollEncoder());
+  pollKey();
 
   // The rate limit's trailing edge - see navigateToScreen. Placed after this
   // pass's input polling so a detent that just arrived is already included

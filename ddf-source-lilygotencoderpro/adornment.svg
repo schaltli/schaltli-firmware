@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!--
+  Adornment for the LilyGO T-Encoder Pro, authored 2026-11-22 for the
+  designer repo's tasks/lilygo-t-encoder-pro-plan.md: a round dark body whose
+  outer ring turns, around a round 1.2 inch AMOLED.
+
+  Written by a script from plain geometry, like the knob's: the conventions
+  are a rect whose id is "screen", covers whose ids start with "offscreen",
+  and elements whose ids start with "button" carrying an inkscape:label
+  (designer DEVICE_GUIDE.md, "Building the adornment SVG"). As there: the
+  designer reads this file with regexes, so no tag syntax in comments.
+
+  Geometry: centre (300,300). Screen is the 390x390 square at (105,105), the
+  panel shows only its inscribed circle (r=195), the corners are masked by
+  offscreen-0. Black bezel r=195..215, the turning ring r=215..292, the
+  case's corner distance (275.8) inside the ring.
+
+  Three buttons: turning left and right as on the knob, and pressing - the
+  ring is also a push key (GPIO 0), which the knob does not have. The ids
+  are the firmware's: button-0, button-1, button-2.
+-->
+<svg
+   width="600"
+   height="600"
+   viewBox="0 0 600 600"
+   version="1.1"
+   id="svg1"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <path
+     d="M 8 300 A 292 292 0 1 0 592 300 A 292 292 0 1 0 8 300 Z M 85 300 A 215 215 0 1 0 515 300 A 215 215 0 1 0 85 300 Z"
+     fill-rule="evenodd"
+     style="fill:#2b2d31;stroke:#55585e;stroke-width:3"
+     id="case-ring"
+     inkscape:label="turning ring" />
+  <path
+     d="M 572.00 300.00 L 584.00 300.00 M 570.96 323.71 L 582.92 324.75 M 567.87 347.23 L 579.69 349.32 M 562.73 370.40 L 574.32 373.50 M 555.60 393.03 L 566.87 397.13 M 546.52 414.95 L 557.39 420.02 M 535.56 436.00 L 545.95 442.00 M 522.81 456.01 L 532.64 462.90 M 508.36 474.84 L 517.56 482.55 M 492.33 492.33 L 500.82 500.82 M 474.84 508.36 L 482.55 517.56 M 456.01 522.81 L 462.90 532.64 M 436.00 535.56 L 442.00 545.95 M 414.95 546.52 L 420.02 557.39 M 393.03 555.60 L 397.13 566.87 M 370.40 562.73 L 373.50 574.32 M 347.23 567.87 L 349.32 579.69 M 323.71 570.96 L 324.75 582.92 M 300.00 572.00 L 300.00 584.00 M 276.29 570.96 L 275.25 582.92 M 252.77 567.87 L 250.68 579.69 M 229.60 562.73 L 226.50 574.32 M 206.97 555.60 L 202.87 566.87 M 185.05 546.52 L 179.98 557.39 M 164.00 535.56 L 158.00 545.95 M 143.99 522.81 L 137.10 532.64 M 125.16 508.36 L 117.45 517.56 M 107.67 492.33 L 99.18 500.82 M 91.64 474.84 L 82.44 482.55 M 77.19 456.01 L 67.36 462.90 M 64.44 436.00 L 54.05 442.00 M 53.48 414.95 L 42.61 420.02 M 44.40 393.03 L 33.13 397.13 M 37.27 370.40 L 25.68 373.50 M 32.13 347.23 L 20.31 349.32 M 29.04 323.71 L 17.08 324.75 M 28.00 300.00 L 16.00 300.00 M 29.04 276.29 L 17.08 275.25 M 32.13 252.77 L 20.31 250.68 M 37.27 229.60 L 25.68 226.50 M 44.40 206.97 L 33.13 202.87 M 53.48 185.05 L 42.61 179.98 M 546.52 185.05 L 557.39 179.98 M 555.60 206.97 L 566.87 202.87 M 562.73 229.60 L 574.32 226.50 M 567.87 252.77 L 579.69 250.68 M 570.96 276.29 L 582.92 275.25"
+     style="fill:none;stroke:#6b6f76;stroke-width:3;stroke-linecap:round"
+     id="case-knurl"
+     inkscape:label="knurl" />
+  <path
+     d="M 85 300 A 215 215 0 1 0 515 300 A 215 215 0 1 0 85 300 Z M 105 300 A 195 195 0 1 0 495 300 A 195 195 0 1 0 105 300 Z"
+     fill-rule="evenodd"
+     style="fill:#0d0d0f;stroke:none"
+     id="case-bezel"
+     inkscape:label="bezel" />
+  <rect
+     x="105"
+     y="105"
+     width="390"
+     height="390"
+     style="fill:none;stroke:none"
+     id="screen"
+     inkscape:label="screen" />
+  <path
+     d="M 105 105 H 495 V 495 H 105 Z M 105 300 A 195 195 0 1 0 495 300 A 195 195 0 1 0 105 300 Z"
+     fill-rule="evenodd"
+     style="display:inline;fill:none;fill-opacity:1;stroke:none"
+     id="offscreen-0"
+     inkscape:label="offscreen-0" />
+  <path
+     id="button-1"
+     style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:2.9;stroke-linejoin:round;paint-order:stroke fill markers"
+     d="M 345.50 41.98 A 262 262 0 0 1 514.62 149.72 L 521.17 145.13 L 537.13 208.97 L 494.96 163.49 L 501.51 158.90 A 246 246 0 0 0 342.72 57.74 Z"
+     inkscape:label="Rotate Right" />
+  <path
+     id="button-0"
+     style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:2.9;stroke-linejoin:round;paint-order:stroke fill markers"
+     d="M 254.50 41.98 A 262 262 0 0 0 85.38 149.72 L 78.83 145.13 L 62.87 208.97 L 105.04 163.49 L 98.49 158.90 A 246 246 0 0 1 257.28 57.74 Z"
+     inkscape:label="Rotate Left" />
+  <path
+     id="button-2"
+     style="fill:#ffffff;fill-opacity:1;stroke:#000000;stroke-width:2.9;stroke-linejoin:round;paint-order:stroke fill markers"
+     d="M 300 538 m -20 0 a 20 20 0 1 0 40 0 a 20 20 0 1 0 -40 0 Z M 300 538 m -9 0 a 9 9 0 1 1 18 0 a 9 9 0 1 1 -18 0 Z"
+     fill-rule="evenodd"
+     inkscape:label="Press" />
+</svg>

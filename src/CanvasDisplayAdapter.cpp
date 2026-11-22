@@ -1,14 +1,16 @@
 #include "CanvasDisplayAdapter.h"
 
 #include "extra/libs/qrcode/qrcodegen.h"
+#include "BoardProfile.h"
 
-// The panel is round: only the r=180 circle inscribed in the 360x360
+// The panel is round: only the circle inscribed in the square framebuffer
+// (360x360 on the knob, 390x390 on the T-Encoder Pro; BoardProfile.h)
 // framebuffer can show anything, and the usable width shrinks the further a
 // line sits from the vertical centre. Both the text size and the per-line
 // safe width account for that - a fixed box would either waste most of the
 // screen or push the ends of longer lines (an SSID, a URL) into the bezel.
-static const int16_t CENTRE = 180;
-static const int16_t RADIUS = 168; // 180 minus a margin, so glyphs don't touch the edge
+static const int16_t CENTRE = BOARD_SCREEN_SIZE / 2;
+static const int16_t RADIUS = CENTRE - 12; // a margin, so glyphs don't touch the edge
 
 // Adafruit_GFX's built-in font is a fixed 6x8 cell scaled by setTextSize.
 static int16_t charWidthFor(uint8_t size) { return (int16_t)(6 * size); }
@@ -120,7 +122,7 @@ void CanvasDisplayAdapter::showQrScreen(const String& qrData, const String& capt
   // unreadable, and before that the SSID line was silently dropped
   // altogether for not fitting.
   const int16_t quietZone = 2;
-  const int16_t qrBudget = 130;  // scans reliably; verified on hardware
+  const int16_t qrBudget = BOARD_SETUP_QR_PX;  // the board's: what scans reliably on it
   const int qrModules = qrcodegen_getSize(qr);
   int16_t scale = (int16_t)(qrBudget / (qrModules + 2 * quietZone));
   if (scale < 1) scale = 1;

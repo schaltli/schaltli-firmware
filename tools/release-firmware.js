@@ -97,6 +97,7 @@ const BOARDS = [
   { env: "waveshare-touch-lcd-4v3b", dir: "waveshare4v3b" },
   { env: "waveshare-touch-lcd-4", dir: "waveshare4" },
   { env: "waveshare-touch-lcd-7", dir: "waveshare7" },
+  { env: "lilygo-t-encoder-pro", dir: "lilygotencoderpro" },
   { env: "m5stack-papers3", dir: "papers3" },
 ]
 
