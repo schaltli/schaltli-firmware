@@ -743,7 +743,15 @@ const BdfFont* ColorScreenRenderer::keyboardFont(int height, int& ascent, int& d
     for (const auto& entry : *list) {
       const BdfFont* candidate = fontFor(entry.second->id);
       if (candidate == nullptr || !hasAll(candidate)) continue;
-      if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) continue;
+      if (maxWidth > 0 && candidate->textWidth(needs) > maxWidth) {
+        // The others go up in size, and a larger line is a wider word: the
+        // rest cannot fit either, and each would be parsed for nothing. On
+        // the T-Encoder Pro, whose smallest font is a 22 px line, «Cancel»
+        // fits in none, and walking all of them held the loop 10.8 s the
+        // first time the keyboard opened (2026-11-22).
+        if (list == &others) break;
+        continue;
+      }
       ascent = getFontAscentById(entry.second->id);
       descent = getFontDescentById(entry.second->id);
       return candidate;
@@ -827,6 +835,16 @@ void ColorScreenRenderer::renderKeyboard(const keyboard::State& state, const Scr
     // the largest font it fits in, as a missing glyph takes one that has it.
     const int room = k.w - 2 * std::max(1, k.h / 8);
     if (missing || font->textWidth(text) > room) keyFont = keyboardFont(keyH, keyAscent, keyDescent, text, room);
+    if (keyFont == nullptr && k.key->kind == keyboard::KeyKind::Cancel) {
+      // A word no font fits in (the T-Encoder Pro's 49 px key against its
+      // smallest font, a 22 px line): a cross, as shift and backspace are
+      // shapes, rather than a key that shows nothing.
+      for (int d = -1; d <= 1; d++) {
+        canvas_->drawLine(cx - s + d, cy - s, cx + s + d, cy + s, label);
+        canvas_->drawLine(cx - s + d, cy + s, cx + s + d, cy - s, label);
+      }
+      continue;
+    }
     if (keyFont == nullptr) continue;
     const int16_t tw = keyFont->textWidth(text);
     canvas_->setClip(k.x, k.y, k.w, k.h);
