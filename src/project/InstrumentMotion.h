@@ -8,9 +8,24 @@
 
 #include <stdint.h>
 
+#include <math.h>
+
 #include <vector>
 
 #include "ProjectTypes.h"
+
+// The needle's pose for a position 0..1 (device contract §2.15): a gauge's
+// angle, floor(deg x 64 + 0.5); a bar's shift, the designer's Math.round.
+inline needleraster::Pose instrumentPose(const InstrumentGeom& g, double at) {
+  needleraster::Pose pose;
+  if (g.gauge) {
+    pose.angle64 = needleraster::angle64Of(g.sweepFrom + (g.sweepTo - g.sweepFrom) * at);
+  } else {
+    pose.shiftX = (int32_t)floor(at * g.travelX + 0.5);
+    pose.shiftY = (int32_t)floor(at * g.travelY + 0.5);
+  }
+  return pose;
+}
 
 class InstrumentMotion {
  public:
@@ -40,6 +55,28 @@ class InstrumentMotion {
       if (s.moving) return true;
     return false;
   }
+
+  // Counts a frame drawn; notes when a swing starts and ends, so a board can
+  // say what its last swing cost (frames, milliseconds) without anyone
+  // polling it meanwhile.
+  void frameDrawn(uint32_t nowMs) {
+    if (!inSwing_) {
+      inSwing_ = true;
+      swingStartMs_ = nowMs;
+      swingFrames_ = 0;
+    }
+    swingFrames_++;
+    swingEndMs_ = nowMs;
+  }
+  void settleCheck() {
+    if (inSwing_ && !moving()) {
+      inSwing_ = false;
+      lastSwingFrames_ = swingFrames_;
+      lastSwingMs_ = swingEndMs_ - swingStartMs_;
+    }
+  }
+  uint32_t lastSwingFrames() const { return lastSwingFrames_; }
+  uint32_t lastSwingMs() const { return lastSwingMs_; }
 
   // Looks at every styled object on `objects` (top level), its value's
   // position from `targetOf`, and steps the ones swinging to `nowMs`. Fills
@@ -77,8 +114,26 @@ class InstrumentMotion {
         }
       }
       if (!s->moving) continue;
+      // Only where the needle was and where it is now: the whole face
+      // costs a 400 px gauge five times the frame (the spike; I9's first
+      // run on the 4.3B drew one frame a second that way).
+      int32_t ax0, ay0, ax1, ay1, bx0, by0, bx1, by1;
+      const bool hadBox = needleraster::bounds(o.instrument.needle, instrumentPose(o.instrument, s->at), &ax0, &ay0, &ax1, &ay1);
       step(*s, nowMs, o.instrument.frequency, o.instrument.damping);
-      out.push_back(boxOf(o));
+      const bool hasBox = needleraster::bounds(o.instrument.needle, instrumentPose(o.instrument, s->at), &bx0, &by0, &bx1, &by1);
+      if (!hadBox || !hasBox) {
+        out.push_back(boxOf(o));
+        continue;
+      }
+      const Box face = boxOf(o);
+      int32_t x0 = (ax0 < bx0 ? ax0 : bx0), y0 = (ay0 < by0 ? ay0 : by0);
+      int32_t x1 = (ax1 > bx1 ? ax1 : bx1), y1 = (ay1 > by1 ? ay1 : by1);
+      if (x0 < 0) x0 = 0;
+      if (y0 < 0) y0 = 0;
+      if (x1 > face.w - 1) x1 = face.w - 1;
+      if (y1 > face.h - 1) y1 = face.h - 1;
+      if (x1 < x0 || y1 < y0) continue;
+      out.push_back(Box{(int16_t)(face.x + x0), (int16_t)(face.y + y0), (int16_t)(x1 - x0 + 1), (int16_t)(y1 - y0 + 1)});
     }
   }
 
@@ -90,6 +145,9 @@ class InstrumentMotion {
     bool moving = false;
   };
   std::vector<Swing> swings_;
+  bool inSwing_ = false;
+  uint32_t swingStartMs_ = 0, swingEndMs_ = 0, swingFrames_ = 0;
+  uint32_t lastSwingFrames_ = 0, lastSwingMs_ = 0;
 
   Swing* find(const String& id) {
     for (Swing& s : swings_)

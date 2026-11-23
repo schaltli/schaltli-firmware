@@ -151,6 +151,7 @@ static InstrumentMotion instrumentMotion;
 // What the swing cost, for /api/debug and hil/waveshare4v3b/instrument-motion.js.
 static uint32_t instrumentFrames = 0;
 static uint32_t instrumentWorstFrameUs = 0;
+static uint32_t instrumentRenderUs = 0, instrumentBlitUs = 0, instrumentPixels = 0;
 
 // The screen or popup a finger or a button acts on now.
 static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreen; }
@@ -1235,7 +1236,12 @@ static void setupNetworking()
            String(currentScreen) + ")\n";
     out += "  last value draw: " + lastValueDraw + "\n";
     out += "  instrument frames " + String(instrumentFrames) + ", worst " + String(instrumentWorstFrameUs / 1000.0f, 1) +
-           " ms" + String(instrumentMotion.moving() ? " (swinging)" : "") + "\n";
+           " ms (avg render " + String(instrumentFrames ? instrumentRenderUs / 1000.0f / instrumentFrames : 0, 1) +
+           " blit " + String(instrumentFrames ? instrumentBlitUs / 1000.0f / instrumentFrames : 0, 1) + " px " +
+           String(instrumentFrames ? instrumentPixels / instrumentFrames : 0) + ", face " + String(renderer ? renderer->lastInstrumentFaceUs() / 1000.0f : 0, 1) + " ms, needle " +
+           String(renderer ? renderer->lastInstrumentNeedleUs() / 1000.0f : 0, 1) + " ms), last swing " +
+           String(instrumentMotion.lastSwingFrames()) + " frames in " +
+           String(instrumentMotion.lastSwingMs()) + " ms" + String(instrumentMotion.moving() ? " (swinging)" : "") + "\n";
     out += "  partial check: " + lastPartialCheck + " (" + String(partialChecks) + " checked, " + String(partialCheckFailures) +
            " differed; ?set=partialcheck=on|off)\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
@@ -4019,6 +4025,9 @@ void loop()
     static unsigned long lastFrameMs = 0;
     static int framedScreen = -1;
     static const void *framedProject = nullptr;
+    // A dark panel swings nothing: every needle stands on its value, so the
+    // glass shows the right one the moment it wakes.
+    if (displayIsOff) instrumentMotion.reset();
     if (renderer && canvas && projectLoader.isLoaded() && !displayIsOff)
     {
       const ProjectConfig &project = projectLoader.getProject();
@@ -4035,15 +4044,22 @@ void loop()
       {
         lastFrameMs = now;
         static std::vector<InstrumentMotion::Box> boxes;
+        // A swing that ended on the last frame is counted whole, then the next.
+        instrumentMotion.settleCheck();
         instrumentMotion.update(shown->objects, (uint32_t)now, [](const ScreenObject &o) { return renderer->instrumentAt(o); }, boxes);
         for (const InstrumentMotion::Box &b : boxes)
         {
           const uint32_t f0 = micros();
           renderer->renderScreenRegion(activeScreen(), b.x, b.y, b.w, b.h, pressedButtonId, pendingSwitchId,
                                        pendingSwitchIndex, pressedSwitchId, pressedSwitchIndex);
+          const uint32_t f1 = micros();
           panel.blitRegion(canvas->getBuffer(), b.x, b.y, b.w, b.h);
           const uint32_t took = micros() - f0;
+          instrumentRenderUs += f1 - f0;
+          instrumentBlitUs += micros() - f1;
+          instrumentPixels += (uint32_t)b.w * b.h;
           instrumentFrames++;
+          instrumentMotion.frameDrawn((uint32_t)millis());
           if (took > instrumentWorstFrameUs) instrumentWorstFrameUs = took;
         }
       }

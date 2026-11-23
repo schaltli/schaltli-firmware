@@ -505,8 +505,12 @@ public:
   // A board that swings needles (InstrumentMotion.h) says where each stands
   // meanwhile; without one every needle is drawn at its value.
   void setInstrumentMotion(const InstrumentMotion* motion) { instrumentMotion_ = motion; }
+  // What the last styled draw cost, for /api/debug: copying the face, drawing the needle.
+  uint32_t lastInstrumentFaceUs() const { return lastInstrumentFaceUs_; }
+  uint32_t lastInstrumentNeedleUs() const { return lastInstrumentNeedleUs_; }
 private:
   const InstrumentMotion* instrumentMotion_ = nullptr;
+  uint32_t lastInstrumentFaceUs_ = 0, lastInstrumentNeedleUs_ = 0;
 
   // Paints a set of pill-shaped runs, anti-aliased, in one pass - this repo's
   // copy of the designer's components/canvas/renderers/paint-pills.ts.

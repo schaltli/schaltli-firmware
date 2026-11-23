@@ -67,6 +67,11 @@ struct Target {
 // Draws every layer of `desc` in `pose` into `t`, back to front.
 void draw(Target& t, const Description& desc, const Pose& pose);
 
+// The pixels `desc` in `pose` can touch, glow and shadow included:
+// x0..x1, y0..y1 inclusive, in the object's own coordinates. False when it
+// has no shapes. What a board redraws while a needle swings.
+bool bounds(const Description& desc, const Pose& pose, int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1);
+
 // The angle a needle stands at for `degrees`: floor(degrees * 64 + 0.5).
 int32_t angle64Of(double degrees);
 

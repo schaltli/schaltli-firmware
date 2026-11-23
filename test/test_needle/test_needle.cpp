@@ -98,6 +98,40 @@ static void every_vector_draws_the_designers_picture() {
   TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "needle vectors failed, see above");
 }
 
+// What a board redraws while a needle swings (InstrumentMotion): every pixel
+// the needle changes lies inside bounds().
+static void bounds_hold_every_pixel_drawn() {
+  int failures = 0;
+  for (JsonObjectConst c : doc["cases"].as<JsonArrayConst>()) {
+    const int w = c["width"] | 0, h = c["height"] | 0;
+    const uint16_t ground = (uint16_t)(c["ground"] | 0);
+    std::vector<uint16_t> pixels((size_t)w * h, ground);
+    Description desc;
+    parseDescription(c["desc"].as<JsonObjectConst>(), desc);
+    Pose pose;
+    pose.angle64 = c["pose"]["angle64"] | 0;
+    pose.shiftX = c["pose"]["shiftX"] | 0;
+    pose.shiftY = c["pose"]["shiftY"] | 0;
+    Target t;
+    t.pixels = pixels.data();
+    t.stride = w;
+    t.width = w;
+    t.height = h;
+    draw(t, desc, pose);
+    int32_t x0, y0, x1, y1;
+    TEST_ASSERT_TRUE(bounds(desc, pose, &x0, &y0, &x1, &y1));
+    for (int y = 0; y < h; y++)
+      for (int x = 0; x < w; x++)
+        if (pixels[(size_t)y * w + x] != ground && (x < x0 || x > x1 || y < y0 || y > y1)) {
+          failures++;
+          std::printf("FAIL %s: (%d, %d) drawn outside bounds %d,%d..%d,%d\n", c["name"].as<const char*>(), x, y, x0, y0, x1, y1);
+          y = h;
+          break;
+        }
+  }
+  TEST_ASSERT_EQUAL_INT_MESSAGE(0, failures, "a needle drew outside its bounds, see above");
+}
+
 static void isqrt_is_the_floor_of_the_root() {
   const int64_t ns[] = {0, 1, 2, 3, 4, 15, 16, 17, 99, 100, 101, 1 << 20, 123456789};
   for (int64_t n : ns) TEST_ASSERT_EQUAL_INT64((int64_t)std::floor(std::sqrt((double)n)), isqrt(n));
@@ -119,6 +153,7 @@ int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(the_copy_is_the_designers);
   RUN_TEST(every_vector_draws_the_designers_picture);
+  RUN_TEST(bounds_hold_every_pixel_drawn);
   RUN_TEST(isqrt_is_the_floor_of_the_root);
   RUN_TEST(angles_round_as_the_designer_does);
   return UNITY_END();

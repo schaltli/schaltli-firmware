@@ -2134,22 +2134,29 @@ bool ColorScreenRenderer::renderInstrument(const ScreenObject& obj, double at) {
   if (x1 > W) x1 = W;
   if (y1 > H) y1 = H;
   if (x0 >= x1 || y0 >= y1) return true;
+  const uint32_t tFace = micros();
   for (int32_t y = y0; y < y1; y++) {
     uint16_t* row = buffer + (size_t)y * W;
     const int32_t fy = y - obj.y;
-    for (int32_t x = x0; x < x1; x++) {
+    const uint16_t* src = face->pixels + (size_t)fy * face->width;
+    const int32_t base = fy * face->width;
+    int32_t x = x0;
+    while (x < x1) {
       const int32_t fx = x - obj.x;
-      if (face->drawn(fx, fy)) row[x] = face->pixels[fy * face->width + fx];
+      const int32_t i = base + fx;
+      // Eight pixels the mask has whole, one byte-aligned run: copied at once.
+      if ((i & 7) == 0 && x + 8 <= x1 && face->mask[i >> 3] == 0xFF) {
+        memcpy(row + x, src + fx, 16);
+        x += 8;
+        continue;
+      }
+      if (face->drawn(fx, fy)) row[x] = src[fx];
+      x++;
     }
   }
-  needleraster::Pose pose;
-  if (g.gauge) {
-    pose.angle64 = needleraster::angle64Of(g.sweepFrom + (g.sweepTo - g.sweepFrom) * at);
-  } else {
-    // The designer's Math.round: floor(x + 0.5), the same for negative travel.
-    pose.shiftX = (int32_t)floor(at * g.travelX + 0.5);
-    pose.shiftY = (int32_t)floor(at * g.travelY + 0.5);
-  }
+  const uint32_t tNeedle = micros();
+  lastInstrumentFaceUs_ = tNeedle - tFace;
+  const needleraster::Pose pose = instrumentPose(g, at);
   needleraster::Target t;
   t.pixels = buffer + (ptrdiff_t)obj.y * W + obj.x;
   t.stride = W;
@@ -2160,6 +2167,7 @@ bool ColorScreenRenderer::renderInstrument(const ScreenObject& obj, double at) {
   t.clipX1 = x1 - obj.x;
   t.clipY1 = y1 - obj.y;
   needleraster::draw(t, g.needle, pose);
+  lastInstrumentNeedleUs_ = micros() - tNeedle;
   return true;
 }
 

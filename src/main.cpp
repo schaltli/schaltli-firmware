@@ -2493,7 +2493,7 @@ static String buildDebugJson() {
   out += ",\"nowMs\":" + String(millis());
   out += ",\"worstLoopMs\":" + String(worstLoopMs);
   out += ",\"camera\":\"" + jsonEscape(cameraReport()) + "\"";
-  out += ",\"instrument\":\"instrument frames " + String(instrumentFrames) + ", worst " + String(instrumentWorstFrameUs / 1000.0f, 1) + " ms" + (instrumentMotion.moving() ? " (swinging)" : "") + "\"";
+  out += ",\"instrument\":\"instrument frames " + String(instrumentFrames) + ", worst " + String(instrumentWorstFrameUs / 1000.0f, 1) + " ms, last swing " + String(instrumentMotion.lastSwingFrames()) + " frames in " + String(instrumentMotion.lastSwingMs()) + " ms" + (instrumentMotion.moving() ? " (swinging)" : "") + "\"";
   out += ",\"mqttReconnects\":" + String(mqttClient.reconnectCount());
   out += ",\"mqttConnects\":" + String(mqttClient.connectCount());
   out += ",\"mqttLastState\":" + String(mqttClient.lastDisconnectState());
@@ -3989,6 +3989,9 @@ static void instrumentStep() {
   static unsigned long lastFrameMs = 0;
   static int framedScreen = -1;
   static const void* framedProject = nullptr;
+  // A dark panel swings nothing: every needle stands on its value, so the
+  // glass shows the right one the moment it wakes.
+  if (displayIsOff) instrumentMotion.reset();
   if (!screenRenderer || !projectLoader.isLoaded() || displayIsOff) return;
   const ProjectConfig& project = projectLoader.getProject();
   const int screen = activeScreen();
@@ -4003,6 +4006,8 @@ static void instrumentStep() {
   const Screen* shown = screenOrPopupAt(project, screen);
   if (!shown) return;
   static std::vector<InstrumentMotion::Box> boxes;
+  // A swing that ended on the last frame is counted whole, then the next.
+  instrumentMotion.settleCheck();
   instrumentMotion.update(shown->objects, (uint32_t)now, [](const ScreenObject& o) { return screenRenderer->instrumentAt(o); }, boxes);
   for (const InstrumentMotion::Box& b : boxes) {
     const uint32_t f0 = micros();
@@ -4010,6 +4015,7 @@ static void instrumentStep() {
       canvasPresenter.presentRegion(b.x, b.y, b.x + b.w - 1, b.y + b.h - 1);
     const uint32_t took = micros() - f0;
     instrumentFrames++;
+    instrumentMotion.frameDrawn((uint32_t)millis());
     if (took > instrumentWorstFrameUs) instrumentWorstFrameUs = took;
   }
 }
