@@ -10,6 +10,7 @@
 #include "LiveValue.h"
 #include "ScaledValue.h"
 #include "SpiramAllocator.h"
+#include "NeedleRaster.h"
 
 /**
  * Data structures for project.json configuration
@@ -366,6 +367,20 @@ struct GuardGeom {
   int16_t badgeCx = 0, badgeCy = 0, badgeR = 0, badgeLockX = 0, badgeLockY = 0, badgeLockSize = 0;
 };
 
+// A styled gauge or bar (device contract §2.15, `instrument` beside the
+// object's own properties): its baked face, the needle, how a value turns
+// (gauge) or moves (bar) it, and the spring it swings with.
+struct InstrumentGeom {
+  bool on = false;
+  bool gauge = true;
+  String face;  // resolved asset path
+  needleraster::Description needle;
+  double sweepFrom = 0, sweepTo = 0;  // gauge, degrees
+  int32_t travelX = 0, travelY = 0;   // bar, eighths
+  bool hasSpring = false;
+  float frequency = 0, damping = 1;
+};
+
 // Base properties for screen objects
 struct ObjectProperties {
   // Common properties
@@ -600,6 +615,8 @@ struct ScreenObject {
   String pathDark;
   // `properties.guard` with the designer's geometry beside it (§2.14).
   GuardGeom guard;
+  // A styled gauge or bar (§2.15).
+  InstrumentGeom instrument;
   // Only meaningful for "switcher" (children must all be "panel") and
   // "panel" (children are arbitrary regular objects) - every other type is
   // always a leaf (empty). Child x/y are relative to this object's own

@@ -29,7 +29,7 @@ void sinCos(int32_t angle64, int32_t* s, int32_t* c) {
 inline int32_t floorDiv8(int32_t v) { return v >= 0 ? v / 8 : -((-v + 7) / 8); }
 
 inline void blendAt(Target& t, int32_t x, int32_t y, uint16_t color, int32_t alpha) {
-  if (alpha <= 0 || x < 0 || y < 0 || x >= t.width || y >= t.height) return;
+  if (alpha <= 0 || x < t.clipX0 || y < t.clipY0 || x >= t.clipX1 || y >= t.clipY1) return;
   uint16_t& px = t.pixels[y * t.stride + x];
   if (alpha >= 256) {
     px = color;
@@ -291,8 +291,14 @@ int64_t isqrt(int64_t n) {
 
 int32_t angle64Of(double degrees) { return (int32_t)floor(degrees * 64.0 + 0.5); }
 
-void draw(Target& t, const Description& desc, const Pose& pose) {
-  if (!t.pixels || t.width <= 0 || t.height <= 0) return;
+void draw(Target& target, const Description& desc, const Pose& pose) {
+  if (!target.pixels || target.width <= 0 || target.height <= 0) return;
+  Target t = target;
+  t.clipX0 = t.clipX0 < 0 ? 0 : t.clipX0;
+  t.clipY0 = t.clipY0 < 0 ? 0 : t.clipY0;
+  t.clipX1 = (t.clipX1 < 0 || t.clipX1 > t.width) ? t.width : t.clipX1;
+  t.clipY1 = (t.clipY1 < 0 || t.clipY1 > t.height) ? t.height : t.clipY1;
+  if (t.clipX0 >= t.clipX1 || t.clipY0 >= t.clipY1) return;
   for (const Layer& layer : desc.layers) {
     for (const Shape& shape : layer.shapes) {
       if (!shape.circle && shape.poly.size() < 3) continue;

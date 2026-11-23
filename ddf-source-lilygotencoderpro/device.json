@@ -876,7 +876,8 @@
     "duration-display",
     "charts",
     "clip",
-    "guard"
+    "guard",
+    "instrument-styles"
   ],
   "supportsSoftwareButtons": true,
   "testInterface": {

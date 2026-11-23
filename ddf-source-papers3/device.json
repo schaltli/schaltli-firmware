@@ -437,6 +437,6 @@
     "energy-diagram",
     "chart"
   ],
-  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display", "charts", "pinch", "clip", "guard"],
+  "supportedFeatures": ["local-topics", "screen-graph", "scaled-values", "button-values", "duration-display", "charts", "pinch", "clip", "guard", "instrument-styles"],
   "supportsSoftwareButtons": true
 }

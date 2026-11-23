@@ -896,7 +896,8 @@
     "charts",
     "pinch",
     "clip",
-    "guard"
+    "guard",
+    "instrument-styles"
   ],
   "supportsSoftwareButtons": true
 }

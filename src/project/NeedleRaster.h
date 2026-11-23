@@ -53,12 +53,15 @@ struct Pose {
 };
 
 // An RGB565 picture: `width` x `height` pixels at `pixels`, `stride` pixels
-// to a row. Pixels outside are never touched.
+// to a row. Pixels outside are never touched, nor those outside the clip
+// (x0, y0 inclusive, x1, y1 exclusive, in the same coordinates) - a region
+// redrawn on its own. A clip left at -1 is the whole picture.
 struct Target {
   uint16_t* pixels = nullptr;
   int32_t stride = 0;
   int32_t width = 0;
   int32_t height = 0;
+  int32_t clipX0 = -1, clipY0 = -1, clipX1 = -1, clipY1 = -1;
 };
 
 // Draws every layer of `desc` in `pose` into `t`, back to front.

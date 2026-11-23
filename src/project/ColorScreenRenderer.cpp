@@ -1,3 +1,5 @@
+#include "InstrumentFace.h"
+#include "NeedleRaster.h"
 #include "ColorScreenRenderer.h"
 #include "CameraFeed.h"
 
@@ -1698,6 +1700,11 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t, 
 #endif  // PILL_ANTIALIASED
 
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
+  // A styled bar (§2.15), as the gauge above.
+  if (obj.instrument.on &&
+      renderInstrument(obj, instrumentOverrideId_ == obj.id ? instrumentOverrideAt_ : instrumentAt(obj))) {
+    return true;
+  }
   const String valueStr = shownLevelValue(obj);
 
   // One colour: the bar's. The unfilled track is mixed from it and the screen
@@ -2088,7 +2095,75 @@ static int32_t arcInsetFor(const ScreenObject& obj, int32_t size, int32_t thickn
 // helpers and nothing finer) and because an arc drawn by a primitive would
 // have hard edges. See ArcRaster.h for why the arithmetic is shaped the way
 // it is.
+double ColorScreenRenderer::instrumentAt(const ScreenObject& obj) {
+  String v = shownLevelValue(obj);
+  v.trim();
+  // No value: the needle rests on its stop, as an instrument without power.
+  if (v.isEmpty()) return 0.0;
+  double pct = interpolateCalibration(v.toFloat(), obj.properties.calibrationPoints);
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  return pct / 100.0;
+}
+
+bool ColorScreenRenderer::renderInstrument(const ScreenObject& obj, double at) {
+  const InstrumentGeom& g = obj.instrument;
+  const instrumentface::Face* face = instrumentface::get(g.face);
+  if (!face) return false;
+  uint16_t* buffer = canvas_->getBuffer();
+  if (!buffer) return false;
+  const int32_t W = canvas_->width();
+  const int32_t H = canvas_->height();
+  // What may be painted: the face, inside the canvas and inside a region
+  // being redrawn on its own.
+  int32_t x0 = obj.x, y0 = obj.y, x1 = obj.x + face->width, y1 = obj.y + face->height;
+  if (canvas_->clipActive()) {
+    if (x0 < canvas_->clipX()) x0 = canvas_->clipX();
+    if (y0 < canvas_->clipY()) y0 = canvas_->clipY();
+    if (x1 > canvas_->clipX() + canvas_->clipW()) x1 = canvas_->clipX() + canvas_->clipW();
+    if (y1 > canvas_->clipY() + canvas_->clipH()) y1 = canvas_->clipY() + canvas_->clipH();
+  }
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 > W) x1 = W;
+  if (y1 > H) y1 = H;
+  if (x0 >= x1 || y0 >= y1) return true;
+  for (int32_t y = y0; y < y1; y++) {
+    uint16_t* row = buffer + (size_t)y * W;
+    const int32_t fy = y - obj.y;
+    for (int32_t x = x0; x < x1; x++) {
+      const int32_t fx = x - obj.x;
+      if (face->drawn(fx, fy)) row[x] = face->pixels[fy * face->width + fx];
+    }
+  }
+  needleraster::Pose pose;
+  if (g.gauge) {
+    pose.angle64 = needleraster::angle64Of(g.sweepFrom + (g.sweepTo - g.sweepFrom) * at);
+  } else {
+    // The designer's Math.round: floor(x + 0.5), the same for negative travel.
+    pose.shiftX = (int32_t)floor(at * g.travelX + 0.5);
+    pose.shiftY = (int32_t)floor(at * g.travelY + 0.5);
+  }
+  needleraster::Target t;
+  t.pixels = buffer + (ptrdiff_t)obj.y * W + obj.x;
+  t.stride = W;
+  t.width = face->width;
+  t.height = face->height;
+  t.clipX0 = x0 - obj.x;
+  t.clipY0 = y0 - obj.y;
+  t.clipX1 = x1 - obj.x;
+  t.clipY1 = y1 - obj.y;
+  needleraster::draw(t, g.needle, pose);
+  return true;
+}
+
 bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixInto) {
+  // A styled gauge is a picture of an instrument (§2.15); its flat ring only
+  // when the face cannot be had.
+  if (obj.instrument.on &&
+      renderInstrument(obj, instrumentOverrideId_ == obj.id ? instrumentOverrideAt_ : instrumentAt(obj))) {
+    return true;
+  }
   String valueStr = shownLevelValue(obj);
   // No value yet: the track alone - no fill (not even what the calibration
   // makes of 0), no handle, no number (render-arc-level.ts, the same rule).
@@ -4129,6 +4204,7 @@ bool ColorScreenRenderer::renderScreenRegion(int screenIndex, int16_t rx, int16_
 bool ColorScreenRenderer::arcLevelTextRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
                                            int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
   if (obj.properties.displayValue == "none") return false;
+  if (obj.instrument.on) return false;  // its dirty rect is the whole face already
 
   const BdfFont* font = fontFor(obj.properties.fontId);
   if (font == nullptr) return false;
@@ -4312,6 +4388,15 @@ int ColorScreenRenderer::barLevelDragRects(const ScreenObject& obj, const String
 bool ColorScreenRenderer::arcLevelDirtyRect(const ScreenObject& obj, const String& oldValue, const String& newValue,
                                             int16_t* outX, int16_t* outY, int16_t* outW, int16_t* outH) {
   if (!objecttypes::isArc(obj.type)) return false;
+  // A styled gauge's needle can stand anywhere on its face: the whole face.
+  if (obj.instrument.on) {
+    const int32_t side = obj.width < obj.height ? obj.width : obj.height;
+    *outX = (int16_t)obj.x;
+    *outY = (int16_t)obj.y;
+    *outW = (int16_t)side;
+    *outH = (int16_t)side;
+    return true;
+  }
   if (oldValue.isEmpty() || newValue.isEmpty()) return false;
 
   const int32_t size = obj.width < obj.height ? obj.width : obj.height;

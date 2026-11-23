@@ -491,6 +491,21 @@ private:
   // and an edge that mixes into different things on the two sides is an
   // edge that fails the pixel comparison.
   bool renderArcLevel(const ScreenObject& obj, uint16_t mixInto);
+  // A styled gauge or bar (device contract §2.15): its face, then the needle
+  // at `at` (0..1 along the scale). False when it cannot be drawn styled -
+  // no face, or one that did not fit - and the flat look is drawn instead.
+  bool renderInstrument(const ScreenObject& obj, double at);
+public:
+  // Where a styled object's needle stands for its current value, 0..1; for
+  // the swing a board drives itself (I9).
+  double instrumentAt(const ScreenObject& obj);
+  // A board that swings needles itself sets where each stands meanwhile, by
+  // object id; unset, an object is drawn at its value.
+  void setInstrumentOverride(const String& id, double at) { instrumentOverrideId_ = id; instrumentOverrideAt_ = at; }
+  void clearInstrumentOverride() { instrumentOverrideId_ = ""; }
+private:
+  String instrumentOverrideId_;
+  double instrumentOverrideAt_ = 0;
 
   // Paints a set of pill-shaped runs, anti-aliased, in one pass - this repo's
   // copy of the designer's components/canvas/renderers/paint-pills.ts.

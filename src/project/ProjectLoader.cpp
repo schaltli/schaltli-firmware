@@ -1,3 +1,5 @@
+#include "InstrumentFace.h"
+#include "NeedleRasterJson.h"
 #include "ProjectLoader.h"
 #include "LiveValueJson.h"
 #include "ThemeVariant.h"
@@ -158,6 +160,8 @@ bool ProjectLoader::parseJSON(const String& jsonContent) {
 }
 
 bool ProjectLoader::parseJSONDocument(JsonDocument& doc) {
+  // A new project may not need the old project's styled faces (§2.15).
+  instrumentface::clear();
   // Parse basic project info
   project_.name = doc["name"] | "Unnamed Project";
   project_.screenWidth = doc["screenWidth"] | 300;
@@ -445,6 +449,22 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
 
   if (objJson["properties"].is<JsonObject>()) {
     obj.properties = parseObjectProperties(objJson["properties"]);
+  }
+  // A styled gauge or bar (device contract §2.15): the face, the needle, the
+  // sweep or travel and the spring. Without `instrument` it is drawn flat.
+  if ((obj.type == "gauge" || obj.type == "bar") && objJson["instrument"].is<JsonObjectConst>()) {
+    JsonObjectConst in = objJson["instrument"].as<JsonObjectConst>();
+    InstrumentGeom& g = obj.instrument;
+    g.gauge = obj.type == "gauge";
+    g.face = resolveAssetPath(in["face"] | "");
+    g.on = !g.face.isEmpty() && needleraster::parseDescription(in["needle"].as<JsonObjectConst>(), g.needle);
+    g.sweepFrom = in["sweep"]["from"] | 0.0;
+    g.sweepTo = in["sweep"]["to"] | 0.0;
+    g.travelX = in["travel"]["x"] | 0;
+    g.travelY = in["travel"]["y"] | 0;
+    g.hasSpring = in["spring"].is<JsonObjectConst>();
+    g.frequency = in["spring"]["frequency"] | 0.0f;
+    g.damping = in["spring"]["damping"] | 1.0f;
   }
   // A guarded control (device contract §2.14): `properties.guard` and the
   // geometry beside it, kept relative to the object.
