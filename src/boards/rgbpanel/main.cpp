@@ -64,6 +64,7 @@
 // cross-checked line by line against the pin table in the board's wiki. Both
 // sources agree; nothing here is inferred from the 1.8" knob port, which is
 // the mistake that produced four hardware bugs on the last one.
+#include "../../project/InstrumentMotion.h"
 #include "../../ChartFeed.h"
 #include "project/NavigatorLayout.h"
 #include "project/PinchDetector.h"
@@ -143,6 +144,14 @@ static const int POPUP_BORDER_PX = 2;
 static const int POPUP_CLOSE_BADGE_RADIUS = 24;
 // What the last popup did, for /api/debug.
 static String lastPopup = "none since boot";
+// Styled needles swinging to a new value (device contract §2.15 «Motion»,
+// designer docs/2026-11-23-instrument-styles.md): the renderer asks it where
+// each stands; the loop below steps it and redraws the faces that moved.
+static InstrumentMotion instrumentMotion;
+// What the swing cost, for /api/debug and hil/waveshare4v3b/instrument-motion.js.
+static uint32_t instrumentFrames = 0;
+static uint32_t instrumentWorstFrameUs = 0;
+
 // The screen or popup a finger or a button acts on now.
 static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreen; }
 // The transition's second surface and the transition itself. See
@@ -781,6 +790,7 @@ static void setupRenderStack()
 
   renderer = new ColorScreenRenderer(projectLoader, canvas);
   renderer->setChartFeed(&chartFeed);
+  renderer->setInstrumentMotion(&instrumentMotion);
   renderer->setCameraFeed(&cameraFeed);
   cameraFeed.setMinPeriodMs(CAMERA_MIN_PERIOD_MS);
   // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
@@ -1224,6 +1234,8 @@ static void setupNetworking()
            ", up " + String(pagingTargetFor(-1, true)) + ", down " + String(pagingTargetFor(1, true)) + " (screen " +
            String(currentScreen) + ")\n";
     out += "  last value draw: " + lastValueDraw + "\n";
+    out += "  instrument frames " + String(instrumentFrames) + ", worst " + String(instrumentWorstFrameUs / 1000.0f, 1) +
+           " ms" + String(instrumentMotion.moving() ? " (swinging)" : "") + "\n";
     out += "  partial check: " + lastPartialCheck + " (" + String(partialChecks) + " checked, " + String(partialCheckFailures) +
            " differed; ?set=partialcheck=on|off)\n";
     out += "  display " + String(displayIsOff ? "off" : "on") + ", blanking after " +
@@ -3998,6 +4010,46 @@ void loop()
     // looking like it is still being asked.
     clearPending("pending timed out");
   }
+  // Styled needles: a value that moved swings to its new place, one frame
+  // every 16 ms at most, each face's box drawn again and shown - the 4.3B
+  // spike's path (designer docs/2026-11-23-instrument-styles.md: a 400 px
+  // needle with a shadow at 35 fps). Only the screen on the glass; a screen
+  // change or a new project starts every needle at rest.
+  {
+    static unsigned long lastFrameMs = 0;
+    static int framedScreen = -1;
+    static const void *framedProject = nullptr;
+    if (renderer && canvas && projectLoader.isLoaded() && !displayIsOff)
+    {
+      const ProjectConfig &project = projectLoader.getProject();
+      const int screen = activeScreen();
+      if (screen != framedScreen || framedProject != (const void *)&project.screens)
+      {
+        instrumentMotion.reset();
+        framedScreen = screen;
+        framedProject = (const void *)&project.screens;
+      }
+      const Screen *shown = screenOrPopupAt(project, screen);
+      const unsigned long now = millis();
+      if (shown && now - lastFrameMs >= 16)
+      {
+        lastFrameMs = now;
+        static std::vector<InstrumentMotion::Box> boxes;
+        instrumentMotion.update(shown->objects, (uint32_t)now, [](const ScreenObject &o) { return renderer->instrumentAt(o); }, boxes);
+        for (const InstrumentMotion::Box &b : boxes)
+        {
+          const uint32_t f0 = micros();
+          renderer->renderScreenRegion(activeScreen(), b.x, b.y, b.w, b.h, pressedButtonId, pendingSwitchId,
+                                       pendingSwitchIndex, pressedSwitchId, pressedSwitchIndex);
+          panel.blitRegion(canvas->getBuffer(), b.x, b.y, b.w, b.h);
+          const uint32_t took = micros() - f0;
+          instrumentFrames++;
+          if (took > instrumentWorstFrameUs) instrumentWorstFrameUs = took;
+        }
+      }
+    }
+  }
+
   // While asked, a Toggle Button's light pulses (designer docs/2026-11-11-
   // led-look.md, decision 4): its rectangle redrawn on the renderer's beat.
   {

@@ -1702,7 +1702,7 @@ void ColorScreenRenderer::paintPills(const std::vector<PaintedPill>&, uint16_t, 
 bool ColorScreenRenderer::renderLevelIndicator(const ScreenObject& obj) {
   // A styled bar (§2.15), as the gauge above.
   if (obj.instrument.on &&
-      renderInstrument(obj, instrumentOverrideId_ == obj.id ? instrumentOverrideAt_ : instrumentAt(obj))) {
+      renderInstrument(obj, instrumentShownAt(obj))) {
     return true;
   }
   const String valueStr = shownLevelValue(obj);
@@ -2106,6 +2106,12 @@ double ColorScreenRenderer::instrumentAt(const ScreenObject& obj) {
   return pct / 100.0;
 }
 
+double ColorScreenRenderer::instrumentShownAt(const ScreenObject& obj) {
+  double at;
+  if (instrumentMotion_ && instrumentMotion_->positionOf(obj.id, &at)) return at;
+  return instrumentAt(obj);
+}
+
 bool ColorScreenRenderer::renderInstrument(const ScreenObject& obj, double at) {
   const InstrumentGeom& g = obj.instrument;
   const instrumentface::Face* face = instrumentface::get(g.face);
@@ -2161,7 +2167,7 @@ bool ColorScreenRenderer::renderArcLevel(const ScreenObject& obj, uint16_t mixIn
   // A styled gauge is a picture of an instrument (§2.15); its flat ring only
   // when the face cannot be had.
   if (obj.instrument.on &&
-      renderInstrument(obj, instrumentOverrideId_ == obj.id ? instrumentOverrideAt_ : instrumentAt(obj))) {
+      renderInstrument(obj, instrumentShownAt(obj))) {
     return true;
   }
   String valueStr = shownLevelValue(obj);

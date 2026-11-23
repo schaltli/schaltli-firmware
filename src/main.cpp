@@ -27,6 +27,7 @@
 // board's: LV_TICK_CUSTOM never worked here, so the tick is driven manually
 // from loop().
 
+#include "project/InstrumentMotion.h"
 #include "ChartFeed.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -116,6 +117,12 @@ static int16_t popupOriginX = 0, popupOriginY = 0, popupOriginW = 0, popupOrigin
 static String lastPopup = "none since boot";
 // The screen or popup a finger or the ring acts on now.
 static int activeScreen() { return openPopup >= 0 ? openPopup : currentScreenIndex; }
+// Styled needles swinging to a new value (device contract §2.15 «Motion»,
+// designer docs/2026-11-23-instrument-styles.md): the renderer asks it where
+// each stands; instrumentStep() moves it and redraws the faces that moved.
+static InstrumentMotion instrumentMotion;
+static uint32_t instrumentFrames = 0;
+static uint32_t instrumentWorstFrameUs = 0;
 
 // A Camera (designer docs/2026-11-09-camera.md), and the longest time between
 // two passes of loop() since its statistics were reset (criterion 4).
@@ -2486,6 +2493,7 @@ static String buildDebugJson() {
   out += ",\"nowMs\":" + String(millis());
   out += ",\"worstLoopMs\":" + String(worstLoopMs);
   out += ",\"camera\":\"" + jsonEscape(cameraReport()) + "\"";
+  out += ",\"instrument\":\"instrument frames " + String(instrumentFrames) + ", worst " + String(instrumentWorstFrameUs / 1000.0f, 1) + " ms" + (instrumentMotion.moving() ? " (swinging)" : "") + "\"";
   out += ",\"mqttReconnects\":" + String(mqttClient.reconnectCount());
   out += ",\"mqttConnects\":" + String(mqttClient.connectCount());
   out += ",\"mqttLastState\":" + String(mqttClient.lastDisconnectState());
@@ -2722,6 +2730,7 @@ static void loadAndRenderProject() {
   if (screenRenderer == nullptr) {
     screenRenderer = new ColorScreenRenderer(projectLoader, &canvasPresenter.canvas());
     screenRenderer->setChartFeed(&chartFeed);
+    screenRenderer->setInstrumentMotion(&instrumentMotion);
     screenRenderer->setCameraFeed(&cameraFeed);
     // {device:id} in a text (designer docs/2026-10-05-placeholder-devices.md).
     // The id is fixed at construction, so it is there before the first draw.
@@ -3972,6 +3981,39 @@ static void cameraStep() {
     canvasPresenter.presentRegion(camera->x, camera->y, camera->x + w - 1, camera->y + h - 1);
 }
 
+// One frame of the styled needles' swing, every 16 ms at most, as on the
+// 4.3B (boards/rgbpanel/main.cpp): the faces that moved drawn again and
+// handed to LVGL. Only the screen on the glass; a screen change or a new
+// project starts every needle at rest.
+static void instrumentStep() {
+  static unsigned long lastFrameMs = 0;
+  static int framedScreen = -1;
+  static const void* framedProject = nullptr;
+  if (!screenRenderer || !projectLoader.isLoaded() || displayIsOff) return;
+  const ProjectConfig& project = projectLoader.getProject();
+  const int screen = activeScreen();
+  if (screen != framedScreen || framedProject != (const void*)&project.screens) {
+    instrumentMotion.reset();
+    framedScreen = screen;
+    framedProject = (const void*)&project.screens;
+  }
+  const unsigned long now = millis();
+  if (now - lastFrameMs < 16) return;
+  lastFrameMs = now;
+  const Screen* shown = screenOrPopupAt(project, screen);
+  if (!shown) return;
+  static std::vector<InstrumentMotion::Box> boxes;
+  instrumentMotion.update(shown->objects, (uint32_t)now, [](const ScreenObject& o) { return screenRenderer->instrumentAt(o); }, boxes);
+  for (const InstrumentMotion::Box& b : boxes) {
+    const uint32_t f0 = micros();
+    if (screenRenderer->renderScreenRegion(screen, b.x, b.y, b.w, b.h))
+      canvasPresenter.presentRegion(b.x, b.y, b.x + b.w - 1, b.y + b.h - 1);
+    const uint32_t took = micros() - f0;
+    instrumentFrames++;
+    if (took > instrumentWorstFrameUs) instrumentWorstFrameUs = took;
+  }
+}
+
 void loop() {
   const uint32_t cameraLoopNowUs = micros();
   if (cameraLoopLastUs != 0 && cameraLoopNowUs - cameraLoopLastUs > cameraLoopMaxGapUs)
@@ -4157,6 +4199,7 @@ void loop() {
   PHASE("pull tabs", pullTabStep());
   PHASE("chart pulse", chartPulseStep());
   PHASE("camera", cameraStep());
+  PHASE("instrument", instrumentStep());
 
   delay(5);
 #if INPUT_DEBUG

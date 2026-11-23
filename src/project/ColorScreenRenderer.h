@@ -1,4 +1,5 @@
 #pragma once
+#include "InstrumentMotion.h"
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
 #include "BdfFont.h"
@@ -495,17 +496,17 @@ private:
   // at `at` (0..1 along the scale). False when it cannot be drawn styled -
   // no face, or one that did not fit - and the flat look is drawn instead.
   bool renderInstrument(const ScreenObject& obj, double at);
+  // Where to draw a styled object's needle: where the board's swing has it,
+  // else at its value.
+  double instrumentShownAt(const ScreenObject& obj);
 public:
-  // Where a styled object's needle stands for its current value, 0..1; for
-  // the swing a board drives itself (I9).
+  // Where a styled object's needle stands for its current value, 0..1.
   double instrumentAt(const ScreenObject& obj);
-  // A board that swings needles itself sets where each stands meanwhile, by
-  // object id; unset, an object is drawn at its value.
-  void setInstrumentOverride(const String& id, double at) { instrumentOverrideId_ = id; instrumentOverrideAt_ = at; }
-  void clearInstrumentOverride() { instrumentOverrideId_ = ""; }
+  // A board that swings needles (InstrumentMotion.h) says where each stands
+  // meanwhile; without one every needle is drawn at its value.
+  void setInstrumentMotion(const InstrumentMotion* motion) { instrumentMotion_ = motion; }
 private:
-  String instrumentOverrideId_;
-  double instrumentOverrideAt_ = 0;
+  const InstrumentMotion* instrumentMotion_ = nullptr;
 
   // Paints a set of pill-shaped runs, anti-aliased, in one pass - this repo's
   // copy of the designer's components/canvas/renderers/paint-pills.ts.
