@@ -8,12 +8,36 @@
 
 namespace readout {
 
+// A plain decimal number up to the first space: [+-]?(d+.?d*|.d+)([eE][+-]?d+)?
+// - no hex, binary or type letter, which strtod would take (contract §2.15).
+static bool plainDecimal(const char* s) {
+  const char* p = s;
+  if (*p == '+' || *p == '-') p++;
+  int whole = 0, frac = 0;
+  while (isdigit((unsigned char)*p)) { p++; whole++; }
+  if (*p == '.') {
+    p++;
+    while (isdigit((unsigned char)*p)) { p++; frac++; }
+  }
+  if (whole == 0 && frac == 0) return false;
+  if (*p == 'e' || *p == 'E') {
+    p++;
+    if (*p == '+' || *p == '-') p++;
+    int ex = 0;
+    while (isdigit((unsigned char)*p)) { p++; ex++; }
+    if (ex == 0) return false;
+  }
+  while (*p && isspace((unsigned char)*p)) p++;
+  return *p == '\0';
+}
+
 size_t format(const char* raw, int32_t decimals, char* out) {
   out[0] = '\0';
   if (!raw) return 0;
   const char* s = raw;
   while (*s && isspace((unsigned char)*s)) s++;
   if (!*s) return 0;
+  if (!plainDecimal(s)) return 0;
   char* end = nullptr;
   const double v = strtod(s, &end);
   if (end == s) return 0;
