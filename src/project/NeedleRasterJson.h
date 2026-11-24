@@ -20,6 +20,7 @@ inline bool parseDescription(JsonObjectConst json, Description& out) {
     layer.motion = strcmp(motion, "rotate") == 0      ? Motion::Rotate
                    : strcmp(motion, "translate") == 0 ? Motion::Translate
                    : strcmp(motion, "fill") == 0      ? Motion::Fill
+                   : strcmp(motion, "segments") == 0  ? Motion::Segments
                                                       : Motion::Static;
     const char* grow = l["grow"] | "right";
     layer.grow = strcmp(grow, "left") == 0 ? Grow::Left : strcmp(grow, "down") == 0 ? Grow::Down : strcmp(grow, "up") == 0 ? Grow::Up : Grow::Right;
@@ -39,6 +40,7 @@ inline bool parseDescription(JsonObjectConst json, Description& out) {
     for (JsonVariantConst a : l["soft"].as<JsonArrayConst>()) layer.soft.push_back(a.as<int32_t>());
     for (JsonObjectConst s : l["shapes"].as<JsonArrayConst>()) {
       Shape shape;
+      shape.t = s["t"].is<int32_t>() ? s["t"].as<int32_t>() : -1;
       if (s["circle"].is<JsonArrayConst>()) {
         JsonArrayConst c = s["circle"].as<JsonArrayConst>();
         shape.kind = Kind::Circle;

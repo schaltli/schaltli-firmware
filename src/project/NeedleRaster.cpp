@@ -47,16 +47,12 @@ inline uint16_t colourAt(const Layer& layer, int32_t x, int32_t y) {
 inline void blendAt(Target& t, int32_t x, int32_t y, uint16_t color, int32_t alpha) {
   if (alpha <= 0 || x < t.clipX0 || y < t.clipY0 || x >= t.clipX1 || y >= t.clipY1) return;
   uint16_t& px = t.pixels[y * t.stride + x];
-  if (alpha >= 256) {
-    px = color;
-    return;
-  }
-  const int32_t dr = (px >> 11) & 31, dg = (px >> 5) & 63, db = px & 31;
-  const int32_t cr = (color >> 11) & 31, cg = (color >> 5) & 63, cb = color & 31;
-  const int32_t r = (dr * (256 - alpha) + cr * alpha + 128) >> 8;
-  const int32_t g = (dg * (256 - alpha) + cg * alpha + 128) >> 8;
-  const int32_t b = (db * (256 - alpha) + cb * alpha + 128) >> 8;
-  px = (uint16_t)((r << 11) | (g << 5) | b);
+  px = blend565(px, color, alpha);
+}
+
+// A segments layer's shape not yet lit at this pose (designer drawNeedle()).
+inline bool unlit(const Layer& layer, const Shape& shape, const Pose& pose) {
+  return layer.motion == Motion::Segments && shape.t >= 0 && pose.level < shape.t;
 }
 
 // An arc placed: centre, radius and half width (eighths), span (1/64
@@ -825,6 +821,11 @@ int64_t isqrt(int64_t n) {
   return x;
 }
 
+int32_t levelOf(double at) {
+  const double c = at < 0 ? 0 : (at > 1 ? 1 : at);
+  return (int32_t)floor(c * 4096.0 + 0.5);
+}
+
 int32_t angle64Of(double degrees) { return (int32_t)floor(degrees * 64.0 + 0.5); }
 
 bool bounds(const Description& desc, const Pose& pose, int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1) {
@@ -832,6 +833,7 @@ bool bounds(const Description& desc, const Pose& pose, int32_t* x0, int32_t* y0,
   for (const Layer& layer : desc.layers) {
     const int32_t reach8 = layer.soft.empty() ? 8 : (int32_t)layer.soft.size() * 8 + 8;
     for (const Shape& shape : layer.shapes) {
+      if (unlit(layer, shape, pose)) continue;
       const Placed p = place(shape, layer, desc, pose);
       if (p.empty) continue;
       int32_t a, b, c, d;
@@ -868,6 +870,7 @@ void draw(Target& target, const Description& desc, const Pose& pose) {
   if (t.clipX0 >= t.clipX1 || t.clipY0 >= t.clipY1) return;
   for (const Layer& layer : desc.layers) {
     for (const Shape& shape : layer.shapes) {
+      if (unlit(layer, shape, pose)) continue;
       const Placed p = place(shape, layer, desc, pose);
       if (p.empty) continue;
       if (!layer.soft.empty()) {

@@ -62,7 +62,7 @@ static void the_copy_is_the_designers() {
 
 static void every_vector_draws_the_designers_picture() {
   JsonArrayConst cases = doc["cases"].as<JsonArrayConst>();
-  TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(22, cases.size(), "fewer vectors than the designer has");
+  TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(26, cases.size(), "fewer vectors than the designer has");
   int failures = 0;
   for (JsonObjectConst c : cases) {
     const int w = c["width"] | 0, h = c["height"] | 0;
@@ -73,6 +73,7 @@ static void every_vector_draws_the_designers_picture() {
     pose.angle64 = c["pose"]["angle64"] | 0;
     pose.shiftX = c["pose"]["shiftX"] | 0;
     pose.shiftY = c["pose"]["shiftY"] | 0;
+    pose.level = c["pose"]["level"] | 0;
     Target t;
     t.pixels = pixels.data();
     t.stride = w;
@@ -114,6 +115,7 @@ static void bounds_hold_every_pixel_drawn() {
     pose.angle64 = c["pose"]["angle64"] | 0;
     pose.shiftX = c["pose"]["shiftX"] | 0;
     pose.shiftY = c["pose"]["shiftY"] | 0;
+    pose.level = c["pose"]["level"] | 0;
     Target t;
     t.pixels = pixels.data();
     t.stride = w;
@@ -375,6 +377,15 @@ static void angles_round_as_the_designer_does() {
   TEST_ASSERT_EQUAL_INT32(-3520, angle64Of(-55));
 }
 
+static void levels_round_as_the_designer_does() {
+  TEST_ASSERT_EQUAL_INT32(0, levelOf(-0.3));
+  TEST_ASSERT_EQUAL_INT32(0, levelOf(0));
+  TEST_ASSERT_EQUAL_INT32(2048, levelOf(0.5));
+  TEST_ASSERT_EQUAL_INT32(1516, levelOf(0.37));
+  TEST_ASSERT_EQUAL_INT32(4096, levelOf(1));
+  TEST_ASSERT_EQUAL_INT32(4096, levelOf(1.025));
+}
+
 int main(int, char**) {
   std::string json;
   if (!readFile(COPY, json)) {
@@ -390,5 +401,6 @@ int main(int, char**) {
   RUN_TEST(arcs_off_the_vectors_draw_as_the_designer_writes_them);
   RUN_TEST(isqrt_is_the_floor_of_the_root);
   RUN_TEST(angles_round_as_the_designer_does);
+  RUN_TEST(levels_round_as_the_designer_does);
   return UNITY_END();
 }
