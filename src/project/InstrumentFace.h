@@ -20,10 +20,22 @@ struct Face {
   }
 };
 
+// A readout's strip of glyphs (device contract §2.15, «SA08»): one alpha
+// byte a pixel, row by row.
+struct Strip {
+  uint16_t width = 0;
+  uint16_t height = 0;
+  uint8_t* alpha = nullptr;  // PSRAM
+};
+
 // The face at `path`, loading it on first use; nullptr if it cannot be had.
 const Face* get(const String& path);
 
-// Lets every face go - call when a project is (re)loaded: a path names
+// The strip at `path`, alike: loaded on first use, kept by path until
+// clear(); nullptr if it cannot be had (the readout is then left out).
+const Strip* strip(const String& path);
+
+// Lets every face and strip go - call when a project is (re)loaded: a path names
 // content, but a new project may not need the old ones.
 void clear();
 

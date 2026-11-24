@@ -465,6 +465,27 @@ ScreenObject ProjectLoader::parseScreenObject(JsonObject objJson) {
     g.hasSpring = in["spring"].is<JsonObjectConst>();
     g.frequency = in["spring"]["frequency"] | 0.0f;
     g.damping = in["spring"]["damping"] | 1.0f;
+    JsonObjectConst ro = in["readout"].as<JsonObjectConst>();
+    if (!ro.isNull()) {
+      g.glyphs = resolveAssetPath(ro["glyphs"] | "");
+      readout::Description& d = g.readout;
+      d.chars = ro["chars"] | "";
+      d.cells.clear();
+      for (JsonArrayConst c : ro["cells"].as<JsonArrayConst>()) {
+        readout::Cell cell;
+        cell.sx = c[0] | 0;
+        cell.w = c[1] | 0;
+        cell.advance = c[2] | 0;
+        d.cells.push_back(cell);
+      }
+      d.pad = ro["pad"] | 0;
+      d.height = ro["height"] | 0;
+      d.x = ro["x"] | 0;
+      d.y = ro["y"] | 0;
+      d.center = strcmp(ro["align"] | "right", "center") == 0;
+      d.color = (uint16_t)(ro["color"] | 0);
+      d.decimals = ro["decimals"] | 0;
+    }
   }
   // A guarded control (device contract §2.14): `properties.guard` and the
   // geometry beside it, kept relative to the object.

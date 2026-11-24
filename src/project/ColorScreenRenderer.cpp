@@ -2167,6 +2167,16 @@ bool ColorScreenRenderer::renderInstrument(const ScreenObject& obj, double at) {
   t.clipX1 = x1 - obj.x;
   t.clipY1 = y1 - obj.y;
   needleraster::draw(t, g.needle, pose);
+  // The digits show the value itself, at once - not the needle on its way
+  // (§2.15, «The readout»): what a value change redraws the face for.
+  if (!g.glyphs.isEmpty()) {
+    const instrumentface::Strip* strip = instrumentface::strip(g.glyphs);
+    if (strip) {
+      char text[readout::TEXT_MAX];
+      if (readout::format(shownLevelValue(obj).c_str(), g.readout.decimals, text) > 0)
+        readout::draw(t, g.readout, strip->alpha, strip->width, strip->height, text);
+    }
+  }
   lastInstrumentNeedleUs_ = micros() - tNeedle;
   return true;
 }

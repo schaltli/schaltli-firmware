@@ -11,6 +11,7 @@
 #include "ScaledValue.h"
 #include "SpiramAllocator.h"
 #include "NeedleRaster.h"
+#include "Readout.h"
 
 /**
  * Data structures for project.json configuration
@@ -379,6 +380,10 @@ struct InstrumentGeom {
   int32_t travelX = 0, travelY = 0;   // bar, eighths
   bool hasSpring = false;
   float frequency = 0, damping = 1;
+  // The digital readout (vfd, night): the strip's resolved path, empty for
+  // none, and how the value is written with it - after the needle.
+  String glyphs;
+  readout::Description readout;
 };
 
 // Base properties for screen objects

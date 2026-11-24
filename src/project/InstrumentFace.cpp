@@ -19,6 +19,16 @@ std::map<String, Entry>& faces() {
   return m;
 }
 
+struct StripEntry {
+  Strip strip;
+  bool failed = false;
+};
+
+std::map<String, StripEntry>& strips() {
+  static std::map<String, StripEntry> m;
+  return m;
+}
+
 size_t held = 0;
 
 void* psram(size_t bytes) {
@@ -69,7 +79,52 @@ bool load(const String& path, Face& out) {
   return true;
 }
 
+bool loadStrip(const String& path, Strip& out) {
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    Serial.printf("[instrument] glyphs %s: not found\n", path.c_str());
+    return false;
+  }
+  uint8_t head[9];
+  if (f.read(head, 9) != 9 || head[0] != 'S' || head[1] != 'A' || head[2] != '0' || head[3] != '8' || head[4] != 1) {
+    Serial.printf("[instrument] glyphs %s: not an SA08 v1 file\n", path.c_str());
+    f.close();
+    return false;
+  }
+  const uint16_t w = head[5] | (head[6] << 8);
+  const uint16_t h = head[7] | (head[8] << 8);
+  const size_t n = (size_t)w * h;
+  uint8_t* alpha = (uint8_t*)psram(n ? n : 1);
+  if (!alpha) {
+    Serial.printf("[instrument] glyphs %s: %u x %u does not fit in memory\n", path.c_str(), w, h);
+    f.close();
+    return false;
+  }
+  const bool ok = f.read(alpha, n) == n;
+  f.close();
+  if (!ok) {
+    Serial.printf("[instrument] glyphs %s: short file\n", path.c_str());
+    heap_caps_free(alpha);
+    return false;
+  }
+  out.width = w;
+  out.height = h;
+  out.alpha = alpha;
+  held += n;
+  return true;
+}
+
 }  // namespace
+
+const Strip* strip(const String& path) {
+  if (path.isEmpty()) return nullptr;
+  auto it = strips().find(path);
+  if (it != strips().end()) return it->second.failed ? nullptr : &it->second.strip;
+  StripEntry e;
+  e.failed = !loadStrip(path, e.strip);
+  auto ins = strips().emplace(path, e).first;
+  return ins->second.failed ? nullptr : &ins->second.strip;
+}
 
 const Face* get(const String& path) {
   if (path.isEmpty()) return nullptr;
@@ -87,6 +142,10 @@ void clear() {
     if (kv.second.face.mask) heap_caps_free(kv.second.face.mask);
   }
   faces().clear();
+  for (auto& kv : strips()) {
+    if (kv.second.strip.alpha) heap_caps_free(kv.second.strip.alpha);
+  }
+  strips().clear();
   held = 0;
 }
 
