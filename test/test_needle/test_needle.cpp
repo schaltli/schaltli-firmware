@@ -62,7 +62,7 @@ static void the_copy_is_the_designers() {
 
 static void every_vector_draws_the_designers_picture() {
   JsonArrayConst cases = doc["cases"].as<JsonArrayConst>();
-  TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(26, cases.size(), "fewer vectors than the designer has");
+  TEST_ASSERT_GREATER_OR_EQUAL_MESSAGE(31, cases.size(), "fewer vectors than the designer has");
   int failures = 0;
   for (JsonObjectConst c : cases) {
     const int w = c["width"] | 0, h = c["height"] | 0;

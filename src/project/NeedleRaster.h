@@ -64,6 +64,10 @@ struct Layer {
   int32_t dx = 0, dy = 0;     // eighths, after turning
   Grow grow = Grow::Right;    // a fill layer's rects
   Gradient gradient;
+  // Whole pixels, x1/y1 excluded: the only pixels the layer may touch (the
+  // moving-coil meter's needle, cut off at its window). Off: no clip.
+  bool clip = false;
+  int32_t clipX0 = 0, clipY0 = 0, clipX1 = 0, clipY1 = 0;
 };
 
 struct Description {

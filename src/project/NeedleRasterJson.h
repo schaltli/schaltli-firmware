@@ -33,6 +33,14 @@ inline bool parseDescription(JsonObjectConst json, Description& out) {
       const int32_t length = g["length"] | 1;
       layer.gradient.length = length < 1 ? 1 : length;
     }
+    JsonArrayConst c = l["clip"].as<JsonArrayConst>();
+    if (!c.isNull() && c.size() == 4) {
+      layer.clip = true;
+      layer.clipX0 = c[0].as<int32_t>();
+      layer.clipY0 = c[1].as<int32_t>();
+      layer.clipX1 = c[2].as<int32_t>();
+      layer.clipY1 = c[3].as<int32_t>();
+    }
     layer.color = (uint16_t)(l["color"] | 0);
     layer.alpha = l["alpha"] | 256;
     layer.dx = l["dx"] | 0;

@@ -843,6 +843,13 @@ bool bounds(const Description& desc, const Pose& pose, int32_t* x0, int32_t* y0,
       b--;
       c++;
       d++;
+      if (layer.clip) {
+        if (a < layer.clipX0) a = layer.clipX0;
+        if (b < layer.clipY0) b = layer.clipY0;
+        if (c > layer.clipX1 - 1) c = layer.clipX1 - 1;
+        if (d > layer.clipY1 - 1) d = layer.clipY1 - 1;
+        if (a > c || b > d) continue;
+      }
       if (!any) {
         *x0 = a;
         *y0 = b;
@@ -869,14 +876,23 @@ void draw(Target& target, const Description& desc, const Pose& pose) {
   t.clipY1 = (t.clipY1 < 0 || t.clipY1 > t.height) ? t.height : t.clipY1;
   if (t.clipX0 >= t.clipX1 || t.clipY0 >= t.clipY1) return;
   for (const Layer& layer : desc.layers) {
+    // A layer's own clip narrows the target's.
+    Target lt = t;
+    if (layer.clip) {
+      if (layer.clipX0 > lt.clipX0) lt.clipX0 = layer.clipX0;
+      if (layer.clipY0 > lt.clipY0) lt.clipY0 = layer.clipY0;
+      if (layer.clipX1 < lt.clipX1) lt.clipX1 = layer.clipX1;
+      if (layer.clipY1 < lt.clipY1) lt.clipY1 = layer.clipY1;
+      if (lt.clipX0 >= lt.clipX1 || lt.clipY0 >= lt.clipY1) continue;
+    }
     for (const Shape& shape : layer.shapes) {
       if (unlit(layer, shape, pose)) continue;
       const Placed p = place(shape, layer, desc, pose);
       if (p.empty) continue;
       if (!layer.soft.empty()) {
-        drawSoft(t, p, layer);
+        drawSoft(lt, p, layer);
       } else {
-        drawBody(t, p, layer);
+        drawBody(lt, p, layer);
       }
     }
   }
