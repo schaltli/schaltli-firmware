@@ -24,6 +24,8 @@ inline needleraster::Pose instrumentPose(const InstrumentGeom& g, double at) {
     pose.shiftX = (int32_t)floor(at * g.travelX + 0.5);
     pose.shiftY = (int32_t)floor(at * g.travelY + 0.5);
   }
+  // Segments light by the position itself, gauge and bar alike.
+  pose.level = needleraster::levelOf(at);
   return pose;
 }
 
