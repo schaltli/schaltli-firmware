@@ -12,6 +12,10 @@
 //   whole pixels outside, compared as squared distances; nothing beyond.
 // - Each pixel is mixed into what is already there (levelglow::blend565's
 //   formula, restated here so this builds on the PC without Arduino).
+// - A fill layer grows with the value instead of moving: a rect from the
+//   edge `grow` names, an arc (a band of half width hw about radius r round
+//   the pivot, round ends) from its `from` angle to the pose's angle.
+// - A layer with a gradient takes its colour per pixel (gradient565()).
 //
 // The designer's lib/needle-raster/vectors.json is the reference
 // (test/test_needle).
@@ -24,12 +28,28 @@
 
 namespace needleraster {
 
-enum class Motion : uint8_t { Rotate, Translate, Static };
+enum class Motion : uint8_t { Rotate, Translate, Static, Fill };
+
+enum class Kind : uint8_t { Poly, Circle, Rect, Arc };
+
+// The way a fill layer's rects grow from their start edge.
+enum class Grow : uint8_t { Right, Left, Down, Up };
 
 struct Shape {
-  bool circle = false;
+  Kind kind = Kind::Poly;
   std::vector<PolygonRaster::Point> poly;  // eighths
-  int32_t cx = 0, cy = 0, r = 0, rIn = 0;  // eighths
+  int32_t cx = 0, cy = 0, r = 0, rIn = 0;  // eighths; an arc's radius is r
+  int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // a rect, eighths (a fill layer's at full scale)
+  int32_t hw = 0, from64 = 0, to64 = 0;    // an arc: half width (eighths), angles (1/64 degree)
+};
+
+// Colour per pixel: gradient565(color, to, (x or y) - start, length).
+struct Gradient {
+  bool on = false;
+  uint16_t to = 0;  // RGB565
+  bool alongY = false;
+  int32_t start = 0;   // pixels
+  int32_t length = 1;  // pixels, at least 1
 };
 
 struct Layer {
@@ -39,6 +59,8 @@ struct Layer {
   int32_t alpha = 256;
   std::vector<int32_t> soft;  // empty: a body
   int32_t dx = 0, dy = 0;     // eighths, after turning
+  Grow grow = Grow::Right;    // a fill layer's rects
+  Gradient gradient;
 };
 
 struct Description {
@@ -69,7 +91,8 @@ void draw(Target& t, const Description& desc, const Pose& pose);
 
 // The pixels `desc` in `pose` can touch, glow and shadow included:
 // x0..x1, y0..y1 inclusive, in the object's own coordinates. False when it
-// has no shapes. What a board redraws while a needle swings.
+// has no shapes (or only empty fills). What a board redraws while a needle
+// swings.
 bool bounds(const Description& desc, const Pose& pose, int32_t* x0, int32_t* y0, int32_t* x1, int32_t* y1);
 
 // The angle a needle stands at for `degrees`: floor(degrees * 64 + 0.5).

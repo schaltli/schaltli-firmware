@@ -14,6 +14,7 @@
 #include <stdint.h>
 
 #include "ArcRaster.h"
+#include "Gradient565.h"
 
 namespace levelglow {
 
@@ -33,19 +34,8 @@ inline ArcRaster::Rgb565 blend565(const ArcRaster::Rgb565& dst, const ArcRaster:
   return out;
 }
 
-// Step `step` of `steps` between two colours, taken at the step's middle.
-// Every operand non-negative, so the division floors as the designer's does.
-inline ArcRaster::Rgb565 gradient565(const ArcRaster::Rgb565& from, const ArcRaster::Rgb565& to, int32_t step,
-                                     int32_t steps) {
-  int32_t s = step < 0 ? 0 : (step > steps - 1 ? steps - 1 : step);
-  const int32_t w = 2 * s + 1;
-  const int32_t n = 2 * steps;
-  ArcRaster::Rgb565 out;
-  out.r = (uint8_t)((from.r * (n - w) + to.r * w + steps) / n);
-  out.g = (uint8_t)((from.g * (n - w) + to.g * w + steps) / n);
-  out.b = (uint8_t)((from.b * (n - w) + to.b * w + steps) / n);
-  return out;
-}
+// gradient565(from, to, step, steps): Gradient565.h, shared with the needle
+// raster.
 
 // 1 inside or touching the band, up to LEVELS, 0 beyond - from a squared
 // distance to the band's centre line and half its width, in 1/8 pixel.
